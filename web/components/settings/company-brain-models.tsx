@@ -31,6 +31,10 @@ const MODEL_LABELS: Record<string, string> = {
 	"grok-4-fast": "Grok 4 Fast",
 	"gpt-5.6": "GPT-5.6",
 	"gpt-5.5": "GPT-5.5",
+	"nemotron-3-ultra-free": "Nemotron 3 Ultra (free)",
+	"nemotron-3-super-free": "Nemotron 3 Super (free)",
+	"qwen3.8-27b-free": "Qwen 3.8 27B (free)",
+	"gemma-4-31b-free": "Gemma 4 31B (free)",
 }
 
 const labelFor = (id: string) => MODEL_LABELS[id] ?? id
@@ -46,6 +50,10 @@ const MODEL_TAGS: Record<string, string> = {
 	"grok-4-fast": "fastest",
 	"gpt-5.6": "capable",
 	"gpt-5.5": "capable",
+	"nemotron-3-ultra-free": "free, most capable",
+	"nemotron-3-super-free": "free, balanced",
+	"qwen3.8-27b-free": "free, fast",
+	"gemma-4-31b-free": "free, light",
 }
 
 const EFFORT_LABELS: Record<BrainReasoningEffort, string> = {

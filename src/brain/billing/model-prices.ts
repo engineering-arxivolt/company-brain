@@ -14,6 +14,7 @@ import {
  * - Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
  * - OpenAI: https://developers.openai.com/api/docs/pricing  (standard short context)
  * - Google: https://ai.google.dev/gemini-api/docs/pricing  (paid standard, prompts ≤ 200k)
+ * - OpenRouter free models are billed per token as 0 for the `:free` variants.
  *
  * Last verified: 2026-07-20. Re-check when models or list prices change.
  */
@@ -97,6 +98,24 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		inputPerMTok: 1.25,
 		outputPerMTok: 10,
 		cacheReadPerMTok: 0.125,
+	},
+
+	// Free OpenRouter models — $0 on the `:free` variants.
+	"nemotron-3-ultra-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
+	"nemotron-3-super-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
+	"qwen3.8-27b-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
+	"gemma-4-31b-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
 	},
 }
 

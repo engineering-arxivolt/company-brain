@@ -9,8 +9,9 @@ import {
 	getModelInfo,
 	type SupportedModel,
 	type SupportedModelProvider,
+	usesChatCompletions,
 } from "@/lib/model-registry"
-import { brainFallbackModelFor } from "./model-profile"
+import { brainFallbackModelFor, TRIAGE_MODEL } from "./model-profile"
 
 // Sentinel the gateway swaps for its stored provider key (BYOK).
 const GATEWAY_INJECTED_KEY = "CF_TEMP_TOKEN"
@@ -21,6 +22,20 @@ const PROVIDER_DEFAULT_MODEL: Record<SupportedModelProvider, SupportedModel> = {
 	openai: "gpt-5.6",
 	google: "gemini-3.1-pro-preview",
 	xai: "grok-4.5",
+}
+
+/**
+ * Free models to fall back to when the `openai` provider is really an
+ * OpenAI-compatible endpoint (OpenRouter, Workers AI): OpenAI's own model ids
+ * don't exist there. Triage runs on every message, so it takes the light one.
+ */
+const OPENAI_COMPATIBLE_FALLBACK_MODEL: SupportedModel = "nemotron-3-ultra-free"
+const OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL: SupportedModel =
+	"qwen3.8-27b-free"
+
+/** Base URL of the configured OpenAI-compatible endpoint, if any. */
+export function openAiCompatibleBaseUrl(env: Env): string | undefined {
+	return env.OPENAI_BASE_URL?.trim() || undefined
 }
 
 function providerKey(
@@ -61,12 +76,30 @@ function resolveModel(modelName: SupportedModel, env: Env): SupportedModel {
 	const fallbackProvider = availableProviders(env)[0]
 	if (!fallbackProvider) {
 		const error = new Error(
-			"No model provider key is set. Set MODEL_API_KEY to an Anthropic, OpenAI, Google or xAI key.",
+			"No model provider key is set. Set MODEL_API_KEY to an Anthropic, OpenAI, Google or xAI key, or point OPENAI_BASE_URL at an OpenAI-compatible endpoint with its key in OPENAI_API_KEY.",
 		)
 		captureException(error, { tags: { feature: "company_brain" } })
 		throw error
 	}
-	return PROVIDER_DEFAULT_MODEL[fallbackProvider]
+	return fallbackModelFor(fallbackProvider, modelName, env)
+}
+
+/**
+ * Best model reachable on `provider`. When the `openai` provider is really an
+ * OpenAI-compatible endpoint, the model list is that endpoint's, so a free
+ * registry model stands in for OpenAI's own ids.
+ */
+function fallbackModelFor(
+	provider: SupportedModelProvider,
+	requested: SupportedModel,
+	env: Env,
+): SupportedModel {
+	if (provider === "openai" && openAiCompatibleBaseUrl(env)) {
+		return requested === TRIAGE_MODEL
+			? OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
+			: OPENAI_COMPATIBLE_FALLBACK_MODEL
+	}
+	return PROVIDER_DEFAULT_MODEL[provider]
 }
 
 /** xAI client, for the provider-native web-search tool. */
@@ -90,8 +123,20 @@ export function brainProviderModel(
 	switch (provider) {
 		case "xai":
 			return createXai({ apiKey }).responses(modelId)
-		case "openai":
-			return createOpenAI({ apiKey })(modelId)
+		case "openai": {
+			if (!usesChatCompletions(modelName)) {
+				return createOpenAI({ apiKey })(modelId)
+			}
+			const baseURL = openAiCompatibleBaseUrl(env)
+			if (!baseURL) {
+				const error = new Error(
+					`[company-brain] ${modelName} runs on an OpenAI-compatible chat endpoint, but OPENAI_BASE_URL is not set.`,
+				)
+				captureException(error, { tags: { feature: "company_brain" } })
+				throw error
+			}
+			return createOpenAI({ apiKey, baseURL }).chat(modelId)
+		}
 		case "anthropic":
 			return createAnthropic({ apiKey })(modelId)
 		case "google":

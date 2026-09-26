@@ -21,7 +21,11 @@ import {
 } from "@/lib/brain/turn/model-profile"
 import { availableProviders } from "@/lib/brain/turn/brain-model"
 import { isRecord } from "@/lib/brain/turn/util"
-import { getModelInfo, type SupportedModel } from "@/lib/model-registry"
+import {
+	getModelInfo,
+	type SupportedModel,
+	usesChatCompletions,
+} from "@/lib/model-registry"
 import { roleGate } from "@/lib/auth/role-gate"
 import type { AppContext } from "@/types"
 
@@ -49,13 +53,22 @@ function resolvedFor(metadata: unknown) {
 }
 
 // Offer only models whose provider this deployment has a key for; picking any
-// other would silently fall back to a different provider at run time.
+// other would silently fall back to a different provider at run time. The
+// chat-completions models additionally need their endpoint configured, since
+// they can't run against OpenAI itself.
 function usableModels<T extends SupportedModel>(
 	env: Env,
 	models: readonly T[],
 ): T[] {
 	const providers = new Set(availableProviders(env))
-	return models.filter((model) => providers.has(getModelInfo(model).provider))
+	return models.filter((model) => {
+		if (!providers.has(getModelInfo(model).provider)) return false
+		return usesChatCompletions(model) ? hasOpenAiCompatibleEndpoint(env) : true
+	})
+}
+
+function hasOpenAiCompatibleEndpoint(env: Env): boolean {
+	return Boolean(env.OPENAI_BASE_URL?.trim())
 }
 
 // Per-org Company Brain model config, stored on organization.metadata.brainModels.

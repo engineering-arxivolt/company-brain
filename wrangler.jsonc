@@ -31,7 +31,11 @@
 		// run on a Cloudflare container.
 		"CONTAINER_SANDBOX": "off",
 		// The sandbox SDK's RPC transport; artifact downloads stream over it.
-		"SANDBOX_TRANSPORT": "rpc"
+		"SANDBOX_TRANSPORT": "rpc",
+		// OpenAI-compatible endpoint for the free models. This only applies to the
+		// chat-completions models in the registry; OpenAI's own models still go to
+		// api.openai.com. Point it elsewhere (e.g. Workers AI) to switch providers.
+		"OPENAI_BASE_URL": "https://openrouter.ai/api/v1"
 	},
 	"observability": {
 		"enabled": true

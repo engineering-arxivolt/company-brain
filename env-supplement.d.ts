@@ -18,6 +18,15 @@ interface Env {
 	ENCRYPTION_SECRET: string
 }
 
+/**
+ * Base URL of an OpenAI-compatible endpoint (OpenRouter, Workers AI, …). When
+ * set, the free chat-completions models below become selectable and
+ * OPENAI_API_KEY may hold a key for that endpoint rather than for OpenAI.
+ */
+interface Env {
+	OPENAI_BASE_URL?: string
+}
+
 /** Optional Cloudflare AI Gateway. When set, model calls route through it. */
 interface Env {
 	CLOUDFLARE_ACCOUNT_ID?: string

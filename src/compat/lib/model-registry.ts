@@ -16,6 +16,12 @@ export const SUPPORTED_MODELS = [
 	"claude-sonnet-4.6",
 	"claude-haiku-4.5",
 	"gemini-3.1-pro-preview",
+	// Free OpenRouter models, reached through its OpenAI-compatible endpoint
+	// (set OPENAI_BASE_URL). They speak chat completions, not the Responses API.
+	"nemotron-3-ultra-free",
+	"nemotron-3-super-free",
+	"qwen3.8-27b-free",
+	"gemma-4-31b-free",
 	// Compatibility alias for chat/playground settings saved before the 3.1 upgrade.
 	"gemini-2.5-pro",
 ] as const
@@ -34,6 +40,12 @@ type SupportedModelInfo = {
 	modelId: string
 	provider: SupportedModelProvider
 	canonicalName?: SupportedModel
+	/**
+	 * Which OpenAI-shaped API the model speaks. OpenAI's own models use the
+	 * Responses API; OpenAI-compatible endpoints (OpenRouter, Workers AI) only
+	 * implement chat completions.
+	 */
+	api?: "responses" | "chat"
 }
 
 const MODEL_INFO = {
@@ -68,10 +80,38 @@ const MODEL_INFO = {
 		provider: "google",
 		canonicalName: "gemini-3.1-pro-preview",
 	},
+	"nemotron-3-ultra-free": {
+		modelId: "nvidia/nemotron-3-ultra-550b-a55b:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"nemotron-3-super-free": {
+		modelId: "nvidia/nemotron-3-super-120b-a12b:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"qwen3.8-27b-free": {
+		modelId: "qwen/qwen3.8-27b:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"gemma-4-31b-free": {
+		modelId: "google/gemma-4-31b-it:free",
+		provider: "openai",
+		api: "chat",
+	},
 } as const satisfies Record<SupportedModel, SupportedModelInfo>
 
 export function getModelInfo(modelName: SupportedModel): SupportedModelInfo {
 	return MODEL_INFO[modelName]
+}
+
+/**
+ * True for models that only run against an OpenAI-compatible chat-completions
+ * endpoint (configured with OPENAI_BASE_URL), never against api.openai.com.
+ */
+export function usesChatCompletions(modelName: SupportedModel): boolean {
+	return getModelInfo(modelName).api === "chat"
 }
 
 /**
@@ -160,6 +200,13 @@ export function getModelReasoningProviderOptions(
 					},
 				} satisfies GoogleGenerativeAIProviderOptions,
 			}
+		case "nemotron-3-ultra-free":
+		case "nemotron-3-super-free":
+		case "qwen3.8-27b-free":
+		case "gemma-4-31b-free":
+			// Chat-completions endpoints take no Responses-API reasoning options;
+			// these models decide their own reasoning behaviour.
+			return {}
 	}
 }
 
@@ -206,6 +253,11 @@ export function getModelInstantProviderOptions(
 					thinkingConfig: { thinkingLevel: "low" },
 				} satisfies GoogleGenerativeAIProviderOptions,
 			}
+		case "nemotron-3-ultra-free":
+		case "nemotron-3-super-free":
+		case "qwen3.8-27b-free":
+		case "gemma-4-31b-free":
+			return {}
 	}
 }
 
