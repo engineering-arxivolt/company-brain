@@ -26,3 +26,7 @@ MODEL_API_KEY=""
 # (1,000 credits a month). Set a key for more, or a context.dev key to use that.
 # FIRECRAWL_API_KEY=""
 # CONTEXT_DEV_API_KEY=""
+
+# TypeSafe AI / Jev System 1 Decision Model: ultra-fast, zero-token-waste
+# decision engine for MCP action effect classification, skills routing, and triage.
+# TYPESAFE_API_KEY=""

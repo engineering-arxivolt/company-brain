@@ -152,6 +152,7 @@ export type RuntimeContextPromptInput = {
 	interactionStyle?: string
 	workspacePrompt?: string
 	availableSkillsContext?: string
+	preloadedSkillsContext?: string
 	threadParticipants?: string
 	workspaceGroups?: string
 }
@@ -167,6 +168,7 @@ export function buildRuntimeContextPrompt(
 		interactionStyle,
 		workspacePrompt,
 		availableSkillsContext,
+		preloadedSkillsContext,
 		threadParticipants,
 		workspaceGroups,
 	} = input
@@ -205,6 +207,9 @@ export function buildRuntimeContextPrompt(
 			"</workspace_prompt>",
 			"",
 		)
+	}
+	if (preloadedSkillsContext?.trim()) {
+		parts.push(preloadedSkillsContext.trim(), "")
 	}
 	if (availableSkillsContext?.trim()) {
 		parts.push(availableSkillsContext.trim(), "")

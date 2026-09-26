@@ -4,6 +4,10 @@ import type { BrainCostLedger } from "../../billing/cost"
 import { responseBodyFromResult } from "../../billing/cost"
 import type { TurnDeps } from "../../turn/deps"
 import type { ModelProfile } from "../../turn/model-profile"
+import {
+	isTypeSafeConfigured,
+	querySystemOne,
+} from "../../typesafe/client"
 
 const CLASSIFIER_TIMEOUT_MS = 8_000
 const CLASSIFIER_CALL_LIMIT = 2
@@ -160,17 +164,74 @@ export function createMcpApprovalClassifier(args: {
 			calls += 1
 			const pending = (async (): Promise<McpApprovalDecision> => {
 				const startedAt = Date.now()
+				const payloadJson = stableJson({
+					serverSlug: input.serverSlug,
+					toolName: input.toolName,
+					nativeToolDocumentation: input.description.slice(0, 6_000),
+					nativeInputSchema: input.inputSchema,
+					executableArguments: input.arguments,
+				})
+
+				// If TypeSafe AI (Jev) is configured, evaluate as a fast System 1 Choice decision
+				if (isTypeSafeConfigured(args.env)) {
+					try {
+						const jevRes = await querySystemOne({
+							apiKey: args.env.TYPESAFE_API_KEY!,
+							state: `Native tool call payload:\n${payloadJson}`,
+							questions: {
+								effect: {
+									type: "choice",
+									instructions:
+										"Classify the external effect of this connected-app call. Choose from the available effect criteria.",
+									criteria: {
+										metadata:
+											"Discovers capabilities, schemas, or operation documentation without accessing or mutating user data.",
+										read: "Retrieves, searches, aggregates, exports, or analyzes external data without changing it.",
+										draft: "Creates or edits private unsent draft content.",
+										low_impact_write:
+											"Makes a small reversible external change (e.g. adding a reaction, minor label).",
+										external_communication:
+											"Sends, posts, replies, comments, publishes, or communicates externally to people.",
+										material_write:
+											"Creates or updates durable external records (tickets, documents, rows, issues).",
+										destructive:
+											"Deletes data or performs an irreversible destructive change.",
+										privileged:
+											"Changes permissions or credentials, moves money, deploys, releases, or controls production.",
+										unknown: "The exact effect cannot be determined or is uncertain.",
+									},
+								},
+							},
+							timeoutMs: 3_500,
+						})
+
+						const answer = jevRes.answers?.effect
+						if (answer && answer.type === "choice" && answer.choice) {
+							const chosenEffect = answer.choice as McpOperationEffect
+							const validEffect = schema.shape.effect.safeParse(chosenEffect)
+							if (validEffect.success) {
+								console.log(
+									`[company-brain][${args.traceId}] connected-app approval classified via Jev (System 1) app=${input.serverSlug} method=${input.toolName} effect=${chosenEffect} confidence=${answer.confidence} ms=${Date.now() - startedAt}`,
+								)
+								return {
+									effect: chosenEffect,
+									reason: `Classified as ${chosenEffect} via System 1 model (confidence: ${Math.round((answer.confidence ?? 1) * 100)}%).`,
+								}
+							}
+						}
+					} catch (jevErr) {
+						console.warn(
+							`[company-brain][${args.traceId}] Jev classification failed, falling back to standard LLM:`,
+							jevErr instanceof Error ? jevErr.message : String(jevErr),
+						)
+					}
+				}
+
 				try {
 					const result = await args.deps.generateText({
 						model: args.deps.getModel(args.profile.name, args.env),
 						system: CLASSIFIER_SYSTEM,
-						prompt: `Classify this native call JSON:\n\n${stableJson({
-							serverSlug: input.serverSlug,
-							toolName: input.toolName,
-							nativeToolDocumentation: input.description.slice(0, 6_000),
-							nativeInputSchema: input.inputSchema,
-							executableArguments: input.arguments,
-						})}`,
+						prompt: `Classify this native call JSON:\n\n${payloadJson}`,
 						output: args.deps.Output.object({ schema }),
 						maxOutputTokens: 320,
 						maxRetries: 0,

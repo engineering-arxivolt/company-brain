@@ -35,6 +35,8 @@ import {
 	slackChannelRefsFromToolCall,
 } from "../prompt/build"
 import { buildAvailableSkillsContext } from "../skills/context"
+import { resolveSkillsWithJev } from "../skills/resolver"
+import { listVisibleRuntimeSkills } from "../skills/store"
 import { buildTurnUserContent } from "../slack/attachments"
 import { resolveChannel } from "../slack/channel-directory"
 import { claimThreadTurnApprovalIfInboxEmpty } from "../slack/turn-control"
@@ -425,10 +427,50 @@ export async function computeTurn(
 					() => null,
 				),
 			])
-		const availableSkills = buildAvailableSkillsContext({
-			agent,
+		const visibleSkills = listVisibleRuntimeSkills(agent, {
 			userId: actor.userId,
 		})
+		const jevSkillSelection = await resolveSkillsWithJev({
+			env,
+			agent,
+			userId: actor.userId,
+			question: question ?? "",
+			visibleSkills,
+			traceId,
+		})
+
+		let availableSkillsContextText: string | undefined
+		let preloadedSkillsContextText: string | undefined
+
+		if (jevSkillSelection && jevSkillSelection.preloadedSkills.length > 0) {
+			state.loadedSkills ??= []
+			for (const ps of jevSkillSelection.preloadedSkills) {
+				const existing = state.loadedSkills.findIndex((s) => s.id === ps.id)
+				if (existing >= 0) state.loadedSkills.splice(existing, 1)
+				state.loadedSkills.push({
+					id: ps.id,
+					name: ps.name,
+					version: ps.version,
+				})
+			}
+			state.availableSkillIds = jevSkillSelection.selectedSkillIds
+			preloadedSkillsContextText = [
+				"<loaded_skills>",
+				"The following relevant playbooks were pre-selected for this task. Follow their guidance:",
+				...jevSkillSelection.preloadedSkills.map(
+					(s) => `### Skill: ${s.name}\n${s.body}`,
+				),
+				"</loaded_skills>",
+			].join("\n\n")
+		} else {
+			const availableSkills = buildAvailableSkillsContext({
+				agent,
+				userId: actor.userId,
+			})
+			state.availableSkillIds = availableSkills?.skillIds ?? []
+			availableSkillsContextText = availableSkills?.text
+		}
+
 		let workspacePrompt: string | null = null
 		try {
 			workspacePrompt = getWorkspacePrompt(agent)
@@ -438,9 +480,8 @@ export async function computeTurn(
 			)
 		}
 		console.log(
-			`[company-brain][${traceId}] prompt context ready mode=lazy companyContext=${companyContext ? "yes" : "no"} ambientBrainProfile=${brainMemoryContext ? "yes" : "no"} interactionStyle=${interactionStyleProfile ? "yes" : "no"} workspacePrompt=${workspacePrompt ? "yes" : "no"} availableSkills=${availableSkills ? "yes" : "no"} directoryAvailable=${directory?.length ?? 0} hasApps=${hasApps ? "yes" : "no"}`,
+			`[company-brain][${traceId}] prompt context ready mode=lazy companyContext=${companyContext ? "yes" : "no"} ambientBrainProfile=${brainMemoryContext ? "yes" : "no"} interactionStyle=${interactionStyleProfile ? "yes" : "no"} workspacePrompt=${workspacePrompt ? "yes" : "no"} availableSkills=${availableSkillsContextText ? "yes" : "no"} preloadedSkills=${preloadedSkillsContextText ? "yes" : "no"} directoryAvailable=${directory?.length ?? 0} hasApps=${hasApps ? "yes" : "no"}`,
 		)
-		state.availableSkillIds = availableSkills?.skillIds ?? []
 		touchTurnState(state)
 		const baseRuntimePrompt = buildRuntimeContextPrompt({
 			asker,
@@ -450,7 +491,8 @@ export async function computeTurn(
 			interactionStyle:
 				renderInteractionStyle(interactionStyleProfile) ?? undefined,
 			workspacePrompt: workspacePrompt ?? undefined,
-			availableSkillsContext: availableSkills?.text,
+			availableSkillsContext: availableSkillsContextText,
+			preloadedSkillsContext: preloadedSkillsContextText,
 			threadParticipants,
 			workspaceGroups,
 		})

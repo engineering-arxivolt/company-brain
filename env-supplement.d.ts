@@ -8,6 +8,8 @@ interface Env {
 	GOOGLE_GENERATIVE_AI_API_KEY?: string
 	XAI_API_KEY?: string
 	DAYTONA_API_KEY?: string
+	/** TypeSafe AI API key for System 1 fast decisions (Jev). */
+	TYPESAFE_API_KEY?: string
 	/** Public origin of this worker, used for OAuth redirects and Slack links. */
 	PUBLIC_URL: string
 	/** Slack app credentials, captured by the setup wizard and stored in D1. */
