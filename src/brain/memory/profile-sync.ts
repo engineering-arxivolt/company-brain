@@ -18,6 +18,7 @@ import {
 	buildBrainPrivateChannelEntityContext,
 	buildBrainSelfEntityContext,
 	buildBrainSharedEntityContext,
+	clampEntityContext,
 } from "./profile-config"
 import {
 	isGeneratedBrainSpaceName,
@@ -97,7 +98,9 @@ async function upsertBrainSpaceConfig(
 		)
 	await updateContainerTagSettings(env, params.containerTag, {
 		...(keepName ? {} : { name: params.name }),
-		entityContext: params.entityContext,
+		// supermemory caps entityContext; clamping here keeps a bad context from
+		// failing the tag PATCH (and the whole profile sync) with a 400.
+		entityContext: clampEntityContext(params.entityContext),
 		profileBuckets: params.profileBuckets,
 	})
 }

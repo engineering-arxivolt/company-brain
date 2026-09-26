@@ -3,16 +3,78 @@ import type { ProfileBucketDef } from "@repo/db/schema/common"
 // Company Brain memory-model config: the memory buckets offered to ingestion
 // plus the per-scope entity context that steers tagged Slack memory ingestion.
 
+/**
+ * Hard cap supermemory enforces on a container tag's `entityContext`. Going
+ * over makes the tag PATCH fail with a 400, which fails the whole profile sync
+ * for that scope, so everything built here has to fit inside it.
+ */
+export const MAX_ENTITY_CONTEXT_CHARS = 1500
+
+/** Longest org-supplied blurb (`about`/channel purpose) kept per context. */
+export const MAX_ENTITY_CONTEXT_FREE_TEXT_CHARS = 200
+
+/** Longest org/channel name kept in a context header — Slack caps these low. */
+const MAX_ENTITY_CONTEXT_NAME_CHARS = 120
+
+/** Below this much room the free-text line is dropped instead of cut to a stub. */
+const MIN_ENTITY_CONTEXT_FREE_TEXT_CHARS = 60
+
+/**
+ * Fit text inside a character cap without cutting mid-word: prefer the last
+ * sentence or line break, else the last space. Last line of defence for
+ * org-supplied text — the builders below are already written to fit.
+ */
+export function clampEntityContext(
+	text: string,
+	max = MAX_ENTITY_CONTEXT_CHARS,
+): string {
+	const trimmed = text.trim()
+	if (trimmed.length <= max) return trimmed
+	const clipped = trimmed.slice(0, max)
+	const sentence = Math.max(
+		clipped.lastIndexOf(". "),
+		clipped.lastIndexOf("\n"),
+	)
+	const cut =
+		sentence + 1 >= max / 2 ? sentence + 1 : clipped.lastIndexOf(" ")
+	return (cut > 0 ? clipped.slice(0, cut) : clipped).trimEnd()
+}
+
+/**
+ * `Prefix: <free text>` line sized to the budget left after `fixedLength` chars
+ * of context. Org-supplied text is the only thing that gets clamped — the fixed
+ * steering text that shares the budget is never trimmed. Empty when the text is
+ * absent or the leftover budget is too small to say anything useful.
+ */
+function entityContextFreeTextLine(params: {
+	prefix: string
+	text?: string | null
+	fixedLength: number
+}): string {
+	const text = params.text?.trim()
+	if (!text) return ""
+	const room = Math.min(
+		MAX_ENTITY_CONTEXT_FREE_TEXT_CHARS,
+		MAX_ENTITY_CONTEXT_CHARS - params.fixedLength - params.prefix.length - 1,
+	)
+	if (room < MIN_ENTITY_CONTEXT_FREE_TEXT_CHARS) return ""
+	return `${params.prefix}${clampEntityContext(text, room)}`
+}
+
+function entityContextFixedLength(lines: string[]): number {
+	return lines.reduce((total, line) => total + line.length + 1, 0)
+}
+
 // Capture policy woven into every tag's entity context: infer from behaviour,
 // decay-unless-reinforced, durable-vs-transient. Lives here, not org filterPrompt.
+// Kept terse on purpose: it shares the 1500-char entity-context budget with the
+// rest of the context (and is also injected into the channel distiller prompt).
 export const BRAIN_CAPTURE_POLICY = [
-	"Capture durable, future-useful knowledge — decisions and the reasoning behind them, ownership and who is responsible for what, commitments and their status/blockers, status changes, resolved canonical answers to recurring questions, and constraints. Keep these permanent (no forget horizon).",
-	"Infer freely from behavior and repeated patterns — you do NOT need someone to state something explicitly. An observed pattern is a valid memory.",
-	"Because memory decays, give transient or low-confidence facts a forget horizon so they fade on their own: current status, 'today/this week', live counts, and single-observation inferences that may not recur. When the same thing shows up again, reinforce/update the existing memory instead of adding a duplicate — that renews it and firms it up.",
-	"When new information supersedes an old fact (moved from X to Y, no longer, now), update the existing memory rather than creating a parallel one.",
-	"Capture temporal context: when a fact is tied to a date, event, deadline, incident, or status change, state the date in the memory as YYYY-MM-DD so it can be ordered and staleness resolved.",
-	"Do NOT capture casual chatter and social banter, secrets/credentials, or unverified speculation.",
-	"NEVER store anything a connected tool owns as the live source of truth — PR or review status, issue/ticket state, assignees, deploy or build status, current metrics or counts, calendar or roster state, document contents. Fetch these live from the tool every time; storing them only plants data that goes stale fast and then reads as fact when it is wrong. The ONLY exception is a fact whose tool is not connected for this workspace — and even then, prefer getting it connected.",
+	"Capture durable knowledge, permanently: decisions + reasoning, ownership, commitments/blockers, status changes, canonical answers, constraints. Infer from behaviour and recurring patterns; unstated patterns count.",
+	"Transient or low-confidence facts (current status, live counts, one-off inferences) decay unless they recur; on recurrence reinforce, never duplicate.",
+	"Superseding facts ('moved to', 'no longer', 'now') update the existing memory, not add a parallel one. Date facts YYYY-MM-DD.",
+	"Skip chatter, banter, secrets/credentials and speculation.",
+	"Never store what a connected tool owns as live truth (PRs, tickets, assignees, deploys, live metrics, calendars, docs) — fetch it live; stale copies read as fact. Exception: unconnected tools.",
 ].join("\n")
 
 export const BRAIN_MEMORY_BUCKETS: ProfileBucketDef[] = [
@@ -67,12 +129,14 @@ export const BRAIN_SELF_BUCKETS: ProfileBucketDef[] = [
 ]
 
 export function buildBrainSelfEntityContext(): string {
-	return [
-		"This tag is the agent's own profile: how the company brain should talk AND operate in THIS workspace. It is about the AGENT, not the company or any person.",
-		"Actively capture every durable style or operating fact you observe and classify it into exactly one of these buckets: voice, social, culture, do_not, self_concept, operating. Use ONLY those six — never the preferences bucket or any other; those do not apply to this tag. Do not skip style, instructional, or workflow content — recording how the agent should talk and operate is the entire purpose of this tag.",
-		"Keep it a small, bounded profile, not a corpus: when new information refines or contradicts an existing style fact, update the existing memory rather than adding a parallel one.",
-		"Only generalize to team-level style. Never store one person's individual preference here, company facts, anyone's personal information, or specific jokes — capture the humor STYLE, not the joke.",
-	].join("\n")
+	return clampEntityContext(
+		[
+			"This tag is the agent's own profile: how the company brain should talk AND operate in THIS workspace. It is about the AGENT, not the company or any person.",
+			"Actively capture every durable style or operating fact you observe and classify it into exactly one of these buckets: voice, social, culture, do_not, self_concept, operating. Use ONLY those six — never the preferences bucket or any other; those do not apply to this tag. Do not skip style, instructional, or workflow content — recording how the agent should talk and operate is the entire purpose of this tag.",
+			"Keep it a small, bounded profile, not a corpus: when new information refines or contradicts an existing style fact, update the existing memory rather than adding a parallel one.",
+			"Only generalize to team-level style. Never store one person's individual preference here, company facts, anyone's personal information, or specific jokes — capture the humor STYLE, not the joke.",
+		].join("\n"),
+	)
 }
 
 /** Shared Team Brain (`sm_org_shared`) entity context. */
@@ -81,32 +145,45 @@ export function buildBrainSharedEntityContext(params: {
 	domain?: string | null
 	about?: string | null
 }): string {
-	const header = `Organization: ${params.orgName}${params.domain ? ` (${params.domain})` : ""}. This is the shared Company Brain for everyone in this org — the team's collective memory, fed continuously from Slack.`
-	const aboutLine = params.about?.trim() ? `About: ${params.about.trim()}` : ""
-	return [
-		header,
-		aboutLine,
-		"Scope every memory to this organization — its people, teams, projects, customers, decisions, and product/domain terms.",
-		"When a fact is clearly and primarily about one teammate, save it with that teammate's stable person_<slack_user_id> memory tag.",
-		"A full profile isn't provided yet: infer the org's products, structure, and vocabulary from ingested content, and treat recurring names (people, repos, products, customers, projects) as this org's entities.",
-		"Hold exactly ONE current answer per subject. When a new fact changes who owns or is responsible for something, or updates a subject's status/role/decision already in memory (a new owner, a handoff, 'now', 'no longer', 'moved to'), UPDATE that subject's existing memory (emit an updates relation) instead of storing a parallel fact — the related memories are provided for exactly this.",
-		BRAIN_CAPTURE_POLICY,
-	]
-		.filter(Boolean)
-		.join("\n")
+	const orgLabel = `${params.orgName}${params.domain ? ` (${params.domain})` : ""}`
+	const header = `Organization: ${clampEntityContext(
+		orgLabel,
+		MAX_ENTITY_CONTEXT_NAME_CHARS,
+	)}. Shared Team Brain — this org's collective memory, fed from Slack.`
+	const scope =
+		"Scope every memory to this org: its people, teams, projects, customers, decisions, product/domain terms. Teammate-specific facts go under person_<slack_user_id>. Infer products, structure and vocabulary from ingested content; recurring names are this org's entities."
+	const oneAnswer =
+		"Hold ONE current answer per subject: facts that change ownership, responsibility, status, role or a decision UPDATE that subject's existing memory (an updates relation), not a parallel fact — related memories are given for this."
+	const fixed = [header, scope, oneAnswer, BRAIN_CAPTURE_POLICY]
+	const aboutLine = entityContextFreeTextLine({
+		prefix: "About: ",
+		text: params.about,
+		fixedLength: entityContextFixedLength(fixed),
+	})
+	return clampEntityContext(
+		[header, aboutLine, scope, oneAnswer, BRAIN_CAPTURE_POLICY]
+			.filter(Boolean)
+			.join("\n"),
+	)
 }
 
 /** Personal-DM tag (`user_{userId}`) entity context. */
 export function buildBrainPersonalEntityContext(params: {
 	memberName?: string | null
 }): string {
-	const who = params.memberName?.trim() || "this teammate"
-	return [
-		`This is ${who}'s private memory, formed only from their direct messages with Company Brain.`,
-		`Capture what helps serve ${who} personally: their preferences and working patterns, their tasks and next steps, and their working context.`,
-		"Infer preferences and patterns from their behavior generously — you do not need them stated. Single-observation or low-confidence inferences should carry a short forget horizon so they fade unless they recur; when the same pattern shows up again, reinforce the existing memory. Real patterns survive, one-offs fade.",
-		"Do NOT capture company-wide facts (those belong in the shared brain) or other people's private information. This memory is private to this person.",
-	].join("\n")
+	const who =
+		clampEntityContext(
+			params.memberName?.trim() ?? "",
+			MAX_ENTITY_CONTEXT_NAME_CHARS,
+		) || "this teammate"
+	return clampEntityContext(
+		[
+			`This is ${who}'s private memory, formed only from their direct messages with Company Brain.`,
+			`Capture what helps serve ${who} personally: their preferences and working patterns, their tasks and next steps, and their working context.`,
+			"Infer preferences and patterns from their behavior generously — you do not need them stated. Single-observation or low-confidence inferences should carry a short forget horizon so they fade unless they recur; when the same pattern shows up again, reinforce the existing memory. Real patterns survive, one-offs fade.",
+			"Do NOT capture company-wide facts (those belong in the shared brain) or other people's private information. This memory is private to this person.",
+		].join("\n"),
+	)
 }
 
 /** Private Slack channel tag (`slack_channel_{channelId}`) entity context. */
@@ -114,19 +191,30 @@ export function buildBrainPrivateChannelEntityContext(params: {
 	channelName?: string | null
 	purpose?: string | null
 }): string {
-	const label = params.channelName?.trim()
-		? `the private channel #${params.channelName.trim()}`
+	const channelName = clampEntityContext(
+		params.channelName?.trim() ?? "",
+		MAX_ENTITY_CONTEXT_NAME_CHARS,
+	)
+	const label = channelName
+		? `the private channel #${channelName}`
 		: "this private channel"
-	const purposeLine = params.purpose?.trim()
-		? `Purpose: ${params.purpose.trim()}`
-		: ""
-	return [
-		`This is ${label}.`,
-		purposeLine,
-		"Capture company-relevant knowledge scoped to this channel's members and topics. When a fact is clearly about one teammate, save it with that teammate's stable person_<slack_user_id> memory tag.",
-		"Do NOT leak this into the shared brain.",
-		BRAIN_CAPTURE_POLICY,
-	]
-		.filter(Boolean)
-		.join("\n")
+	const opening = `This is ${label}.`
+	const scope =
+		"Capture company-relevant knowledge scoped to this channel's members and topics. When a fact is clearly about one teammate, save it with that teammate's stable person_<slack_user_id> memory tag."
+	const noLeak = "Do NOT leak this into the shared brain."
+	const purposeLine = entityContextFreeTextLine({
+		prefix: "Purpose: ",
+		text: params.purpose,
+		fixedLength: entityContextFixedLength([
+			opening,
+			scope,
+			noLeak,
+			BRAIN_CAPTURE_POLICY,
+		]),
+	})
+	return clampEntityContext(
+		[opening, purposeLine, scope, noLeak, BRAIN_CAPTURE_POLICY]
+			.filter(Boolean)
+			.join("\n"),
+	)
 }
