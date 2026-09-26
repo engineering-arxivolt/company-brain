@@ -16,9 +16,11 @@ import { brainFallbackModelFor, TRIAGE_MODEL } from "./model-profile"
 
 // Workers AI LanguageModel v2 adapter
 function createWorkersAIModel(modelId: string, aiBinding: Ai): LanguageModel {
-	return {
+	const model: LanguageModel & { __workersAI: true; __modelId: string } = {
 		specificationVersion: "v2",
 		modelId,
+		__workersAI: true,
+		__modelId: modelId,
 		async generateText(options) {
 			const { prompt, system, temperature, maxTokens, topP, stopSequences, seed } = options
 			// Convert AI SDK prompt format to Workers AI format
@@ -55,6 +57,7 @@ function createWorkersAIModel(modelId: string, aiBinding: Ai): LanguageModel {
 			}
 		},
 	} satisfies LanguageModelV2
+	return model
 }
 
 // Sentinel the gateway swaps for its stored provider key (BYOK).
@@ -216,6 +219,7 @@ export function hasBrainGateway(env: Env): boolean {
  * Route through a Cloudflare AI Gateway when one is configured: it holds the
  * provider keys and falls through the candidate list on failure. Without a
  * gateway the first candidate is called directly.
+ * Workers AI models (prefixed with @cf/) bypass the gateway since it doesn't support them.
  */
 export function wrapBrainGateway(
 	env: Env,
@@ -225,6 +229,13 @@ export function wrapBrainGateway(
 	if (!primary) {
 		throw new Error("[company-brain] no model candidates provided")
 	}
+	
+	// Check if the primary model is a Workers AI model - gateway doesn't support it
+	const isWorkersAI = (primary as any).__workersAI === true
+	if (isWorkersAI) {
+		return primary
+	}
+	
 	const config = brainGatewayConfig(env)
 	if (!config) return primary
 	const aigateway = createAiGateway(config)
@@ -233,14 +244,51 @@ export function wrapBrainGateway(
 }
 
 export function getBrainModel(modelName: SupportedModel, env: Env) {
-	const resolved = resolveModel(modelName, env)
+	let resolved: SupportedModel
+	try {
+		resolved = resolveModel(modelName, env)
+	} catch {
+		// If resolution fails, fall back to a known working model
+		resolved = "nemotron-3-ultra-free"
+	}
+
 	const gateway = hasBrainGateway(env)
 	const key = gateway ? GATEWAY_INJECTED_KEY : undefined
-	const candidates = [brainProviderModel(resolved, env, key)]
-	const fallback = brainFallbackModelFor(resolved)
-	if (fallback !== resolved && (gateway || providerHasKey(fallback, env))) {
-		candidates.push(brainProviderModel(fallback, env, key))
+	const candidates: LanguageModel[] = []
+
+	// Try primary model
+	try {
+		const primary = brainProviderModel(resolved, env, key)
+		if (primary) candidates.push(primary)
+	} catch (e) {
+		console.warn(`[company-brain] primary model ${resolved} failed:`, e)
 	}
+
+	// Try fallback model
+	try {
+		const fallback = brainFallbackModelFor(resolved)
+		if (fallback !== resolved && (gateway || providerHasKey(fallback, env))) {
+			const fb = brainProviderModel(fallback, env, key)
+			if (fb) candidates.push(fb)
+		}
+	} catch (e) {
+		console.warn(`[company-brain] fallback model failed:`, e)
+	}
+
+	// Ultimate fallback: OpenRouter free model
+	if (candidates.length === 0) {
+		try {
+			const ultimate = brainProviderModel("nemotron-3-ultra-free", env, key)
+			if (ultimate) candidates.push(ultimate)
+		} catch (e) {
+			console.error("[company-brain] all model candidates failed:", e)
+		}
+	}
+
+	if (candidates.length === 0) {
+		throw new Error("[company-brain] no model candidates provided")
+	}
+
 	return wrapBrainGateway(env, candidates)
 }
 
