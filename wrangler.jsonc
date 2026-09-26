@@ -45,15 +45,15 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "company-brain",
-			"database_id": "00000000-0000-0000-0000-000000000000",
+			"database_name": "company",
+			"database_id": "f30e54ef-e716-42d9-a01f-d5b6ed20f648",
 			"migrations_dir": "drizzle"
 		}
 	],
 	"kv_namespaces": [
 		{
 			"binding": "BRAIN_KV",
-			"id": "company_brain_kv"
+			"id": "356616be01244cad9b52c40bb6ff5a39"
 		}
 	],
 	"durable_objects": {
