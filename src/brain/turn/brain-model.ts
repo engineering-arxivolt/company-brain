@@ -29,8 +29,8 @@ const PROVIDER_DEFAULT_MODEL: Record<SupportedModelProvider, SupportedModel> = {
  * OpenAI-compatible endpoint (OpenRouter, Workers AI): OpenAI's own model ids
  * don't exist there. Triage runs on every message, so it takes the light one.
  */
-const OPENAI_COMPATIBLE_FALLBACK_MODEL: SupportedModel = "nemotron-3-ultra-free"
-const OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL: SupportedModel =
+export const OPENAI_COMPATIBLE_FALLBACK_MODEL: SupportedModel = "nemotron-3-ultra-free"
+export const OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL: SupportedModel =
 	"qwen3.8-27b-free"
 
 /** Base URL of the configured OpenAI-compatible endpoint, if any. */
@@ -38,7 +38,8 @@ export function openAiCompatibleBaseUrl(env: Env): string | undefined {
 	return env.OPENAI_BASE_URL?.trim() || undefined
 }
 
-function providerKey(
+/** Provider API key from environment, if set. */
+export function providerKey(
 	provider: SupportedModelProvider,
 	env: Env,
 ): string | undefined {

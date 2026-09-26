@@ -19,6 +19,8 @@ import { buildSlackPromptBatch } from "../slack/prompt-batch"
 import { getWorkspaceByTeamId } from "../slack/workspace"
 import { brainAgent, type CompanyBrainAgent } from "./agent"
 import type { PostTurnReflectPayload } from "./post-turn-reflect"
+import { getHeuristicModelForTask } from "./model-router"
+import { getBrainModel } from "./brain-model"
 
 const OBSERVE_SYSTEM = `You watch a Slack thread and note anything DURABLE about how the AI "company brain" itself should SHOW UP with this team — its own voice and operating posture. You are taking notes about the agent's persona, NOT recording company knowledge.
 
@@ -212,8 +214,10 @@ export async function observeInteractionStyle(
 	const priorContext = cursor.carriedState
 		? `What we already know about this team's style/operating:\n${cursor.carriedState}\n\n`
 		: ""
+	const observeModelName = getHeuristicModelForTask(env, "Classify team interaction style and durable preferences from Slack messages")
+	const observeModel = getBrainModel(observeModelName, env)
 	const { text } = await generateText({
-		model: fastModel(),
+		model: observeModel,
 		system: OBSERVE_SYSTEM,
 		prompt: `${priorContext}New messages:\n${convo}\n\nUse HUMAN evidence only. Never learn from AGENT_OR_BOT wording itself. Durable team-level style/operating note (or empty):`,
 	})
