@@ -21,6 +21,7 @@ import { brainAgent, type CompanyBrainAgent } from "./agent"
 import type { PostTurnReflectPayload } from "./post-turn-reflect"
 import { getHeuristicModelForTask } from "./model-router"
 import { getBrainModel } from "./brain-model"
+import { getModelInfo } from "@/lib/model-registry"
 
 const OBSERVE_SYSTEM = `You watch a Slack thread and note anything DURABLE about how the AI "company brain" itself should SHOW UP with this team — its own voice and operating posture. You are taking notes about the agent's persona, NOT recording company knowledge.
 
@@ -214,8 +215,10 @@ export async function observeInteractionStyle(
 	const priorContext = cursor.carriedState
 		? `What we already know about this team's style/operating:\n${cursor.carriedState}\n\n`
 		: ""
-	const observeModelName = getHeuristicModelForTask(env, "Classify team interaction style and durable preferences from Slack messages")
+	// Analyzing conversation history for durable style preferences = balanced tier
+	const observeModelName = getHeuristicModelForTask(env, "Analyze Slack conversation history to extract durable team interaction style and operating preferences")
 	const observeModel = getBrainModel(observeModelName, env)
+	console.log(`[company-brain][interaction-observe] model=${observeModelName} provider=${getModelInfo(observeModelName).provider}`)
 	const { text } = await generateText({
 		model: observeModel,
 		system: OBSERVE_SYSTEM,

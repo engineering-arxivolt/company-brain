@@ -2,7 +2,8 @@ import { createAnthropic } from "@ai-sdk/anthropic"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createXai } from "@ai-sdk/xai"
-import type { LanguageModel } from "ai"
+import { Ai } from "@cloudflare/ai"
+import type { LanguageModel, LanguageModelV2 } from "ai"
 import { createAiGateway } from "ai-gateway-provider"
 import { captureException } from "@/lib/capture"
 import {
@@ -12,6 +13,49 @@ import {
 	usesChatCompletions,
 } from "@/lib/model-registry"
 import { brainFallbackModelFor, TRIAGE_MODEL } from "./model-profile"
+
+// Workers AI LanguageModel v2 adapter
+function createWorkersAIModel(modelId: string, aiBinding: Ai): LanguageModel {
+	return {
+		specificationVersion: "v2",
+		modelId,
+		async generateText(options) {
+			const { prompt, system, temperature, maxTokens, topP, stopSequences, seed } = options
+			// Convert AI SDK prompt format to Workers AI format
+			const messages = []
+			if (system) messages.push({ role: "system", content: system })
+			if (typeof prompt === "string") {
+				messages.push({ role: "user", content: prompt })
+			} else if (Array.isArray(prompt)) {
+				// Handle structured prompt
+				for (const part of prompt) {
+					if (part.type === "text") {
+						messages.push({ role: "user", content: part.text })
+					}
+				}
+			}
+
+			const result = await aiBinding.run(modelId, {
+				messages,
+				temperature,
+				max_tokens: maxTokens,
+				top_p: topP,
+				stop: stopSequences,
+				seed,
+			})
+
+			const text = result.response?.text ?? ""
+			return {
+				text,
+				usage: {
+					promptTokens: result.usage?.prompt_tokens ?? 0,
+					completionTokens: result.usage?.completion_tokens ?? 0,
+				},
+				finishReason: result.finish_reason ?? "stop",
+			}
+		},
+	} satisfies LanguageModelV2
+}
 
 // Sentinel the gateway swaps for its stored provider key (BYOK).
 const GATEWAY_INJECTED_KEY = "CF_TEMP_TOKEN"
@@ -52,6 +96,8 @@ export function providerKey(
 			return env.GOOGLE_GENERATIVE_AI_API_KEY
 		case "xai":
 			return env.XAI_API_KEY
+		case "workers-ai":
+			return "workers-ai" // Special marker - uses env.AI binding
 	}
 }
 
@@ -62,6 +108,7 @@ export function availableProviders(env: Env): SupportedModelProvider[] {
 		"openai",
 		"google",
 		"xai",
+		"workers-ai",
 	]
 	return order.filter((provider) => providerKey(provider, env)?.trim())
 }
@@ -114,6 +161,11 @@ export function hasXai(env: Env): boolean {
 	return Boolean(env.XAI_API_KEY?.trim()) || hasBrainGateway(env)
 }
 
+/** Workers AI is always available when the AI binding is configured in wrangler.jsonc */
+export function hasWorkersAI(env: Env): boolean {
+	return env.AI !== undefined
+}
+
 export function brainProviderModel(
 	modelName: SupportedModel,
 	env: Env,
@@ -121,6 +173,9 @@ export function brainProviderModel(
 ): LanguageModel {
 	const { modelId, provider } = getModelInfo(modelName)
 	const apiKey = apiKeyOverride ?? providerKey(provider, env) ?? ""
+	
+	// Workers AI models (prefixed with @cf/)\n	if (modelId.startsWith("@cf/")) {\n		if (!hasWorkersAI(env)) {\n			throw new Error("[company-brain] Workers AI binding not configured")\n		}\n		// Create a LanguageModel v2 adapter for Workers AI\n		return createWorkersAIModel(modelId, env.AI)\n	}\n
+	
 	switch (provider) {
 		case "xai":
 			return createXai({ apiKey }).responses(modelId)
