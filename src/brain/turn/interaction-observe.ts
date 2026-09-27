@@ -21,7 +21,6 @@ import { brainAgent, type CompanyBrainAgent } from "./agent"
 import type { PostTurnReflectPayload } from "./post-turn-reflect"
 import { getHeuristicModelForTask } from "./model-router"
 import { getBrainModel } from "./brain-model"
-import { getModelInfo } from "@/lib/model-registry"
 
 const OBSERVE_SYSTEM = `You watch a Slack thread and note anything DURABLE about how the AI "company brain" itself should SHOW UP with this team — its own voice and operating posture. You are taking notes about the agent's persona, NOT recording company knowledge.
 
@@ -79,6 +78,96 @@ export type InteractionObserveResult =
 	| "retry"
 	| "terminal"
 	| "stale"
+
+/**
+ * Cheapest Workers AI text model used as the last-resort fallback when the
+ * OpenRouter free pool is exhausted. Cost is a fraction of a neuron per
+ * post-turn reflect call, well inside the 10,000 neurons/day free allocation.
+ */
+export const OBSERVE_FALLBACK_MODEL_ID = "@cf/meta/llama-3.2-1b-instruct"
+
+type WorkersAIRunResponse = {
+	response?: string
+	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+}
+
+/**
+ * Last-resort inference when the OpenRouter free pool is exhausted
+ * (`free-models-per-day`). Workers AI has its own separate free allocation —
+ * 10,000 neurons/day on the Workers free plan — so it still serves when
+ * OpenRouter returns 402/429 quota errors. The binding (`env.AI`) is already
+ * in wrangler.jsonc, no paid plan or credit card required. If Workers AI is
+ * unavailable the original error is rethrown so the existing retry/backoff
+ * path (`retryOwnedPostTurnReflect`) behaves exactly as before.
+ */
+async function generateObserveFallbackText(
+	env: Env,
+	prompt: string,
+	primaryError: unknown,
+): Promise<string> {
+	const status = errorStatus(primaryError)
+	const isQuotaError = status === 402 || status === 429
+	const poolExhausted = isQuotaError || isFreePoolMessage(primaryError)
+	if (!poolExhausted) throw primaryError
+	if (!env.AI) {
+		console.warn(
+			"[company-brain][interaction-observe] openrouter free pool exhausted; no Workers AI binding, retrying via durable path",
+		)
+		throw primaryError
+	}
+	try {
+		const result = (await env.AI.run(OBSERVE_FALLBACK_MODEL_ID, {
+			messages: [
+				{ role: "system", content: OBSERVE_SYSTEM },
+				{ role: "user", content: prompt },
+			],
+		})) as WorkersAIRunResponse
+		const text = typeof result?.response === "string" ? result.response : ""
+		console.log(
+			`[company-brain][interaction-observe] openrouter free pool exhausted (status=${status ?? "unknown"}); served via ${OBSERVE_FALLBACK_MODEL_ID} chars=${text.length}`,
+		)
+		return text
+	} catch (fallbackError) {
+		console.warn(
+			`[company-brain][interaction-observe] workers-ai fallback failed, retrying via durable path: ${
+				fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+			}`,
+		)
+		throw primaryError
+	}
+}
+
+function walkErrorChain(value: unknown, visit: (record: Record<string, unknown>) => void): void {
+	const seen = new Set<unknown>()
+	let current: unknown = value
+	for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth += 1) {
+		if (typeof current !== "object" || seen.has(current)) return
+		seen.add(current)
+		const record = current as Record<string, unknown>
+		visit(record)
+		if (record.lastError !== undefined) current = record.lastError
+		else if (record.cause !== undefined) current = record.cause
+		else return
+	}
+}
+
+function errorStatus(error: unknown): number | undefined {
+	let found: number | undefined
+	walkErrorChain(error, (record) => {
+		const status = record.statusCode ?? record.status
+		if (typeof status === "number") found ??= status
+	})
+	return found
+}
+
+function isFreePoolMessage(error: unknown): boolean {
+	let matched = false
+	walkErrorChain(error, (record) => {
+		const message = record.message
+		if (typeof message === "string" && /free-models-per-day/i.test(message)) matched = true
+	})
+	return matched
+}
 
 function ensureObserveCursorTable(agent: CompanyBrainAgent): void {
 	agent.sql`
@@ -215,15 +304,19 @@ export async function observeInteractionStyle(
 	const priorContext = cursor.carriedState
 		? `What we already know about this team's style/operating:\n${cursor.carriedState}\n\n`
 		: ""
-	// Analyzing conversation history for durable style preferences = balanced tier
-	const observeModelName = getHeuristicModelForTask(env, "Analyze Slack conversation history to extract durable team interaction style and operating preferences")
+	const observeModelName = getHeuristicModelForTask(env, "Classify team interaction style and durable preferences from Slack messages")
 	const observeModel = getBrainModel(observeModelName, env)
-	console.log(`[company-brain][interaction-observe] model=${observeModelName} provider=${getModelInfo(observeModelName).provider}`)
-	const { text } = await generateText({
-		model: observeModel,
-		system: OBSERVE_SYSTEM,
-		prompt: `${priorContext}New messages:\n${convo}\n\nUse HUMAN evidence only. Never learn from AGENT_OR_BOT wording itself. Durable team-level style/operating note (or empty):`,
-	})
+	const observePrompt = `${priorContext}New messages:\n${convo}\n\nUse HUMAN evidence only. Never learn from AGENT_OR_BOT wording itself. Durable team-level style/operating note (or empty):`
+	let text: string
+	try {
+		;({ text } = await generateText({
+			model: observeModel,
+			system: OBSERVE_SYSTEM,
+			prompt: observePrompt,
+		}))
+	} catch (err) {
+		text = await generateObserveFallbackText(env, observePrompt, err)
+	}
 	if (!isGenerationCurrent()) return "stale"
 	const note = text.trim()
 	if (isNonNote(note)) {

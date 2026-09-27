@@ -22,15 +22,12 @@ export const SUPPORTED_MODELS = [
 	"nemotron-3-super-free",
 	"qwen3.8-27b-free",
 	"gemma-4-31b-free",
-	// Workers AI models (via AI binding, no API key needed)
-	"@cf/meta/llama-3.2-1b-instruct",
-	"@cf/meta/llama-3.1-8b-instruct",
 	// Compatibility alias for chat/playground settings saved before the 3.1 upgrade.
 	"gemini-2.5-pro",
 ] as const
 
 export type SupportedModel = (typeof SUPPORTED_MODELS)[number]
-export type SupportedModelProvider = "anthropic" | "openai" | "xai" | "google" | "workers-ai"
+export type SupportedModelProvider = "anthropic" | "openai" | "xai" | "google"
 export type ModelReasoningEffort = "low" | "medium" | "high" | "xhigh"
 
 const SUPPORTED_MODEL_SET = new Set<string>(SUPPORTED_MODELS)
@@ -101,16 +98,6 @@ const MODEL_INFO = {
 	"gemma-4-31b-free": {
 		modelId: "google/gemma-4-31b-it:free",
 		provider: "openai",
-		api: "chat",
-	},
-	"@cf/meta/llama-3.2-1b-instruct": {
-		modelId: "@cf/meta/llama-3.2-1b-instruct",
-		provider: "workers-ai",
-		api: "chat",
-	},
-	"@cf/meta/llama-3.1-8b-instruct": {
-		modelId: "@cf/meta/llama-3.1-8b-instruct",
-		provider: "workers-ai",
 		api: "chat",
 	},
 } as const satisfies Record<SupportedModel, SupportedModelInfo>

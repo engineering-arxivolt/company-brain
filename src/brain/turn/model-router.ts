@@ -13,7 +13,6 @@ import {
 	OPENAI_COMPATIBLE_FALLBACK_MODEL,
 	OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
 } from "./brain-model"
-import { hasWorkersAI } from "./brain-model"
 
 export type ModelTier = "fast" | "balanced" | "strong" | "long"
 
@@ -106,32 +105,6 @@ function classifyOpenRouterModels(models: OpenRouterModel[]): {
 	return { free, cheap, premium }
 }
 
-/** Workers AI free models (always available, no daily limits) */
-const WORKERS_AI_FREE_MODELS = {
-	fast: "@cf/meta/llama-3.2-1b-instruct",
-	balanced: "@cf/meta/llama-3.1-8b-instruct",
-	strong: "@cf/meta/llama-3.1-8b-instruct",
-	long: "@cf/meta/llama-3.1-8b-instruct",
-} as const
-
-/** Build tier config preferring Workers AI (no daily limits) over OpenRouter free */
-async function buildTierConfigWithWorkersAI(env: Env): Promise<ModelTierConfig> {
-	const hasWAI = hasWorkersAI(env)
-	
-	// If Workers AI available, use it for fast/balanced tiers (no daily limits)
-	if (hasWAI) {
-		return {
-			fast: WORKERS_AI_FREE_MODELS.fast as SupportedModel,
-			balanced: WORKERS_AI_FREE_MODELS.balanced as SupportedModel,
-			strong: WORKERS_AI_FREE_MODELS.strong as SupportedModel,
-			long: WORKERS_AI_FREE_MODELS.long as SupportedModel,
-		}
-	}
-
-	// Fallback to OpenRouter dynamic config
-	return buildOpenRouterTierConfig(env)
-}
-
 /** Build dynamic tier config from OpenRouter catalog */
 async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	const models = await fetchOpenRouterModels(env)
@@ -194,11 +167,6 @@ async function getDefaultTierConfig(env: Env): Promise<ModelTierConfig> {
 	const hasOpenRouter = Boolean(openAiCompatibleBaseUrl(env))
 	const hasGoogle = providers.includes("google")
 	const hasXAI = providers.includes("xai")
-
-	// Workers AI takes priority for free tier (no daily limits)
-	if (hasWorkersAI(env)) {
-		return buildTierConfigWithWorkersAI(env)
-	}
 
 	// Determine primary provider (first available in preference order)
 	const primaryProvider = providers[0]
@@ -371,17 +339,6 @@ export function getHeuristicModelForTask(env: Env, taskDescription: string): Sup
 		const hasAnthropic = providers.includes("anthropic")
 		const hasOpenRouter = Boolean(openAiCompatibleBaseUrl(env))
 		const primaryProvider = providers[0]
-		const hasWAI = hasWorkersAI(env)
-
-		// Workers AI takes priority (no daily limits)
-		if (hasWAI) {
-			return {
-				fast: WORKERS_AI_FREE_MODELS.fast as SupportedModel,
-				balanced: WORKERS_AI_FREE_MODELS.balanced as SupportedModel,
-				strong: WORKERS_AI_FREE_MODELS.strong as SupportedModel,
-				long: WORKERS_AI_FREE_MODELS.long as SupportedModel,
-			}
-		}
 
 		if (hasOpenRouter && primaryProvider === "openai") {
 			// On OpenRouter free plan: use different free models for each tier
