@@ -1,4 +1,5 @@
 import { configureFromEnv } from "../../config"
+import { configurePostHog } from "../../compat/lib/posthog"
 import { hydrateSecrets } from "../../setup/secrets"
 import { runInDbScope } from "@repo/db"
 import {
@@ -203,6 +204,10 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 	override async onStart(): Promise<void> {
 		await hydrateSecrets(this.env)
 		configureFromEnv(this.env)
+		configurePostHog({
+			POSTHOG_API_KEY: this.env.POSTHOG_API_KEY ?? this.env.POSTHOG_KEY,
+			POSTHOG_HOST: this.env.POSTHOG_HOST,
+		})
 		return (await this.loadImpl()).onStart(this)
 	}
 

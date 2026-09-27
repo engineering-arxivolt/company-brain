@@ -69,6 +69,7 @@ const PROVIDER_DEFAULT_MODEL: Record<SupportedModelProvider, SupportedModel> = {
 	openai: "gpt-5.6",
 	google: "gemini-3.1-pro-preview",
 	xai: "grok-4.5",
+	"workers-ai": "@cf/meta/llama-3.1-8b-instruct",
 }
 
 /**
@@ -100,7 +101,7 @@ export function providerKey(
 		case "xai":
 			return env.XAI_API_KEY
 		case "workers-ai":
-			return "workers-ai" // Special marker - uses env.AI binding
+			return hasWorkersAI(env) ? "workers-ai" : undefined // AI binding only
 	}
 }
 
@@ -123,7 +124,16 @@ export function availableProviders(env: Env): SupportedModelProvider[] {
  */
 function resolveModel(modelName: SupportedModel, env: Env): SupportedModel {
 	const { provider } = getModelInfo(modelName)
-	if (providerKey(provider, env)?.trim()) return modelName
+	// Chat-completions models need their endpoint, not just any key: without
+	// OPENAI_BASE_URL the call below would fail with a confusing error.
+	if (providerKey(provider, env)?.trim()) {
+		if (!usesChatCompletions(modelName) || openAiCompatibleBaseUrl(env)) return modelName
+		const error = new Error(
+			`[company-brain] ${modelName} runs on an OpenAI-compatible chat endpoint, but OPENAI_BASE_URL is not set.`,
+		)
+		captureException(error, { tags: { feature: "company_brain" } })
+		throw error
+	}
 	const fallbackProvider = availableProviders(env)[0]
 	if (!fallbackProvider) {
 		const error = new Error(
@@ -177,7 +187,15 @@ export function brainProviderModel(
 	const { modelId, provider } = getModelInfo(modelName)
 	const apiKey = apiKeyOverride ?? providerKey(provider, env) ?? ""
 	
-	// Workers AI models (prefixed with @cf/)\n	if (modelId.startsWith("@cf/")) {\n		if (!hasWorkersAI(env)) {\n			throw new Error("[company-brain] Workers AI binding not configured")\n		}\n		// Create a LanguageModel v2 adapter for Workers AI\n		return createWorkersAIModel(modelId, env.AI)\n	}\n
+	// Workers AI models (prefixed with @cf/)
+	if (modelId.startsWith("@cf/")) {
+		if (!hasWorkersAI(env)) {
+			throw new Error("[company-brain] Workers AI binding not configured")
+		}
+		// Create a LanguageModel v2 adapter for Workers AI
+		return createWorkersAIModel(modelId, env.AI)
+	}
+
 	
 	switch (provider) {
 		case "xai":
@@ -200,6 +218,8 @@ export function brainProviderModel(
 			return createAnthropic({ apiKey })(modelId)
 		case "google":
 			return createGoogleGenerativeAI({ apiKey })(modelId)
+		case "workers-ai":
+			throw new Error("[company-brain] use @cf/ model ids for Workers AI")
 	}
 }
 
@@ -244,13 +264,11 @@ export function wrapBrainGateway(
 }
 
 export function getBrainModel(modelName: SupportedModel, env: Env) {
-	let resolved: SupportedModel
-	try {
-		resolved = resolveModel(modelName, env)
-	} catch {
-		// If resolution fails, fall back to a known working model
-		resolved = "nemotron-3-ultra-free"
-	}
+	// resolveModel throws when nothing can serve the request (no key, no
+	// endpoint, no gateway, no AI binding). Let it throw: swallowing it here
+	// turned a clear "OPENAI_BASE_URL missing" error into a confusing
+	// "no model candidates" error two steps later.
+	const resolved = resolveModel(modelName, env)
 
 	const gateway = hasBrainGateway(env)
 	const key = gateway ? GATEWAY_INJECTED_KEY : undefined

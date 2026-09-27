@@ -59,6 +59,10 @@ interface Env {
 	CONTEXT_DEV_API_KEY?: string
 	/** Optional Firecrawl key. Without one, web tools use its free keyless tier. */
 	FIRECRAWL_API_KEY?: string
+	/** Optional PostHog key; analytics + LLM observability. Unset = silent no-op. */
+	POSTHOG_API_KEY?: string
+	POSTHOG_KEY?: string
+	POSTHOG_HOST?: string
 }
 
 interface Env {

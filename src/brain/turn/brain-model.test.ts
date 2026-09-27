@@ -55,8 +55,8 @@ describe("free OpenAI-compatible models", () => {
 
 	it("reports the endpoint and provider order for a one-key deployment", () => {
 		expect(openAiCompatibleBaseUrl(openRouterEnv)).toBe("https://openrouter.ai/api/v1")
-		// Workers AI is available in test env via vitest, so both providers are reported
-		expect(availableProviders(openRouterEnv)).toEqual(["openai", "workers-ai"])
+		// Workers AI needs the env.AI binding, absent in plain unit tests.
+		expect(availableProviders(openRouterEnv)).toEqual(["openai"])
 	})
 
 	it("offers the free models in the settings choices", () => {
