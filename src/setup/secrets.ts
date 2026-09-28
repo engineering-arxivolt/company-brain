@@ -35,7 +35,9 @@ export function providerForModelKey(
 ): "anthropic" | "openai" | "google" | "xai" | null {
 	if (key.startsWith("sk-ant-")) return "anthropic"
 	if (key.startsWith("xai-")) return "xai"
-	if (key.startsWith("AIza")) return "google"
+	// Google issues two key formats: classic AI Studio keys ("AIza…") and the
+	// newer "AQ."-prefixed keys. Both work against generativelanguage.googleapis.com.
+	if (key.startsWith("AIza") || key.startsWith("AQ.")) return "google"
 	if (key.startsWith("sk-")) return "openai"
 	return null
 }

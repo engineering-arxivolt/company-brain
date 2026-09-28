@@ -189,10 +189,10 @@ async function getDefaultTierConfig(env: Env): Promise<ModelTierConfig> {
 	// Google primary
 	if (hasGoogle) {
 		return {
-			fast: "gemini-3.1-pro-preview",
-			balanced: "gemini-3.1-pro-preview",
-			strong: "gemini-3.1-pro-preview",
-			long: "gemini-3.1-pro-preview",
+			fast: "gemini-3.8-flash",
+			balanced: "gemini-3.8-flash",
+			strong: "gemini-3.8-flash",
+			long: "gemini-3.8-flash",
 		}
 	}
 
@@ -302,7 +302,7 @@ export function getModelForTierSync(env: Env, tier: ModelTier): SupportedModel {
 	}
 
 	if (providers.includes("google")) {
-		const m = "gemini-3.1-pro-preview" as SupportedModel
+		const m = "gemini-3.8-flash" as SupportedModel
 		return { fast: m, balanced: m, strong: m, long: m }[tier]
 	}
 
@@ -356,7 +356,7 @@ export function getHeuristicModelForTask(env: Env, taskDescription: string): Sup
 		}
 
 		if (providers.includes("google")) {
-			const m = "gemini-3.1-pro-preview" as SupportedModel
+			const m = "gemini-3.8-flash" as SupportedModel
 			return { fast: m, balanced: m, strong: m, long: m }
 		}
 

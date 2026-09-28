@@ -7,6 +7,7 @@ describe("providerForModelKey", () => {
 		expect(providerForModelKey("sk-proj-abc")).toBe("openai")
 		expect(providerForModelKey("sk-abc")).toBe("openai")
 		expect(providerForModelKey("AIzaSyAbc")).toBe("google")
+		expect(providerForModelKey("AQ.Ab8RN6J6CLXVj")).toBe("google")
 		expect(providerForModelKey("xai-abc")).toBe("xai")
 		expect(providerForModelKey("something-else")).toBeNull()
 	})

@@ -76,14 +76,15 @@ let queue: Array<Record<string, unknown>> = []
 const MAX_QUEUE = 100
 
 function enqueue(event: string, distinctId: string, properties: unknown, groups: unknown): void {
-	if (!posthogConfig()) return
+	const cfg = posthogConfig()
+	if (!cfg) return
 	if (queue.length >= MAX_QUEUE) queue.shift()
 	const props = event.startsWith("$ai_") && typeof properties === "object" && properties !== null
 		? { ...(properties as Record<string, unknown>), $lib: "company-brain-worker" }
 		: { ...safeProps(properties), $lib: "company-brain-worker" }
 	queue.push({
 		event,
-		distinctId,
+		distinct_id: distinctId,
 		properties: props,
 		...(groups && typeof groups === "object" ? { groups } : {}),
 	})
@@ -172,11 +173,15 @@ export async function flushTelemetry(): Promise<void> {
 	const batch = queue
 	queue = []
 	try {
-		await fetch(`${cfg.host}/batch/`, {
+		const res = await fetch(`${cfg.host}/batch/`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ api_key: cfg.key, batch }),
 		})
+		if (!res.ok) {
+			const text = await res.text()
+			console.warn(`[company-brain][posthog] flush failed: ${res.status} ${text}`)
+		}
 	} catch {
 		// Telemetry never breaks the turn.
 	}

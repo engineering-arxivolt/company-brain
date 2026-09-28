@@ -22,11 +22,11 @@ export type ModelProfile<ModelName extends BrainProfileModel = SupportedModel> =
 		maxSteps: number
 	}
 
-export const BRAIN_MODEL = "grok-4.5" as const
+export const BRAIN_MODEL = "gemini-3.8-flash" as const
 export const BRAIN_FALLBACK_MODEL = "claude-sonnet-5" as const
 export const BRAIN_FALLBACK_MODEL_FOR_ANTHROPIC = "gpt-5.6" as const
 export const TRIAGE_MODEL = "claude-haiku-4.5" as const
-export const RESEARCH_MODEL = "grok-4.5" as const
+export const RESEARCH_MODEL = "gemini-3.8-flash" as const
 export const BRAIN_MAIN_EFFORT = "high" as const satisfies Effort
 export const BRAIN_TRIAGE_EFFORT = "low" as const satisfies Effort
 export const MAX_STEPS = 60
@@ -40,6 +40,7 @@ export const BRAIN_MAIN_MODEL_CHOICES = [
 	"grok-4.5",
 	"gpt-5.6",
 	"gpt-5.5",
+	"gemini-3.8-flash",
 	"nemotron-3-ultra-free",
 	"nemotron-3-super-free",
 ] as const satisfies readonly SupportedModel[]

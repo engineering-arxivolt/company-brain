@@ -16,14 +16,20 @@ export const SUPPORTED_MODELS = [
 	"claude-sonnet-4.6",
 	"claude-haiku-4.5",
 	"gemini-3.1-pro-preview",
+	"gemini-3.8-flash",
 	// Free OpenRouter models, reached through its OpenAI-compatible endpoint
 	// (set OPENAI_BASE_URL). They speak chat completions, not the Responses API.
 	"nemotron-3-ultra-free",
 	"nemotron-3-super-free",
 	"qwen3.8-27b-free",
 	"gemma-4-31b-free",
+	// Anthropic models served by OpenRouter. Same weights as the native
+	// Anthropic ids, but billed through one OpenAI-compatible endpoint.
+	"claude-sonnet-5-openrouter",
 	// Compatibility alias for chat/playground settings saved before the 3.1 upgrade.
 	"gemini-2.5-pro",
+	// Workers AI models (prefixed with @cf/)
+	"@cf/meta/llama-3.2-1b-instruct",
 ] as const
 
 export type SupportedModel = (typeof SUPPORTED_MODELS)[number]
@@ -75,6 +81,10 @@ const MODEL_INFO = {
 		modelId: "gemini-3.1-pro-preview",
 		provider: "google",
 	},
+	"gemini-3.8-flash": {
+		modelId: "gemini-3.8-flash",
+		provider: "google",
+	},
 	"gemini-2.5-pro": {
 		modelId: "gemini-3.1-pro-preview",
 		provider: "google",
@@ -97,6 +107,16 @@ const MODEL_INFO = {
 	},
 	"gemma-4-31b-free": {
 		modelId: "google/gemma-4-31b-it:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"claude-sonnet-5-openrouter": {
+		modelId: "anthropic/claude-sonnet-5",
+		provider: "openai",
+		api: "chat",
+	},
+	"@cf/meta/llama-3.2-1b-instruct": {
+		modelId: "@cf/meta/llama-3.2-1b-instruct",
 		provider: "openai",
 		api: "chat",
 	},
@@ -192,6 +212,7 @@ export function getModelReasoningProviderOptions(
 			// on the fast non-thinking path for this model.
 			return {}
 		case "gemini-3.1-pro-preview":
+		case "gemini-3.8-flash":
 		case "gemini-2.5-pro":
 			return {
 				google: {
@@ -204,6 +225,8 @@ export function getModelReasoningProviderOptions(
 		case "nemotron-3-super-free":
 		case "qwen3.8-27b-free":
 		case "gemma-4-31b-free":
+		case "@cf/meta/llama-3.2-1b-instruct":
+		case "claude-sonnet-5-openrouter":
 			// Chat-completions endpoints take no Responses-API reasoning options;
 			// these models decide their own reasoning behaviour.
 			return {}
@@ -247,6 +270,7 @@ export function getModelInstantProviderOptions(
 				} satisfies AnthropicProviderOptions,
 			}
 		case "gemini-3.1-pro-preview":
+		case "gemini-3.8-flash":
 		case "gemini-2.5-pro":
 			return {
 				google: {
@@ -257,6 +281,8 @@ export function getModelInstantProviderOptions(
 		case "nemotron-3-super-free":
 		case "qwen3.8-27b-free":
 		case "gemma-4-31b-free":
+		case "@cf/meta/llama-3.2-1b-instruct":
+		case "claude-sonnet-5-openrouter":
 			return {}
 	}
 }

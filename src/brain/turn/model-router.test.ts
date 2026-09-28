@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { routeModelTier, getHeuristicModelForTask } from "./model-router"
-import type { Env } from "../../env-supplement.d.ts"
 
 const mockEnv = {
 	TYPESAFE_API_KEY: "test-key",
@@ -8,15 +7,15 @@ const mockEnv = {
 	OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
 } as unknown as Env
 
-const originalFetch = global.fetch
+const originalFetch = globalThis.fetch
 
 describe("model-router", () => {
 	beforeEach(() => {
-		global.fetch = vi.fn()
+		globalThis.fetch = vi.fn()
 	})
 
 	afterEach(() => {
-		global.fetch = originalFetch
+		globalThis.fetch = originalFetch
 	})
 
 	it("heuristic picks fast for simple task", () => {
@@ -44,7 +43,7 @@ describe("model-router", () => {
 	})
 
 	it("JEV routes simple classification to fast tier", async () => {
-		;(global.fetch as any).mockResolvedValue({
+		;(globalThis.fetch as any).mockResolvedValue({
 			ok: true,
 			json: async () => ({
 				model: "jev-1.13.0",
@@ -64,7 +63,7 @@ describe("model-router", () => {
 	})
 
 	it("JEV routes complex research to strong tier", async () => {
-		;(global.fetch as any).mockResolvedValue({
+		;(globalThis.fetch as any).mockResolvedValue({
 			ok: true,
 			json: async () => ({
 				model: "jev-1.13.0",
@@ -84,7 +83,7 @@ describe("model-router", () => {
 	})
 
 	it("JEV falls back to balanced on low confidence", async () => {
-		;(global.fetch as any).mockResolvedValue({
+		;(globalThis.fetch as any).mockResolvedValue({
 			ok: true,
 			json: async () => ({
 				model: "jev-1.13.0",
@@ -104,7 +103,7 @@ describe("model-router", () => {
 	})
 
 	it("JEV falls back to balanced on API error", async () => {
-		;(global.fetch as any).mockRejectedValue(new Error("API down"))
+		;(globalThis.fetch as any).mockRejectedValue(new Error("API down"))
 
 		const tier = await routeModelTier(mockEnv, "Any task", undefined, "test-trace")
 		expect(tier).toBe("balanced")

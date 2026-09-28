@@ -8,6 +8,7 @@ import { memoryDocsFromWriteback } from "../memory/writeback"
 import {
 	captureBrainTurnUpdateApplied,
 	createBrainTurnTelemetry,
+	degradedAsError,
 } from "../observability"
 import {
 	type BrainToolCallEvent,
@@ -476,6 +477,7 @@ export async function resumeTurnAfterApproval(
 							snapshot?.toolNames ??
 							toolDiscovery.activeToolNames(Object.keys(tools)),
 						latencyMs: snapshot ? Date.now() - snapshot.startedAt : undefined,
+						...degradedAsError(event.providerMetadata),
 					})
 				},
 				onFinish: async (event) => {

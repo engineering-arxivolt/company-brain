@@ -128,7 +128,9 @@ export function runModelLoop(args: RunModelLoopArgs) {
 	}
 
 	return args.deps.streamText({
-		model: args.deps.getModel(args.profile.name, args.env),
+		// The main turn is the one call worth spending a frontier model on; the
+		// triage and approval-classification calls leave this off.
+		model: args.deps.getModel(args.profile.name, args.env, { mainTurn: true }),
 		system: args.system(),
 		messages: initialMessages,
 		tools: args.tools,

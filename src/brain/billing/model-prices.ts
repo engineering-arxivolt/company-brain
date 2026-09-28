@@ -75,6 +75,13 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		cacheReadPerMTok: 0.2,
 		cacheWritePerMTok: 2.5,
 	},
+	// Same weights as `claude-sonnet-5`; OpenRouter passes Anthropic's rates through.
+	"claude-sonnet-5-openrouter": {
+		inputPerMTok: 2,
+		outputPerMTok: 10,
+		cacheReadPerMTok: 0.2,
+		cacheWritePerMTok: 2.5,
+	},
 	"claude-sonnet-4.6": {
 		inputPerMTok: 3,
 		outputPerMTok: 15,
@@ -93,6 +100,11 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		inputPerMTok: 2,
 		outputPerMTok: 12,
 		cacheReadPerMTok: 0.2,
+	},
+	"gemini-3.8-flash": {
+		inputPerMTok: 0.35,
+		outputPerMTok: 1.05,
+		cacheReadPerMTok: 0.0875,
 	},
 	"gemini-2.5-pro": {
 		inputPerMTok: 1.25,
@@ -114,6 +126,10 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		outputPerMTok: 0,
 	},
 	"gemma-4-31b-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
+	"@cf/meta/llama-3.2-1b-instruct": {
 		inputPerMTok: 0,
 		outputPerMTok: 0,
 	},
