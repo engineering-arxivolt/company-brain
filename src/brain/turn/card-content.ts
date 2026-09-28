@@ -1,3 +1,4 @@
+import type { BrainSource } from "../sources"
 import type { TurnCardSource } from "./types"
 
 // Tool results are usually structured: brain tools return { output, success },
@@ -45,8 +46,36 @@ const SLACK_LINK_RE = /<(https?:\/\/[^|>]+)\|([^>]+)>/gi
 const URL_RE = /https?:\/\/[^\s<>|)\]]+/gi
 const MAX_SOURCES = 3
 
-/** Pull up to 3 unique links out of a tool's output for the card's sources row. */
+/**
+ * Sources the tool supplied as data. Present means the tool knew exactly what it
+ * read, so trust it; absent means fall back to scraping, which is a guess.
+ */
+function suppliedSources(output: unknown): TurnCardSource[] | undefined {
+	if (!output || typeof output !== "object") return undefined
+	const sources = (output as Record<string, unknown>).sources
+	if (!Array.isArray(sources)) return undefined
+	const seen = new Set<string>()
+	const out: TurnCardSource[] = []
+	for (const entry of sources) {
+		if (!entry || typeof entry !== "object") continue
+		const record = entry as Partial<BrainSource>
+		const url = typeof record.source === "string" ? record.source.trim() : ""
+		if (!url || seen.has(url)) continue
+		seen.add(url)
+		if (out.length >= MAX_SOURCES) break
+		const title =
+			typeof record.title === "string" && record.title.trim()
+				? record.title.trim()
+				: sourceLabel(url)
+		out.push({ url, text: title.slice(0, 60) })
+	}
+	return out
+}
+
+/** Up to 3 sources for the card's row, from tool data when available. */
 export function extractCardSources(output: unknown): TurnCardSource[] {
+	const supplied = suppliedSources(output)
+	if (supplied) return supplied
 	const text = toDisplayText(output)
 	if (!text) return []
 	const seen = new Set<string>()
@@ -70,14 +99,20 @@ export function extractCardSources(output: unknown): TurnCardSource[] {
 // Public cards leak personal-connection data, so only these tools show raw output.
 const PUBLIC_CARD_PAYLOAD_TOOLS = new Set(["search_web"])
 
+/**
+ * Raw output stays restricted, but sources do not: a citation is provenance, and
+ * hiding it would leave the card asserting an answer with no visible evidence.
+ */
 export function cardOutputPayload(
 	toolName: string,
 	output: unknown,
 ): { output?: string; sources?: TurnCardSource[] } {
-	if (!PUBLIC_CARD_PAYLOAD_TOOLS.has(toolName)) return {}
+	const sources = extractCardSources(output)
 	return {
-		output: summarizeToolOutput(output),
-		sources: extractCardSources(output),
+		...(PUBLIC_CARD_PAYLOAD_TOOLS.has(toolName)
+			? { output: summarizeToolOutput(output) }
+			: {}),
+		...(sources.length ? { sources } : {}),
 	}
 }
 

@@ -1,4 +1,5 @@
 import { generateId } from "@repo/lib/generate-id"
+import { isDegradedProviderMetadata } from "../turn/brain-model"
 import {
 	captureAiGeneration,
 	captureAiGenerationAwaitable,
@@ -762,4 +763,77 @@ export function captureBrainTurnUpdateApplied(args: {
 			brain_trace_id: args.traceId,
 		},
 	})
+}
+
+/**
+ * PostHog half of the verifiability invariant. Mirrors one durable entry from
+ * `brain_decision_log` so a scenario's decision chain is replayable in order,
+ * carrying the confidence and runner-up distribution we already receive.
+ */
+export function captureBrainDecision(args: {
+	orgId: string
+	distinctId: string
+	traceId: string
+	sessionId?: string
+	kind: string
+	subject: string
+	choice: string
+	reason?: string
+	confidence?: number
+	alternatives?: Record<string, number>
+	source: string
+	actor?: string
+	supersedes?: string
+}) {
+	captureAiSpan({
+		distinctId: args.distinctId,
+		traceId: args.traceId,
+		sessionId: args.sessionId,
+		spanId: generateId(),
+		parentId: args.traceId,
+		spanName: `company_brain_decision_${args.kind}`,
+		inputState: {
+			subject: args.subject,
+			source: args.source,
+			actor: args.actor,
+		},
+		outputState: {
+			choice: args.choice,
+			reason: args.reason,
+			confidence: args.confidence,
+			alternatives: args.alternatives,
+			supersedes: args.supersedes,
+		},
+		groups: { company: args.orgId },
+		properties: {
+			app: "api",
+			feature: "company_brain",
+			orgId: args.orgId,
+			source: "brain_decision",
+			decision_kind: args.kind,
+			decision_subject: args.subject,
+			decision_choice: args.choice,
+			decision_source: args.source,
+			decision_confidence: args.confidence,
+			decision_actor: args.actor,
+			brain_trace_id: args.traceId,
+		},
+	})
+}
+
+/**
+ * A total provider outage is served as a successful-looking text response (the
+ * degraded notice), so without this it lands in PostHog as a fast, error-free
+ * generation by whichever model was tried last. Recording it as the error it is
+ * keeps the outage visible on the dashboards.
+ */
+export function degradedAsError(
+	providerMetadata: unknown,
+): { isError?: boolean; error?: string } {
+	const marker = isDegradedProviderMetadata(providerMetadata)
+	if (!marker.degraded) return {}
+	return {
+		isError: true,
+		error: `all model candidates out of quota (${marker.exhausted || "unknown"})`,
+	}
 }

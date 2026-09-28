@@ -24,9 +24,21 @@ export type McpOperationEffect =
 	| "privileged"
 	| "unknown"
 
+export type McpClassifierSource = "jev" | "llm" | "unavailable"
+
+/** How an effect verdict was reached, so an audit can tell JEV from an LLM guess. */
+export type McpClassifierProvenance = {
+	source: McpClassifierSource
+	model?: string
+	confidence?: number
+	/** Full distribution when the decider reported one. */
+	alternatives?: Record<string, number>
+}
+
 export type McpApprovalDecision = {
 	effect: McpOperationEffect
 	reason: string
+	provenance: McpClassifierProvenance
 }
 
 export type McpApprovalClassifierInput = {
@@ -139,10 +151,12 @@ export function createMcpApprovalClassifier(args: {
 			const cached = cache.get(cacheKey)
 			if (cached) return cached
 			if (calls >= callLimit) {
-				return Promise.resolve({
+				const decision: McpApprovalDecision = {
 					effect: "unknown",
 					reason: `The per-program approval classifier budget of ${callLimit} calls was exhausted.`,
-				})
+					provenance: { source: "unavailable" },
+				}
+				return Promise.resolve(decision)
 			}
 
 			let serializedArguments: string
@@ -152,12 +166,14 @@ export function createMcpApprovalClassifier(args: {
 				return Promise.resolve({
 					effect: "unknown",
 					reason: "The executable arguments could not be serialized safely.",
+					provenance: { source: "unavailable" },
 				})
 			}
 			if (serializedArguments.length > CLASSIFIER_ARGUMENT_LIMIT) {
 				return Promise.resolve({
 					effect: "unknown",
 					reason: `The executable arguments exceed the ${CLASSIFIER_ARGUMENT_LIMIT}-character classifier limit.`,
+					provenance: { source: "unavailable" },
 				})
 			}
 
@@ -213,10 +229,17 @@ export function createMcpApprovalClassifier(args: {
 								console.log(
 									`[company-brain][${args.traceId}] connected-app approval classified via Jev (System 1) app=${input.serverSlug} method=${input.toolName} effect=${chosenEffect} confidence=${answer.confidence} ms=${Date.now() - startedAt}`,
 								)
-								return {
+								const classified: McpApprovalDecision = {
 									effect: chosenEffect,
 									reason: `Classified as ${chosenEffect} via System 1 model (confidence: ${Math.round((answer.confidence ?? 1) * 100)}%).`,
+									provenance: {
+										source: "jev",
+										model: jevRes.model,
+										confidence: answer.confidence,
+										alternatives: answer.probabilities,
+									},
 								}
+								return classified
 							}
 						}
 					} catch (jevErr) {
@@ -248,10 +271,12 @@ export function createMcpApprovalClassifier(args: {
 					console.log(
 						`[company-brain][${args.traceId}] connected-app approval classified app=${input.serverSlug} method=${input.toolName} effect=${decision.effect} ms=${Date.now() - startedAt}`,
 					)
-					return {
+					const classified: McpApprovalDecision = {
 						effect: decision.effect,
 						reason: decision.reason.replace(/\s+/g, " ").trim().slice(0, 500),
+						provenance: { source: "llm", model: args.profile.name },
 					}
+					return classified
 				} catch (error) {
 					console.warn(
 						`[company-brain][${args.traceId}] connected-app approval classification unavailable app=${input.serverSlug} method=${input.toolName} ms=${Date.now() - startedAt} error=${error instanceof Error ? error.message : String(error)}`,
@@ -260,6 +285,7 @@ export function createMcpApprovalClassifier(args: {
 						effect: "unknown",
 						reason:
 							"The approval classifier was unavailable; requester approval is required.",
+						provenance: { source: "unavailable" },
 					}
 				}
 			})()

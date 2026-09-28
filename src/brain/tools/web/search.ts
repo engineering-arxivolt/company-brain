@@ -8,6 +8,7 @@ import {
 } from "@/lib/context-dev"
 import type { BrainCostLedger } from "../../billing/cost"
 import { logPreview } from "../../observability/log-utils"
+import type { SourcedToolOutput } from "../../sources"
 import { firecrawlSearch } from "./firecrawl"
 
 const SEARCH_TIMEOUT_MS = 15_000
@@ -82,9 +83,13 @@ export function createBrainWebSearchTool(
 				if (!kept.length) {
 					return `No web results for "${query}". Try different wording, or drop any site: filter.`
 				}
-				return kept
-					.map((r) => `- ${r.label}\n  ${r.url}\n  ${r.description}`)
-					.join("\n")
+				// Sources travel as data, not as text the card has to scrape back out.
+				return {
+					output: kept
+						.map((r) => `- ${r.label}\n  ${r.url}\n  ${r.description}`)
+						.join("\n"),
+					sources: kept.map((r) => ({ source: r.url, title: r.title })),
+				} satisfies SourcedToolOutput
 			} catch (err) {
 				console.warn(`[company-brain]${tag} search_web error:`, err)
 				// Rephrasing does nothing for a quota error, so say which it is.

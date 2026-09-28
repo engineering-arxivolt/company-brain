@@ -343,6 +343,11 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		return (await this.loadImpl()).getResearchState(this)
 	}
 
+	// Audit read: one scenario's decision chain, or this org's most recent.
+	async getDecisions(args: { orgId: string; traceId?: string; limit?: number }) {
+		return (await this.loadImpl()).getDecisions(this, args)
+	}
+
 	async getWorkspacePrompt(): Promise<string | null> {
 		return (await this.loadImpl()).getWorkspacePrompt(this)
 	}

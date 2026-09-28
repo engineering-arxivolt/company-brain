@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from "vitest"
 import { resolveSkillsWithJev } from "./resolver"
 import type { RuntimeSkill } from "./store"
 
+/** Captures brain_decision_log inserts so tests can assert what was recorded. */
+function fakeAgentWithSql() {
+	const decisions: unknown[][] = []
+	const agent = {
+		sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+			if (strings.join("?").includes("brain_decision_log")) {
+				decisions.push(values)
+			}
+			return []
+		},
+	} as any
+	return { agent, decisions }
+}
+
 describe("resolveSkillsWithJev", () => {
 	const sampleSkills: RuntimeSkill[] = [
 		{
@@ -10,7 +24,8 @@ describe("resolveSkillsWithJev", () => {
 			description: "How to triage production incidents and page on-call",
 			body: "Incident triage playbook steps...",
 			version: 1,
-			isOrg: true,
+			usageCount: 0,
+			lastUsedAt: null,
 			updatedAt: Date.now(),
 		},
 		{
@@ -19,7 +34,8 @@ describe("resolveSkillsWithJev", () => {
 			description: "Customer refund guidelines and approval thresholds",
 			body: "Refund playbook steps...",
 			version: 1,
-			isOrg: true,
+			usageCount: 0,
+			lastUsedAt: null,
 			updatedAt: Date.now(),
 		},
 	]
@@ -48,9 +64,11 @@ describe("resolveSkillsWithJev", () => {
 		globalThis.fetch = fetchMock
 
 		try {
+			const { agent, decisions } = fakeAgentWithSql()
 			const result = await resolveSkillsWithJev({
 				env: { TYPESAFE_API_KEY: "test-key" } as any,
-				agent: {} as any,
+				agent,
+				orgId: "org_1",
 				question: "Prod database latency spiked and errors are increasing",
 				visibleSkills: sampleSkills,
 				traceId: "test-trace",
@@ -58,12 +76,18 @@ describe("resolveSkillsWithJev", () => {
 
 			// Verify Jev was called
 			expect(fetchMock).toHaveBeenCalledTimes(1)
-			const [url, init] = fetchMock.mock.calls[0]
+			const [url, init] = fetchMock.mock.calls[0] ?? []
 			expect(url).toBe("https://api.typesafe.ai/v1/systemone")
 			expect(init.headers["Authorization"]).toBe("Bearer test-key")
-			
-			// The actual skill loading might fail in test env, but we verified the API call
-			// If skill loading succeeds, result would be populated
+
+			// The pick is recorded even though a no-op store cannot load the body.
+			expect(result).toBeNull()
+			expect(decisions).toHaveLength(1)
+			const values = decisions[0] ?? []
+			expect(values).toContain("org_1")
+			expect(values).toContain("skill_selection")
+			expect(values).toContain("incident-triage")
+			expect(values).toContain("jev:jev-1.13.0")
 		} finally {
 			globalThis.fetch = originalFetch
 		}
@@ -94,6 +118,7 @@ describe("resolveSkillsWithJev", () => {
 			const result = await resolveSkillsWithJev({
 				env: { TYPESAFE_API_KEY: "test-key" } as any,
 				agent: {} as any,
+				orgId: "org_1",
 				question: "What time is the team lunch today?",
 				visibleSkills: sampleSkills,
 			})
@@ -130,6 +155,7 @@ describe("resolveSkillsWithJev", () => {
 			const result = await resolveSkillsWithJev({
 				env: { TYPESAFE_API_KEY: "test-key" } as any,
 				agent: {} as any,
+				orgId: "org_1",
 				question: "Maybe an incident?",
 				visibleSkills: sampleSkills,
 			})
@@ -148,6 +174,7 @@ describe("resolveSkillsWithJev", () => {
 			const result = await resolveSkillsWithJev({
 				env: {} as any,
 				agent: {} as any,
+				orgId: "org_1",
 				question: "Some question",
 				visibleSkills: sampleSkills,
 			})

@@ -8,6 +8,7 @@ import {
 } from "@/lib/context-dev"
 import type { BrainCostLedger } from "../../billing/cost"
 import { logPreview } from "../../observability/log-utils"
+import type { SourcedToolOutput } from "../../sources"
 import { firecrawlScrape } from "./firecrawl"
 
 const SCRAPE_TIMEOUT_MS = 30_000
@@ -125,7 +126,10 @@ export function createBrainWebExtractTool(
 			console.log(
 				`[company-brain]${tag} web_extract finish ms=${Date.now() - t} pages=${pages.length}/${urls.length} chars=${output.length}${rateLimited ? " rateLimited=yes" : ""}`,
 			)
-			return output
+			return {
+				output,
+				sources: pages.map((p) => ({ source: p.url, title: p.title })),
+			} satisfies SourcedToolOutput
 		},
 	})
 }

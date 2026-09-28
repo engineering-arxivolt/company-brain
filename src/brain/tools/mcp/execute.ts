@@ -15,6 +15,7 @@ import { brainAgent, type CompanyBrainAgent } from "../../turn/agent"
 import type { TurnDeps } from "../../turn/deps"
 import { type SerializedToolError, ToolError } from "../../turn/errors"
 import type { ModelProfile } from "../../turn/model-profile"
+import { recordDecision } from "../../turn/decision-log"
 import {
 	type NativeCallRecord,
 	type TurnState,
@@ -51,6 +52,7 @@ import {
 	sandboxToolError,
 } from "./errors"
 import { createSerialOperationQueue } from "./operation-queue"
+import type { McpEffectDecision } from "./policy"
 import {
 	approvalForCodePause,
 	CONNECTED_APP_RUNTIME_NAME,
@@ -284,6 +286,29 @@ export function swallowedError(args: {
 		return args.calls.every((call) => call.status === "error")
 	}
 	return sourceContainsCatch(args.code) && resultClaimsData(args.result)
+}
+
+/** Durable record of how a connected-app call's effect was decided. */
+function recordEffectDecision(
+	agent: CompanyBrainAgent,
+	orgId: string,
+	traceId: string,
+	decision: McpEffectDecision & { method: string; serverSlug: string },
+): void {
+	const provenance = decision.provenance
+	recordDecision(agent, {
+		traceId,
+		orgId,
+		kind: "mcp_effect",
+		subject: `${decision.serverSlug}:${decision.method}`,
+		choice: decision.effect,
+		reason: decision.reason,
+		confidence: provenance?.confidence,
+		alternatives: provenance?.alternatives,
+		source: [decision.source, provenance?.source, provenance?.model]
+			.filter(Boolean)
+			.join(":"),
+	})
 }
 
 function brainContext(agent: CompanyBrainAgent): DurableObjectState {
@@ -969,6 +994,13 @@ export async function createConnectedAppRuntimeTools(args: {
 								target,
 								classifier,
 								ledger,
+								(decision) =>
+									recordEffectDecision(
+										args.agent,
+										args.orgId,
+										args.traceId,
+										decision,
+									),
 							),
 					)
 					const { runtime, output } = await executeWithResetRetry<
@@ -1117,6 +1149,8 @@ export async function createConnectedAppRuntimeTools(args: {
 							target,
 							classifier,
 							ledger,
+							(decision) =>
+								recordEffectDecision(args.agent, args.orgId, args.traceId, decision),
 						),
 				)
 				const runtime = buildRuntime({ ...args, connectors })

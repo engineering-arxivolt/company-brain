@@ -18,6 +18,7 @@ import {
 import {
 	captureBrainTurnUpdateApplied,
 	createBrainTurnTelemetry,
+	degradedAsError,
 } from "../observability"
 import {
 	type BrainToolCallEvent,
@@ -59,6 +60,7 @@ import {
 	compactMessagesAtBoundary,
 } from "./context"
 import { getTurnDeps } from "./deps"
+import { recordDecision } from "./decision-log"
 import {
 	selectTurnReply,
 	settleTurn,
@@ -181,6 +183,16 @@ export async function computeTurn(
 	const capture: TurnCapture = { memory: null, connect: null }
 	const telemetry = createBrainTurnTelemetry(org.id, userId, obs, profile.name)
 	const traceId = telemetry.traceId
+	recordDecision(agent, {
+		traceId,
+		orgId: org.id,
+		kind: "model_selection",
+		subject: "main_turn",
+		choice: profile.name,
+		reason: `Main turn resolved at effort ${profile.effort}.`,
+		source: "resolve_brain_main_profile",
+		actor: userId,
+	})
 	const costLedger = new BrainCostLedger()
 	// Pacing clock: when the person last saw a message, and whether they've heard
 	// anything at all. Reset when the model posts, so silence during long tool
@@ -433,6 +445,7 @@ export async function computeTurn(
 		const jevSkillSelection = await resolveSkillsWithJev({
 			env,
 			agent,
+			orgId: org.id,
 			userId: actor.userId,
 			question: question ?? "",
 			visibleSkills,
@@ -665,6 +678,7 @@ export async function computeTurn(
 							snapshot?.toolNames ??
 							toolDiscovery.activeToolNames(Object.keys(tools)),
 						latencyMs: snapshot ? Date.now() - snapshot.startedAt : undefined,
+						...degradedAsError(event.providerMetadata),
 					})
 				},
 				onFinish: async (event) => {

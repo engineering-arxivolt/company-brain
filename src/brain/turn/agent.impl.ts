@@ -60,6 +60,7 @@ import { ensureTriageTraceSamplingTable } from "../slack/triage-sampling"
 import { ensureTurnControlTables } from "../slack/turn-control"
 import { brainAgent, type CompanyBrainAgent } from "./agent"
 import { ensureApprovalTables } from "./approval"
+import { ensureDecisionTables } from "./decision-log"
 import {
 	type ApprovalExpiryPayload,
 	runApprovalExpiry as runApprovalExpiryImpl,
@@ -113,6 +114,7 @@ export {
 	runResearchTask,
 	syncResearchCardIfDone,
 } from "./research"
+export { getDecisions } from "./decision-log"
 
 import type { Schedule } from "agents"
 import { flushBrainTelemetry } from "../observability"
@@ -155,6 +157,7 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 	ensureBrainMemoryNodeTable(agent)
 	ensureBrainMemoryStateTable(agent)
 	ensureApprovalTables(agent)
+	ensureDecisionTables(agent)
 	ensureLeaseTables(agent)
 	ensureChimeBudgetTables(agent)
 	ensureSlackEventStoreTables(agent)

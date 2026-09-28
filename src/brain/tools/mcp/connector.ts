@@ -27,6 +27,7 @@ import type { ConnectedAppServerRef } from "./pause"
 import {
 	classifyMcpOperation,
 	decideMcpNativeCallPolicy,
+	type McpEffectDecision,
 	type McpNativeCallPolicyDecision,
 } from "./policy"
 import type { ToolProviderHandle } from "./provider"
@@ -272,6 +273,10 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 		readonly target: ConnectedAppTarget,
 		readonly classifier: McpApprovalClassifier,
 		readonly ledger: NativeCallLedger,
+		/** Fired for every effect decision, whichever path produced it. */
+		readonly onEffectDecided?: (
+			decision: McpEffectDecision & { method: string; serverSlug: string },
+		) => void,
 	) {
 		super(ctx, env)
 		this.#methods = catalogMethods(target.catalog, target.ref.connectorName)
@@ -381,6 +386,13 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 						trustedAnnotations: this.target.trustedAnnotations,
 						classifier: this.classifier,
 						effectOverride: args.effectOverride?.(input),
+					})
+					// Every effect decision is recorded, not just the ones a model
+					// made: a verb-map or trusted-annotation call is what usually gates.
+					this.onEffectDecided?.({
+						...classified,
+						method: args.method.sourceToolName,
+						serverSlug: this.target.ref.serverSlug,
 					})
 					return {
 						logicalInput,

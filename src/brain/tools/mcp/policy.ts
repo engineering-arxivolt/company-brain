@@ -1,6 +1,7 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js"
 import {
 	type McpApprovalClassifier,
+	type McpClassifierProvenance,
 	type McpOperationEffect,
 	operationIsRead,
 } from "./approval-classifier"
@@ -100,6 +101,14 @@ export function annotatedOperationEffect(args: {
 	return undefined
 }
 
+export type McpEffectDecision = {
+	effect: McpOperationEffect
+	source: string
+	reason: string
+	/** Present only when a model decided, so an audit can tell it from a verb. */
+	provenance?: McpClassifierProvenance
+}
+
 export async function classifyMcpOperation(args: {
 	serverSlug: string
 	method: string
@@ -110,7 +119,7 @@ export async function classifyMcpOperation(args: {
 	trustedAnnotations: boolean
 	classifier: McpApprovalClassifier
 	effectOverride?: McpOperationEffect
-}): Promise<{ effect: McpOperationEffect; source: string; reason: string }> {
+}): Promise<McpEffectDecision> {
 	if (args.effectOverride) {
 		return {
 			effect: args.effectOverride,
@@ -148,6 +157,7 @@ export async function classifyMcpOperation(args: {
 		effect: classified.effect,
 		source: "classifier",
 		reason: classified.reason,
+		provenance: classified.provenance,
 	}
 }
 

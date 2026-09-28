@@ -1,4 +1,5 @@
 import type { CompanyBrainAgent } from "../turn/agent"
+import { recordDecision } from "../turn/decision-log"
 import {
 	isTypeSafeConfigured,
 	querySystemOne,
@@ -26,12 +27,13 @@ const NONE_OF_THE_ABOVE = "none_of_the_above"
 export async function resolveSkillsWithJev(args: {
 	env: Env
 	agent: CompanyBrainAgent
+	orgId: string
 	userId?: string
 	question: string
 	visibleSkills: RuntimeSkill[]
 	traceId?: string
 }): Promise<ResolvedSkillSelection | null> {
-	const { env, agent, userId, question, visibleSkills, traceId } = args
+	const { env, agent, orgId, userId, question, visibleSkills, traceId } = args
 
 	if (!isTypeSafeConfigured(env) || !visibleSkills.length || !question.trim()) {
 		return null
@@ -82,20 +84,50 @@ export async function resolveSkillsWithJev(args: {
 			`[company-brain][${traceId ?? "turn"}] Jev skill routing choice=${chosenKey} confidence=${confidence} ms=${Date.now() - startedAt}`,
 		)
 
+		// Durable record: which playbook JEV picked, how sure it was, and the
+		// runner-up distribution, so a declined preload is auditable too.
+		const decided = (choice: string, reason: string) => {
+			if (!traceId) return
+			recordDecision(agent, {
+				traceId,
+				orgId,
+				kind: "skill_selection",
+				subject: question.slice(0, 120),
+				choice,
+				reason,
+				confidence,
+				alternatives: probabilities,
+				source: `jev:${jevRes.model}`,
+				actor: userId,
+			})
+		}
+
 		if (chosenKey === NONE_OF_THE_ABOVE || confidence < 0.65) {
 			// No clear single skill to preload
+			decided(
+				NONE_OF_THE_ABOVE,
+				`No playbook cleared the 0.65 confidence bar (chose ${chosenKey} at ${confidence}).`,
+			)
 			return null
 		}
 
 		const chosenSkill = skillBySafeKey.get(chosenKey)
-		if (!chosenSkill) return null
+		if (!chosenSkill) {
+			decided(NONE_OF_THE_ABOVE, `Chosen key ${chosenKey} did not map to a visible skill.`)
+			return null
+		}
 
 		// Load the markdown body
 		const loaded = loadVisibleSkillByName(agent, {
 			userId,
 			name: chosenSkill.name,
 		})
-		if (!loaded) return null
+		if (!loaded) {
+			decided(chosenSkill.name, "The chosen playbook could not be loaded for this user.")
+			return null
+		}
+
+		decided(loaded.name, "Preloaded as the matching playbook.")
 
 		return {
 			preloadedSkills: [
