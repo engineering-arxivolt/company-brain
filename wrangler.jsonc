@@ -27,9 +27,10 @@
 		]
 	},
 	"vars": {
-		// "on" once the Workers Paid block below is enabled: sandbox tools then
-		// run on a Cloudflare container.
-		"CONTAINER_SANDBOX": "off",
+		// "on" because the Workers Paid block below is enabled: sandbox tools run
+		// on a Cloudflare container. Set it back to "off" (or comment out that
+		// block) to fall back to Daytona, which only needs DAYTONA_API_KEY.
+		"CONTAINER_SANDBOX": "on",
 		// The sandbox SDK's RPC transport; artifact downloads stream over it.
 		"SANDBOX_TRANSPORT": "rpc",
 		// OpenAI-compatible endpoint for the free models. This only applies to the
@@ -87,19 +88,17 @@
 		}
 	],
 	// ── Workers Paid ($5/mo) ─────────────────────────────────────────────────
-	// The brain runs on the free plan. On Workers Paid, uncomment this block
-	// and set CONTAINER_SANDBOX to "on" above to give it a built-in container
-	// sandbox (shell, git, Python). Without it, sandbox tools use Daytona when
-	// DAYTONA_API_KEY is set.
-	//
-	// "containers": [
-	// 	{
-	// 		"class_name": "Sandbox",
-	// 		"image": "./sandbox/Dockerfile",
-	// 		"instance_type": "basic",
-	// 		"max_instances": 10
-	// 	}
-	// ],
+	// Containers need Workers Paid, so this block is what the code sandbox runs
+	// on. It is enabled here, and CONTAINER_SANDBOX is "on" above to match.
+	// Comment both out to fall back to Daytona (DAYTONA_API_KEY), or to none.
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "./sandbox/Dockerfile",
+			"instance_type": "basic",
+			"max_instances": 10
+		}
+	],
 	"unsafe": {
 		"bindings": [
 			{

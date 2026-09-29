@@ -113,18 +113,21 @@ Everything else is provisioned for you: D1, KV, Durable Objects and Workers AI.
 
 Your team signs in with Slack at `/` to see the brain's home, a live graph of everything it remembers, and settings for tools, models, proactivity, automations and skills.
 
-### Free plan or Workers Paid?
+### Workers Paid
 
-Company Brain runs on Cloudflare's free plan. [Workers Paid](https://developers.cloudflare.com/workers/platform/pricing/) ($5/mo) is better, and worth it if your team leans on the brain:
+This deployment runs on [Workers Paid](https://developers.cloudflare.com/workers/platform/pricing/) ($5/mo). The limits are the real reason, not the label: a turn is one long agentic loop of memory searches, tool calls, QuickJS execution and artifact streaming, and it runs on the free plan's 10 ms of CPU per request.
 
 | | Free | Workers Paid |
 |---|---|---|
-| **Long, multi-step answers** | Can get cut short: the free plan allows 50 outbound calls per request | Room for the brain's full tool loop |
-| **Code sandbox** (shell, git, Python) | With a [Daytona](https://daytona.io) key (`DAYTONA_API_KEY`) | Built in, on a Cloudflare container. Daytona still works if you prefer it. |
+| **CPU per request** | 10 ms — a real turn blows through this | 5 min (30 s default) |
+| **Outbound calls per request** | 50 — long answers get cut short | 10,000 |
+| **Requests per day** | 100,000 | Unlimited |
+| **Scheduled digests** | 5 cron triggers per account | 250 |
+| **Code sandbox** (shell, git, Python) | Needs a [Daytona](https://daytona.io) key (`DAYTONA_API_KEY`) | Built in, on a Cloudflare container |
 
-Everything else works the same on both, including Code Mode: when the brain writes code to chain tool calls or crunch your team directory, it runs in [QuickJS](https://github.com/justjake/quickjs-emscripten) inside the worker, not on paid Dynamic Workers.
+Code Mode is not on this list because it never needed the plan: when the brain writes code to chain tool calls or crunch your team directory, it runs in [QuickJS](https://github.com/justjake/quickjs-emscripten) inside the worker, not on paid Dynamic Workers. That does mean it spends the CPU budget above, which is the other reason the paid limits matter.
 
-To use the built-in container on Workers Paid, uncomment the **Workers Paid** block in `wrangler.jsonc`, set `CONTAINER_SANDBOX` to `"on"`, and redeploy.
+The container sandbox is already enabled in `wrangler.jsonc` — the `containers` block is live and `CONTAINER_SANDBOX` is `"on"`. To fall back to Daytona, comment out that block and set `CONTAINER_SANDBOX` to `"off"`. `max_instances` is 10, so the eleventh concurrent sandbox queues; containers are billed per instance on top of the plan, so raise it deliberately.
 
 ---
 
@@ -136,7 +139,7 @@ cp .dev.vars.example .dev.vars   # fill in the two keys
 bun run dev
 ```
 
-If you've enabled the Workers Paid block, Docker has to be running for the sandbox container. Slack has to reach your machine, so point a tunnel at the dev server, set `PUBLIC_URL` in `.dev.vars` to the tunnel's URL, and create the Slack app from the tunnel's `/setup` page.
+Because the `containers` block in `wrangler.jsonc` is enabled, Docker has to be running for the sandbox container. Slack has to reach your machine, so point a tunnel at the dev server, set `PUBLIC_URL` in `.dev.vars` to the tunnel's URL, and create the Slack app from the tunnel's `/setup` page.
 
 After changing the schema in `src/db/schema`, run `bun run db:generate`. It writes the migration and bundles it into the worker, which applies it on its next request.
 

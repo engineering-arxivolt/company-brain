@@ -15,11 +15,10 @@ MODEL_API_KEY=""
 # XAI_API_KEY=""
 
 # ── Optional ──────────────────────────────────────────────────────────────────
-# Sandbox tools (shell, git, files). On Workers Paid, with the paid block in
-# wrangler.jsonc enabled and CONTAINER_SANDBOX set to "on", they run on a
-# Cloudflare container (local dev then needs Docker). On the free plan, or if
-# you prefer it, set a Daytona key:
-# uncomment this, or add it later with `wrangler secret put DAYTONA_API_KEY`.
+# Sandbox tools (shell, git, files). The containers block in wrangler.jsonc is
+# enabled, so they run on a Cloudflare container and local dev needs Docker
+# running. To use Daytona on any plan instead, comment that block out, set
+# CONTAINER_SANDBOX to "off", and uncomment this:
 # DAYTONA_API_KEY=""
 
 # Web search and page reading use Firecrawl's free keyless tier by default
