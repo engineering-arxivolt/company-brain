@@ -10,8 +10,9 @@ import {
 	openAiCompatibleBaseUrl,
 	availableProviders,
 	providerKey,
-	OPENAI_COMPATIBLE_FALLBACK_MODEL,
 	OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
+	OPENROUTER_MAIN_MODEL,
+	OPENROUTER_ESCALATION_MODEL,
 } from "./brain-model"
 
 export type ModelTier = "fast" | "balanced" | "strong" | "long"
@@ -121,23 +122,18 @@ async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	cheap.sort(sortByContext)
 	premium.sort(sortByContext)
 
-	// Build all tiers from actually available models
-	// On free plan: free[] has models, cheap/premium are empty
-	// Strategy: use best free models for all tiers, different models per tier
-	const allAvailable = [...free, ...cheap, ...premium]
-	
-	// Fallback chain: free[0] → free[1] → free[2] → hardcoded free → hardcoded paid
-	const fast = free[0] ?? OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
-	const balanced = free[1] ?? free[0] ?? cheap[0] ?? OPENAI_COMPATIBLE_FALLBACK_MODEL
-	const strong = free[2] ?? free[1] ?? free[0] ?? cheap[1] ?? cheap[0] ?? premium[0] ?? "gpt-5.6"
-	const long = free[3] ?? free[2] ?? free[1] ?? premium[1] ?? premium[0] ?? "gpt-5.6"
+	// Build all tiers from models this deployment can actually reach.
+	// The dynamic catalog lists raw OpenRouter ids (e.g. "deepseek/deepseek-v4-flash")
+	// that are not in SUPPORTED_MODELS, so they must never be cast to
+	// SupportedModel and handed to the provider factory. Pin the tiers to the
+	// registered OpenRouter models instead: the cheap paid model answers, the
+	// frontier model escalates, and the free model stays on triage.
+	const fast = OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
+	const balanced = OPENROUTER_MAIN_MODEL
+	const strong = OPENROUTER_ESCALATION_MODEL
+	const long = OPENROUTER_ESCALATION_MODEL
 
-	return {
-		fast: fast as SupportedModel,
-		balanced: balanced as SupportedModel,
-		strong: strong as SupportedModel,
-		long: long as SupportedModel,
-	}
+	return { fast, balanced, strong, long }
 }
 /** JEV question for model tier classification */
 const MODEL_TIER_QUESTION = {
@@ -291,9 +287,9 @@ export function getModelForTierSync(env: Env, tier: ModelTier): SupportedModel {
 
 	if (hasOpenRouter && primaryProvider === "openai") {
 		const fast = OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
-		const balanced = OPENAI_COMPATIBLE_FALLBACK_MODEL
-		const strong = (hasAnthropic ? BRAIN_MODEL : "gpt-5.6") as SupportedModel
-		const long = (hasAnthropic ? BRAIN_MODEL : "gpt-5.6") as SupportedModel
+		const balanced = OPENROUTER_MAIN_MODEL
+		const strong = OPENROUTER_ESCALATION_MODEL
+		const long = OPENROUTER_ESCALATION_MODEL
 		return { fast, balanced, strong, long }[tier]
 	}
 
@@ -341,13 +337,16 @@ export function getHeuristicModelForTask(env: Env, taskDescription: string): Sup
 		const primaryProvider = providers[0]
 
 		if (hasOpenRouter && primaryProvider === "openai") {
-			// On OpenRouter free plan: use different free models for each tier
-			// Falls back gracefully if fewer free models available
+			// On OpenRouter: the cheap paid model answers, the frontier model is
+			// the escalation hop for hard turns, and the free models stay on the
+			// read-only triage path. This previously routed strong and long to
+			// the free 550B model, so a "comprehensive research" task silently
+			// ran on a free model while the async path escalated to gpt-5.6.
 			return {
 				fast: OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
-				balanced: OPENAI_COMPATIBLE_FALLBACK_MODEL,
-				strong: OPENAI_COMPATIBLE_FALLBACK_MODEL, // Use best free model
-				long: OPENAI_COMPATIBLE_FALLBACK_MODEL,   // Same - best available free
+				balanced: OPENROUTER_MAIN_MODEL,
+				strong: OPENROUTER_ESCALATION_MODEL,
+				long: OPENROUTER_ESCALATION_MODEL,
 			}
 		}
 

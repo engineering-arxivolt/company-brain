@@ -14,9 +14,11 @@ import {
  * - Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
  * - OpenAI: https://developers.openai.com/api/docs/pricing  (standard short context)
  * - Google: https://ai.google.dev/gemini-api/docs/pricing  (paid standard, prompts ≤ 200k)
+ * - OpenRouter: https://openrouter.ai/models  (list rates; prompt caching is
+ *   automatic on DeepSeek and Z.AI, so cached input bills at the cache-read rate)
  * - OpenRouter free models are billed per token as 0 for the `:free` variants.
  *
- * Last verified: 2026-07-20. Re-check when models or list prices change.
+ * Last verified: 2026-09-29. Re-check when models or list prices change.
  */
 export type ModelTokenPrices = {
 	inputPerMTok: number
@@ -112,7 +114,10 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		cacheReadPerMTok: 0.125,
 	},
 
-	// Free OpenRouter models — $0 on the `:free` variants.
+	// Free OpenRouter models — $0 on the `:free` variants. Restricted to the
+	// read-only triage/classify paths: the answering turn holds the tools that
+	// write to memory, GitHub, Linear and Notion, and must not run on a model
+	// with a 69.7% non-hallucination rate.
 	"nemotron-3-ultra-free": {
 		inputPerMTok: 0,
 		outputPerMTok: 0,
@@ -129,6 +134,20 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		inputPerMTok: 0,
 		outputPerMTok: 0,
 	},
+	"dots-3-note-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
+
+	// OpenRouter paid, cached automatically by Z.AI. Head of the brain chain
+	// on a one-key OpenRouter deployment. Cache writes are free on Z.AI today,
+	// so only the read rate is modelled here.
+	"glm-5.3-flash": {
+		inputPerMTok: 0.15,
+		outputPerMTok: 0.5,
+		cacheReadPerMTok: 0.03,
+	},
+
 	"@cf/meta/llama-3.2-1b-instruct": {
 		inputPerMTok: 0,
 		outputPerMTok: 0,

@@ -11,6 +11,7 @@ import type {
 } from "@ai-sdk/provider"
 import { createAiGateway } from "ai-gateway-provider"
 import { captureException } from "@/lib/capture"
+import { getModelTokenPrices } from "../billing/model-prices"
 import {
 	getModelInfo,
 	type SupportedModel,
@@ -40,13 +41,60 @@ export const OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL: SupportedModel =
 	"qwen3.8-27b-free"
 
 /**
- * Head of the brain chain when OpenRouter is configured. OpenRouter serves
- * Anthropic's own weights, so this is Claude without a separate Anthropic key —
- * it just bills through the one OpenAI-compatible endpoint already set up.
+ * Head of the brain chain when OpenRouter is configured. GLM-5.3-Flash is
+ * OpenRouter's Z.AI model: it caches automatically (so the brain's long system
+ * prefix bills at the cache-read rate with no prompt changes), carries a 72.4%
+ * non-hallucination rate, and is the strongest agentic index of the cheap tier.
+ *
+ * This sits ahead of the operator's configured model on every user-facing turn,
+ * so it decides the bill. It was previously `claude-sonnet-5-openrouter` at
+ * $2/$10 per MTok — roughly 12x more per turn.
  */
-export const OPENROUTER_MAIN_MODEL: SupportedModel = "claude-sonnet-5-openrouter"
-/** Free OpenRouter model: still answers when the paid one is out of credits. */
-export const OPENROUTER_FREE_MODEL: SupportedModel = OPENAI_COMPATIBLE_FALLBACK_MODEL
+export const OPENROUTER_MAIN_MODEL: SupportedModel = "glm-5.3-flash"
+
+/**
+ * The escalation tier: a hard turn, deep research, or a write-path tool call.
+ * Anthropic's own weights through the same OpenAI-compatible endpoint, so one
+ * key covers both. Deliberately kept off the head of the chain — reaching for
+ * it is a routing decision, not the default.
+ */
+export const OPENROUTER_ESCALATION_MODEL: SupportedModel = "claude-sonnet-5-openrouter"
+
+/**
+ * The models this module adds to the answering turn on its own initiative, in
+ * chain order. Deliberately contains no free model — see `isFreeModel`.
+ */
+const AUTO_ADDED_MAIN_TURN_MODELS: readonly SupportedModel[] = [
+	OPENROUTER_MAIN_MODEL,
+	OPENROUTER_ESCALATION_MODEL,
+]
+
+/**
+ * A free model is one the endpoint bills at $0 per token. It answers the
+ * read-only classify paths (triage, chime, post-turn observation) but never the
+ * answering turn: that turn owns the tools which write to memory and to
+ * GitHub/Linear/Notion, and the free tier's 69.7% non-hallucination rate means
+ * its plausible inventions get persisted and then served back to the team as
+ * fact. A free model was previously the answering turn's last hop "for when the
+ * paid one is out of credits"; exhausting the paid hops now yields the degraded
+ * notice instead, which is honest about being unusable where a free answer
+ * would not be.
+ *
+ * This is priced off `model-prices` rather than hardcoded per model, so adding
+ * a `:free` model to the registry is enough to opt it out of the write path.
+ */
+export function isFreeModel(modelName: SupportedModel): boolean {
+	return getModelTokenPrices(modelName)?.inputPerMTok === 0
+}
+
+/**
+ * True when a model this module would auto-add to the answering turn is free.
+ * Guards `AUTO_ADDED_MAIN_TURN_MODELS` against a future edit that points one
+ * of its entries at a `:free` id and silently reinstates the write path.
+ */
+export function autoAddedMainTurnHasFreeModel(): boolean {
+	return AUTO_ADDED_MAIN_TURN_MODELS.some(isFreeModel)
+}
 
 /** Base URL of the configured OpenAI-compatible endpoint, if any. */
 export function openAiCompatibleBaseUrl(env: Env): string | undefined {
@@ -366,44 +414,92 @@ function isFreePoolMessage(error: unknown): boolean {
 }
 
 /**
+ * The ordered model names this deployment may answer with, before they become
+ * provider instances. Exported so the free-model gate is directly assertable:
+ * `getBrainModel` returns a fallback wrapper that deliberately hides its
+ * members, and "the chain contains no free model" is the property worth
+ * testing.
+ *
  * @param options.mainTurn Only the user-facing Slack turn sets this. It gets
- *   the OpenRouter hops (paid frontier model, then its free tier) at the head of
- *   the chain and a degraded notice when everything is out of quota. Background
- *   callers — triage, the post-turn observer, the approval classifier — leave it
- *   off: they keep the cheap model they resolved and handle quota errors with
- *   their own recovery rather than showing the user a notice.
+ *   the OpenRouter hops (the cheap cached model, then the frontier escalation
+ *   model) at the head of the chain, a degraded notice when everything is out of
+ *   quota, and never a free model — see `isFreeModel`. Background callers —
+ *   triage, the post-turn observer, the approval classifier — leave it off: they
+ *   keep the cheap model they resolved and handle quota errors with their own
+ *   recovery rather than showing a user-facing notice. Those paths are
+ *   read-only, so a free model is acceptable there.
+ *
+ * Applies the write-path rule: a free model is dropped unless dropping it would
+ * leave nothing, in which case it is kept rather than failing the turn outright.
+ * That case is a deployment with no paid provider configured at all; it is
+ * logged, and it is the only way a free model can reach the answering turn.
  */
-export function getBrainModel(
+export function brainChainModelNames(
 	modelName: SupportedModel,
 	env: Env,
 	options: { mainTurn?: boolean } = {},
-): LanguageModel {
+): SupportedModel[] {
 	const resolved = resolveModel(modelName, env)
 	const gateway = hasBrainGateway(env)
-	const key = gateway ? GATEWAY_INJECTED_KEY : undefined
-	const candidates: LanguageModel[] = []
+	const candidates: SupportedModel[] = []
 
 	// OpenRouter first when its OpenAI-compatible endpoint is configured: it
-	// fronts both paid frontier models and a free tier, so one key covers more
-	// quota than any single provider.
+	// fronts a cheap cached main model and a frontier escalation model, so one
+	// key covers more quota than any single provider. The cheap model leads and
+	// the frontier model follows as an escalation hop rather than a default.
+	//
+	// No free model is added here. This chain owns the answering turn's tools,
+	// which write to memory and to GitHub/Linear/Notion; see `isFreeModel`. When
+	// every paid hop is out of credits the chain falls through to the degraded
+	// notice, which tells the user the brain is unavailable instead of writing an
+	// unreliable answer into the store it later answers from.
 	if (
 		options.mainTurn &&
 		openAiCompatibleBaseUrl(env) &&
 		env.OPENAI_API_KEY?.trim()
 	) {
-		candidates.push(brainProviderModel(OPENROUTER_MAIN_MODEL, env, key))
-		candidates.push(brainProviderModel(OPENROUTER_FREE_MODEL, env, key))
+		candidates.push(...AUTO_ADDED_MAIN_TURN_MODELS)
 	}
 
-	candidates.push(brainProviderModel(resolved, env, key))
+	candidates.push(resolved)
 	const fallback = brainFallbackModelFor(resolved)
 	if (fallback !== resolved && (gateway || providerHasKey(fallback, env))) {
-		candidates.push(brainProviderModel(fallback, env, key))
+		candidates.push(fallback)
 	}
 
+	const deduped = [...new Set(candidates)]
+	// The answering turn writes to memory, so it never runs on a free model —
+	// not one added above, and not one `resolveModel` substituted in because the
+	// requested provider had no key. Background callers skip this: they are
+	// read-only, and their recovery paths expect to keep what they resolved.
+	if (!options.mainTurn) return deduped
+	const paid = deduped.filter((name) => !isFreeModel(name))
+	if (paid.length === 0) return deduped
+	if (paid.length < deduped.length) {
+		console.warn(
+			`[company-brain] dropping free model(s) from the answering chain: ${deduped
+				.filter((name) => isFreeModel(name))
+				.join(", ")}`,
+		)
+	}
+	return paid
+}
+
+export function getBrainModel(
+	modelName: SupportedModel,
+	env: Env,
+	options: { mainTurn?: boolean } = {},
+): LanguageModel {
+	const gateway = hasBrainGateway(env)
+	const key = gateway ? GATEWAY_INJECTED_KEY : undefined
+	const instances = brainChainModelNames(modelName, env, options).map((name) =>
+		brainProviderModel(name, env, key),
+	)
+
 	// A gateway runs the fall-through itself, so it stays a single candidate.
-	const models = gateway ? [wrapBrainGateway(env, candidates)] : candidates
-	// Deduped: a picked OpenRouter model would otherwise appear twice.
+	const models = gateway ? [wrapBrainGateway(env, instances)] : instances
+	// Deduped by resolved provider model id rather than by registry name: two
+	// registry keys can point at the same upstream model.
 	const unique = models.filter(
 		(model, i) =>
 			models.findIndex(

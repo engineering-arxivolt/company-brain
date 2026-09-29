@@ -19,12 +19,27 @@ export const SUPPORTED_MODELS = [
 	"gemini-3.8-flash",
 	// Free OpenRouter models, reached through its OpenAI-compatible endpoint
 	// (set OPENAI_BASE_URL). They speak chat completions, not the Responses API.
+	// Prefer these that support BOTH tools and structured outputs: the brain
+	// parses typed JSON on its decision paths, so a free model without
+	// structured outputs can silently degrade them.
 	"nemotron-3-ultra-free",
 	"nemotron-3-super-free",
 	"qwen3.8-27b-free",
 	"gemma-4-31b-free",
+	"dots-3-note-free",
+	// Paid OpenRouter model. Z.AI caches automatically, so the brain's long
+	// system prefix bills at the cache-read rate with no prompt changes, and
+	// cache writes are currently free on Z.AI. Chosen over the cheaper
+	// DeepSeek V4 Flash on non-hallucination rate (72.4% vs 11%): this brain
+	// writes its own answers into memory, so a model that invents plausible
+	// team facts corrupts the store it later answers from.
+	// Qwen is deliberately absent: it needs explicit cache_control breakpoints,
+	// which this brain only emits for the anthropic provider.
+	"glm-5.3-flash",
 	// Anthropic models served by OpenRouter. Same weights as the native
-	// Anthropic ids, but billed through one OpenAI-compatible endpoint.
+	// Anthropic ids, but billed through one OpenAI-compatible endpoint. This
+	// is the escalation tier, not the default: it is the most expensive model
+	// the brain can reach.
 	"claude-sonnet-5-openrouter",
 	// Compatibility alias for chat/playground settings saved before the 3.1 upgrade.
 	"gemini-2.5-pro",
@@ -107,6 +122,16 @@ const MODEL_INFO = {
 	},
 	"gemma-4-31b-free": {
 		modelId: "google/gemma-4-31b-it:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"dots-3-note-free": {
+		modelId: "dots-studio/dots-3-note-preview:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"glm-5.3-flash": {
+		modelId: "z-ai/glm-5.3-flash",
 		provider: "openai",
 		api: "chat",
 	},
@@ -225,6 +250,8 @@ export function getModelReasoningProviderOptions(
 		case "nemotron-3-super-free":
 		case "qwen3.8-27b-free":
 		case "gemma-4-31b-free":
+		case "dots-3-note-free":
+		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
 		case "claude-sonnet-5-openrouter":
 			// Chat-completions endpoints take no Responses-API reasoning options;
@@ -281,6 +308,8 @@ export function getModelInstantProviderOptions(
 		case "nemotron-3-super-free":
 		case "qwen3.8-27b-free":
 		case "gemma-4-31b-free":
+		case "dots-3-note-free":
+		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
 		case "claude-sonnet-5-openrouter":
 			return {}

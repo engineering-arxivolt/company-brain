@@ -41,15 +41,19 @@ export const BRAIN_MAIN_MODEL_CHOICES = [
 	"gpt-5.6",
 	"gpt-5.5",
 	"gemini-3.8-flash",
+	"glm-5.3-flash",
 	"nemotron-3-ultra-free",
 	"nemotron-3-super-free",
+	"dots-3-note-free",
 ] as const satisfies readonly SupportedModel[]
 
 export const BRAIN_TRIAGE_MODEL_CHOICES = [
 	"claude-haiku-4.5",
 	"claude-sonnet-5",
+	"glm-5.3-flash",
 	"qwen3.8-27b-free",
 	"gemma-4-31b-free",
+	"dots-3-note-free",
 ] as const satisfies readonly SupportedModel[]
 
 export const BRAIN_EFFORT_CHOICES = [

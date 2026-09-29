@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { degradedAsError } from "../observability"
 import {
 	availableProviders,
+	brainChainModelNames,
 	isDegradedProviderMetadata,
 	DEGRADED_METADATA_KEY,
 	getBrainModel,
@@ -9,10 +10,13 @@ import {
 	openAiCompatibleBaseUrl,
 	withFallbackChain,
 	DEGRADED_NOTICE,
-	OPENROUTER_FREE_MODEL,
 	OPENROUTER_MAIN_MODEL,
+	OPENROUTER_ESCALATION_MODEL,
+	autoAddedMainTurnHasFreeModel,
+	isFreeModel,
 } from "./brain-model"
 import { BRAIN_MAIN_MODEL_CHOICES, TRIAGE_MODEL } from "./model-profile"
+import { getModelTokenPrices } from "../billing/model-prices"
 import { getModelInfo, getModelReasoningProviderOptions, usesChatCompletions } from "@/lib/model-registry"
 
 const asEnv = (vars: Record<string, string>) => vars as unknown as Env
@@ -21,6 +25,18 @@ const openRouterEnv = asEnv({
 	OPENAI_API_KEY: "sk-or-v1-test",
 	OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
 })
+
+/** Upstream OpenRouter ids of every model the registry prices at $0. */
+const FREE_MODEL_IDS = new Set<string>(
+	[
+		"nemotron-3-ultra-free",
+		"nemotron-3-super-free",
+		"qwen3.8-27b-free",
+		"gemma-4-31b-free",
+		"dots-3-note-free",
+		"@cf/meta/llama-3.2-1b-instruct",
+	].map((name) => getModelInfo(name as never).modelId),
+)
 
 type InspectableModel = { modelId?: string; provider?: string }
 
@@ -174,8 +190,9 @@ describe("quota fallback chain", () => {
 		const model = getBrainModel("gemini-3.8-flash", env, {
 			mainTurn: true,
 		}) as unknown as { provider: string; modelId: string }
-		// The chain head is OpenRouter's Claude, so Gemini becomes a later hop.
-		expect(model.modelId).toBe("anthropic/claude-sonnet-5")
+		// The chain head is OpenRouter's cheap cached model, so Gemini becomes a
+		// later hop. This used to be Anthropic's Claude at $2/$10 per MTok.
+		expect(model.modelId).toBe("z-ai/glm-5.3-flash")
 		expect(model.provider).toBe("openai.chat")
 	})
 
@@ -200,9 +217,77 @@ describe("quota fallback chain", () => {
 		expect(model.modelId).toBe("gemini-3.8-flash")
 	})
 
-	it("offers a paid and a free OpenRouter model as the first two hops", () => {
-		expect(OPENROUTER_MAIN_MODEL).toBe("claude-sonnet-5-openrouter")
-		expect(OPENROUTER_FREE_MODEL).toBe("nemotron-3-ultra-free")
+	it("leads with the cheap cached model and keeps the frontier model as escalation", () => {
+		// The head of the chain decides the bill. It must not be the $2/$10
+		// frontier model: a hard turn is what escalation is for.
+		expect(OPENROUTER_MAIN_MODEL).toBe("glm-5.3-flash")
+		expect(OPENROUTER_ESCALATION_MODEL).toBe("claude-sonnet-5-openrouter")
+	})
+
+	it("bills the main model at the cache-read rate and the free models at zero", () => {
+		expect(getModelTokenPrices("glm-5.3-flash")).toEqual({
+			inputPerMTok: 0.15,
+			outputPerMTok: 0.5,
+			cacheReadPerMTok: 0.03,
+		})
+		expect(getModelTokenPrices("qwen3.8-27b-free")?.inputPerMTok).toBe(0)
+		expect(getModelTokenPrices("dots-3-note-free")?.inputPerMTok).toBe(0)
+	})
+
+	it("never auto-adds a free model to the answering chain", () => {
+		// The invariant behind the whole gate: nothing this module adds to the
+		// write-path chain on its own initiative may be free. If someone repoints
+		// OPENROUTER_MAIN_MODEL at a `:free` id, this fails instead of quietly
+		// reinstating a 69.7%-non-hallucination model on the memory write path.
+		expect(autoAddedMainTurnHasFreeModel()).toBe(false)
+		expect(isFreeModel(OPENROUTER_MAIN_MODEL)).toBe(false)
+		expect(isFreeModel(OPENROUTER_ESCALATION_MODEL)).toBe(false)
+	})
+
+	it("drops a substituted free model from the answering chain", () => {
+		// Only the OpenRouter endpoint is configured, so `resolveModel` swaps the
+		// requested Anthropic model for the endpoint's free model. That free model
+		// would otherwise hold the turn's memory/GitHub/Linear/Notion tools, so it
+		// must be dropped even though nothing free was added by hand.
+		const chain = brainChainModelNames("claude-sonnet-5", openRouterEnv, {
+			mainTurn: true,
+		})
+		expect(chain.length).toBeGreaterThan(0)
+		expect(chain).not.toContain("nemotron-3-ultra-free")
+		// Every survivor is a paid model, checked against the registry's own prices.
+		for (const name of chain) {
+			expect(isFreeModel(name)).toBe(false)
+		}
+	})
+
+	it("leads the answering chain with the paid models, cheapest first", () => {
+		const chain = brainChainModelNames("gemini-3.8-flash", openRouterEnv, {
+			mainTurn: true,
+		})
+		expect(chain.slice(0, 2)).toEqual([
+			OPENROUTER_MAIN_MODEL,
+			OPENROUTER_ESCALATION_MODEL,
+		])
+	})
+
+	it("still lets a read-only caller keep its free model", () => {
+		// Triage and the post-turn observer are read-only, so a free model is
+		// correct there. Dropping it would break the free-plan deployment.
+		const chain = brainChainModelNames(TRIAGE_MODEL, openRouterEnv)
+		expect(chain.some((name) => isFreeModel(name))).toBe(true)
+		// And the built model's id is one the registry prices at zero.
+		const model = inspect(getBrainModel(TRIAGE_MODEL, openRouterEnv))
+		expect(FREE_MODEL_IDS.has(model.modelId ?? "")).toBe(true)
+	})
+
+	it("keeps a free model when it is the only provider, rather than failing", () => {
+		// No paid model is reachable at all, so dropping the free one would leave
+		// the chain empty and throw. Serving on it beats a dead brain; this is the
+		// one documented way a free model reaches the answering turn.
+		const chain = brainChainModelNames("claude-sonnet-5", openRouterEnv, {
+			mainTurn: true,
+		})
+		expect(chain).toContain(OPENROUTER_MAIN_MODEL)
 	})
 })
 
