@@ -3341,6 +3341,17 @@ async function runSlackTurnInner(
 					ev.user ?? "",
 					pausedTurn.pauseId,
 				)
+			} else {
+				// No turn control means the thread moved on and this envelope is
+				// already superseded. Say so rather than finalizing into silence,
+				// which left the asker with no status and no way forward.
+				console.warn(
+					`[company-brain] paused turn had no turn control org=${org.id} channel=${channel} thread=${threadTs}`,
+				)
+				await stream.finalize(
+					"That took longer than usual and the thread moved on, so I stopped here. Ask me again and I'll pick it up from what I found.",
+					false,
+				)
 			}
 			markThreadTurnCompleted(agent, turnControl)
 			markBotThread(agent, msg.teamId, channel, threadTs)

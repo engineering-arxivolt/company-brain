@@ -17,9 +17,10 @@ describe("applyTimeBudgetPolicy", () => {
 		expect(state().warnings).toEqual([])
 	})
 
-	it("warns once the headroom is all that is left", () => {
+	it("warns once the model is genuinely short on time", () => {
 		const s = state()
-		const elapsed = TURN_PAUSE_BUDGET_MS - TURN_PAUSE_HEADROOM_MS + 1
+		// 90s before the pause budget, not before the hard deadline.
+		const elapsed = TURN_PAUSE_BUDGET_MS - 89_000
 		const first = applyTimeBudgetPolicy(s, elapsed, TURN_PAUSE_BUDGET_MS)
 		expect(first.warned).toBe(true)
 		expect(first.wrapUp).toBe(false)
@@ -47,9 +48,24 @@ describe("applyTimeBudgetPolicy", () => {
 		).toBe(false)
 	})
 
-	it("arms three minutes before the hard deadline", () => {
+	it("arms five minutes before the hard deadline", () => {
+		// Measured p90 for a single step is 217s, so a 3-minute headroom let the
+		// abort fire mid-step and cost the asker the Continue button.
 		expect(TURN_PAUSE_BUDGET_MS + TURN_PAUSE_HEADROOM_MS).toBe(10 * 60 * 1000)
-		expect(TURN_PAUSE_HEADROOM_MS).toBe(3 * 60 * 1000)
+		expect(TURN_PAUSE_HEADROOM_MS).toBe(5 * 60 * 1000)
+	})
+
+	// The invariant behind the number: once the pause arms, a step of typical
+	// worst-case length must still finish before the hard deadline, so the turn
+	// lands on a step boundary and returns a resumable envelope. When this
+	// fails the asker silently loses the Continue button and gets the plain
+	// "reply in the thread" text instead.
+	it("leaves room for a p90-length step after the pause arms", () => {
+		const P90_STEP_MS = 217_000
+		expect(TURN_PAUSE_HEADROOM_MS).toBeGreaterThan(P90_STEP_MS)
+		// ...and the pause must arm early enough that reaching it at all is
+		// likely, rather than only on the pathological tail.
+		expect(TURN_PAUSE_BUDGET_MS).toBeLessThanOrEqual(5 * 60 * 1000)
 	})
 })
 

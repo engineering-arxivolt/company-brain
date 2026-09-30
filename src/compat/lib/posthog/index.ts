@@ -135,6 +135,8 @@ function aiEnvelope(args: Record<string, unknown>): Record<string, unknown> {
 		...(args.error !== undefined ? { $ai_error: args.error } : {}),
 		...(args.tools !== undefined ? { $ai_tools: args.tools } : {}),
 		...(args.traceName !== undefined ? { $ai_trace_name: args.traceName } : {}),
+		...(args.prompt !== undefined ? { $ai_prompt: args.prompt } : {}),
+		...(args.completion !== undefined ? { $ai_completion: args.completion } : {}),
 		...safeProps(args.properties),
 	}
 }
@@ -162,6 +164,60 @@ export async function captureAiSpanAwaitable(...args: unknown[]): Promise<void> 
 export async function captureAiGenerationAwaitable(...args: unknown[]): Promise<void> {
 	const rec = (args[0] ?? {}) as Record<string, unknown>
 	await captureAwaitable("$ai_generation", { ...rec, properties: aiEnvelope(rec) })
+}
+
+export function captureAiToolCall(...args: unknown[]): void {
+	const rec = (args[0] ?? {}) as Record<string, unknown>
+	capture("$ai_tool_call", { ...rec, properties: aiToolCallEnvelope(rec) })
+}
+
+export async function captureAiToolCallAwaitable(...args: unknown[]): Promise<void> {
+	const rec = (args[0] ?? {}) as Record<string, unknown>
+	await captureAwaitable("$ai_tool_call", { ...rec, properties: aiToolCallEnvelope(rec) })
+}
+
+export function captureAiDecision(...args: unknown[]): void {
+	const rec = (args[0] ?? {}) as Record<string, unknown>
+	capture("$ai_decision", { ...rec, properties: aiDecisionEnvelope(rec) })
+}
+
+export async function captureAiDecisionAwaitable(...args: unknown[]): Promise<void> {
+	const rec = (args[0] ?? {}) as Record<string, unknown>
+	await captureAwaitable("$ai_decision", { ...rec, properties: aiDecisionEnvelope(rec) })
+}
+
+function aiToolCallEnvelope(args: Record<string, unknown>): Record<string, unknown> {
+	return {
+		$ai_trace_id: args.traceId,
+		$ai_span_id: args.spanId,
+		...(args.parentId !== undefined ? { $ai_parent_span_id: args.parentId } : {}),
+		...(args.sessionId !== undefined ? { $ai_session_id: args.sessionId } : {}),
+		...(args.toolName !== undefined ? { $ai_tool_name: args.toolName } : {}),
+		...(args.input !== undefined ? { $ai_input: args.input } : {}),
+		...(args.output !== undefined ? { $ai_output: args.output } : {}),
+		...(args.latencySeconds !== undefined ? { $ai_latency: args.latencySeconds } : {}),
+		...(args.isError !== undefined ? { $ai_is_error: args.isError } : {}),
+		...(args.error !== undefined ? { $ai_error: args.error } : {}),
+		...safeProps(args.properties),
+	}
+}
+
+function aiDecisionEnvelope(args: Record<string, unknown>): Record<string, unknown> {
+	return {
+		$ai_trace_id: args.traceId,
+		$ai_span_id: args.spanId,
+		...(args.parentId !== undefined ? { $ai_parent_span_id: args.parentId } : {}),
+		...(args.sessionId !== undefined ? { $ai_session_id: args.sessionId } : {}),
+		...(args.kind !== undefined ? { $ai_decision_type: args.kind } : {}),
+		...(args.source !== undefined ? { $ai_decision_source: args.source } : {}),
+		...(args.choice !== undefined ? { $ai_decision_choice: args.choice } : {}),
+		...(args.confidence !== undefined ? { $ai_decision_confidence: args.confidence } : {}),
+		...(args.subject !== undefined ? { $ai_decision_subject: args.subject } : {}),
+		...(args.alternatives !== undefined ? { $ai_decision_alternatives: args.alternatives } : {}),
+		...(args.reason !== undefined ? { $ai_decision_reason: args.reason } : {}),
+		...(args.actor !== undefined ? { $ai_decision_actor: args.actor } : {}),
+		...safeProps(args.properties),
+	}
 }
 
 export async function flushTelemetry(): Promise<void> {

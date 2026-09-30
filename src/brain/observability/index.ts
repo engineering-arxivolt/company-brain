@@ -1,10 +1,14 @@
 import { generateId } from "@repo/lib/generate-id"
 import { isDegradedProviderMetadata } from "../turn/brain-model"
 import {
+	captureAiDecision,
+	captureAiDecisionAwaitable,
 	captureAiGeneration,
 	captureAiGenerationAwaitable,
 	captureAiSpan,
 	captureAiSpanAwaitable,
+	captureAiToolCall,
+	captureAiToolCallAwaitable,
 	captureAiTrace,
 	flushTelemetry,
 } from "@/lib/posthog"
@@ -24,6 +28,7 @@ import type { TurnTerminalOutcome } from "../turn/terminal"
 import { toolErrorKindsFromOutput } from "./tool-outcome"
 
 export { toolErrorKindsFromOutput } from "./tool-outcome"
+export { captureAiToolCall, captureAiToolCallAwaitable } from "@/lib/posthog"
 
 export type BrainObservabilityInput = {
 	traceId?: string
@@ -346,6 +351,9 @@ export function createBrainTurnTelemetry(
 				$ai_tools_called: [...calledToolNames].join(","),
 				brain_available_tools: args.toolNames.join(","),
 			}
+			// Serialize prompt and completion for PostHog
+			const serializedPrompt = JSON.stringify(args.input)
+			const serializedCompletion = JSON.stringify(args.outputChoices)
 			captureAiGeneration({
 				distinctId,
 				traceId,
@@ -367,6 +375,8 @@ export function createBrainTurnTelemetry(
 				})),
 				isError: args.isError,
 				error: args.error,
+				prompt: serializedPrompt,
+				completion: serializedCompletion,
 				groups,
 				properties: generationProperties,
 			})
@@ -491,6 +501,15 @@ export async function captureBrainTriageGeneration(args: {
 			: args.chimeContext === "thread"
 				? "slack_chime_thread"
 				: "slack_turn"
+	const serializedPrompt = JSON.stringify([
+		{ role: "system", content: boundedTriageTraceText(args.system) },
+		{ role: "user", content: boundedTriageTraceText(args.prompt) },
+	])
+	const serializedCompletion = JSON.stringify(
+		args.rawOutput !== undefined
+			? [{ role: "assistant", content: args.rawOutput }]
+			: []
+	)
 	await captureAiGenerationAwaitable({
 		distinctId: args.distinctId,
 		traceId: args.traceId,
@@ -511,6 +530,8 @@ export async function captureBrainTriageGeneration(args: {
 		latencySeconds: args.latencyMs / 1000,
 		isError: args.isError,
 		error: args.error,
+		prompt: serializedPrompt,
+		completion: serializedCompletion,
 		groups: { company: args.orgId },
 		properties: {
 			app: "api",
@@ -818,6 +839,22 @@ export function captureBrainDecision(args: {
 			decision_actor: args.actor,
 			brain_trace_id: args.traceId,
 		},
+	})
+
+	// Also emit as first-class $ai_decision event for better queryability
+	captureAiDecision({
+		traceId: args.traceId,
+		spanId: generateId(),
+		parentId: args.traceId,
+		sessionId: args.sessionId,
+		kind: args.kind,
+		source: args.source,
+		choice: args.choice,
+		confidence: args.confidence,
+		subject: args.subject,
+		alternatives: args.alternatives,
+		reason: args.reason,
+		actor: args.actor,
 	})
 }
 

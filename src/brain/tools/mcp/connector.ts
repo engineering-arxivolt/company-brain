@@ -15,6 +15,7 @@ import {
 	reserveNativeCall,
 	type TurnState,
 } from "../../turn/state"
+import { captureAiToolCall } from "../../observability"
 import type { McpApprovalClassifier } from "./approval-classifier"
 import {
 	type CatalogMethod,
@@ -167,6 +168,20 @@ function boundedDetail(value: unknown): string {
 	return normalized.length <= 2_000
 		? normalized
 		: `${normalized.slice(0, 1_999)}…`
+}
+
+function extractServerError(error: unknown): string {
+	if (error && typeof error === "object") {
+		const e = error as Record<string, unknown>
+		if (e.data && typeof e.data === "object") {
+			const data = e.data as Record<string, unknown>
+			if (typeof data.message === "string") return data.message
+			if (typeof data.error === "string") return data.error
+			if (typeof data.detail === "string") return data.detail
+		}
+		if (typeof e.message === "string") return e.message
+	}
+	return boundedDetail(error)
 }
 
 function resultTooLargeSuggestion(method: CatalogMethod): string {
@@ -527,6 +542,10 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 						args.method.sourceToolName,
 					)
 					const startedAt = Date.now()
+					// One terminal event per native call, keyed by span id. A
+					// start event here would double as a duplicate span in the
+					// trace view and carry no data the terminal one lacks.
+					const toolCallSpanId = `${callId}:tool`
 					try {
 						if (this.target.revalidate && !(await this.target.revalidate())) {
 							throw toolError({
@@ -542,6 +561,16 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 							remoteInput,
 							context,
 						)
+						captureAiToolCall({
+							traceId: this.target.traceId,
+							spanId: toolCallSpanId,
+							sessionId: this.target.state.request.threadKey,
+							toolName: args.method.sourceToolName,
+							input: remoteInput,
+							output: result,
+							latencySeconds: (Date.now() - startedAt) / 1000,
+							isError: false,
+						})
 						const chars = serializedLength(result)
 						if (chars > MCP_SANDBOX_VALUE_CHAR_LIMIT) {
 							throw toolError({
@@ -575,6 +604,17 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 						})
 						return result
 					} catch (error) {
+						const serverError = extractServerError(error)
+						captureAiToolCall({
+							traceId: this.target.traceId,
+							spanId: toolCallSpanId,
+							sessionId: this.target.state.request.threadKey,
+							toolName: args.method.sourceToolName,
+							input: remoteInput,
+							latencySeconds: (Date.now() - startedAt) / 1000,
+							isError: true,
+							error: serverError,
+						})
 						const failure =
 							error instanceof ToolError
 								? error
@@ -582,7 +622,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 										kind: "remote_error",
 										method: args.method,
 										message: `${args.method.path} failed on ${this.target.displayName}.`,
-										detail: boundedDetail(error),
+										detail: serverError,
 										suggestion:
 											"Correct the call using the expected signature and the server detail, then retry once.",
 										retryable: true,
@@ -598,7 +638,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 								argsDigest,
 								status: "error",
 								errorKind: failure.kind,
-								detail: failure.detail ?? boundedDetail(error),
+								detail: failure.detail ?? serverError,
 								chars: serializedLength(failure.detail ?? failure.message),
 							},
 							{ countAgainstBudget: false },

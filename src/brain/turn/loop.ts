@@ -77,13 +77,29 @@ export function applyProgressPacingPolicy(
 // once at the end of the runway, then wraps up so the time pause lands at a
 // step boundary exactly like an approval suspension instead of yanking the
 // deadline out from under a running tool call.
-export const TURN_PAUSE_HEADROOM_MS = 3 * 60 * 1000
+//
+// Sized from measured PostHog data (107 turns, 7 days, `$ai_generation`
+// latency): a single `initial_step_0` runs p90 217s / max 436s, and a whole
+// turn p90 352s. The previous 3-minute headroom was narrower than a typical
+// slow step, so the abort fired mid-step and the turn fell through to the hard
+// deadline — which is the path that cannot offer a Continue button. 5 minutes
+// clears p90 with margin. Revisit with:
+//   SELECT round(quantile(0.9)(properties.$ai_latency)) FROM events
+//   WHERE event = '$ai_generation' AND properties.$ai_span_name LIKE '%step_0%'
+export const TURN_PAUSE_HEADROOM_MS = 5 * 60 * 1000
 
 // The soft pause arms this far before TURN_DEADLINE_MS, leaving the headroom
-// for one worst-case step (MCP calls are bounded at 60s/75s each) plus the card
-// write. A step that outlives it falls through to the hard deadline, which the
-// rescue backstop covers.
+// for one worst-case step plus the card write. A step that still outlives it
+// falls through to the hard deadline, where `offerPausedTurnContinuation`
+// offers the same Continue button off the rescued checkpoint.
 export const TURN_PAUSE_BUDGET_MS = TURN_DEADLINE_MS - TURN_PAUSE_HEADROOM_MS
+
+// When the model is told time is short. Deliberately its own constant, not
+// TURN_PAUSE_HEADROOM_MS: that one sizes how early the *pause* arms, and
+// doubling as the warning threshold meant a larger headroom silently started
+// warning the model minutes before it had any reason to wrap up. 90s is enough
+// to consolidate and still land a step boundary inside the headroom.
+const TURN_TIME_WARN_MS = 90 * 1000
 
 export type TimeBudgetPolicyDecision = {
 	warned: boolean
@@ -98,7 +114,7 @@ export function applyTimeBudgetPolicy(
 	const remaining = budgetMs - elapsedMs
 	const warning = `Time: ~${Math.max(0, Math.round(remaining / 1000))}s left. Consolidate and answer from the evidence you have.`
 	const before = state.version
-	if (remaining <= TURN_PAUSE_HEADROOM_MS) {
+	if (remaining <= TURN_TIME_WARN_MS) {
 		addTurnWarning(state, warning)
 	}
 	const warned = state.version !== before
