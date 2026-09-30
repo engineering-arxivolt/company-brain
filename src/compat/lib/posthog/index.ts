@@ -48,6 +48,50 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return proto === Object.prototype || proto === null
 }
 
+// PostHog's /batch/ takes the whole queue in one POST, and `$ai_*` events skip
+// safeProps entirely (see enqueue), so nothing bounds their size. Measured on
+// this project: `$ai_generation` averages 9KB but peaks at 464KB, and a
+// connected-app tool result may be up to MCP_SANDBOX_VALUE_CHAR_LIMIT (750k).
+// A handful of those in one batch can push the request past the endpoint's
+// payload ceiling, and the flush is all-or-nothing — so one runaway event would
+// silently drop every other event queued with it. Cap the free-text fields
+// well under any plausible ceiling; enough to diagnose from, not enough to
+// sink a batch.
+const AI_TEXT_LIMIT = 4_000
+
+// A turn prompt runs ~68k chars here: ~28k of system-prompt instructions,
+// ~14k of thread history, and the user's actual question at the very end.
+// Head-truncating therefore keeps boilerplate and discards the one part worth
+// reading, so keep both ends and elide the middle. The tail is weighted larger
+// because that is where the live question, the latest tool result, and the
+// model's in-flight reasoning sit.
+const AI_TEXT_TAIL_RATIO = 0.65
+
+// Exported for tests: the tail-preservation invariant is the whole point of
+// this helper, and it is exactly the kind of thing that regresses silently.
+export function elideMiddle(value: string, limit: number): string {
+	if (value.length <= limit) return value
+	const marker = (hidden: number) =>
+		`\n…[${hidden.toLocaleString("en-US")} chars elided]…\n`
+	const tailLength = Math.floor(limit * AI_TEXT_TAIL_RATIO)
+	const headLength = limit - tailLength
+	// Reserve room for the marker so the result never exceeds the limit.
+	const overhead = marker(value.length).length
+	const head = Math.max(0, headLength - Math.ceil(overhead / 2))
+	const tail = Math.max(0, tailLength - Math.floor(overhead / 2))
+	return `${value.slice(0, head)}${marker(value.length - head - tail)}${value.slice(value.length - tail)}`
+}
+
+function boundedAiText(value: unknown): string {
+	if (typeof value === "string") return elideMiddle(value, AI_TEXT_LIMIT)
+	if (value === undefined) return ""
+	try {
+		return elideMiddle(JSON.stringify(value) ?? "", AI_TEXT_LIMIT)
+	} catch {
+		return "[unserializable]"
+	}
+}
+
 function safeValue(v: unknown, depth = 0): unknown {
 	if (v === null) return null
 	const t = typeof v
@@ -135,8 +179,10 @@ function aiEnvelope(args: Record<string, unknown>): Record<string, unknown> {
 		...(args.error !== undefined ? { $ai_error: args.error } : {}),
 		...(args.tools !== undefined ? { $ai_tools: args.tools } : {}),
 		...(args.traceName !== undefined ? { $ai_trace_name: args.traceName } : {}),
-		...(args.prompt !== undefined ? { $ai_prompt: args.prompt } : {}),
-		...(args.completion !== undefined ? { $ai_completion: args.completion } : {}),
+		...(args.prompt !== undefined ? { $ai_prompt: boundedAiText(args.prompt) } : {}),
+		...(args.completion !== undefined
+			? { $ai_completion: boundedAiText(args.completion) }
+			: {}),
 		...safeProps(args.properties),
 	}
 }
@@ -193,11 +239,11 @@ function aiToolCallEnvelope(args: Record<string, unknown>): Record<string, unkno
 		...(args.parentId !== undefined ? { $ai_parent_span_id: args.parentId } : {}),
 		...(args.sessionId !== undefined ? { $ai_session_id: args.sessionId } : {}),
 		...(args.toolName !== undefined ? { $ai_tool_name: args.toolName } : {}),
-		...(args.input !== undefined ? { $ai_input: args.input } : {}),
-		...(args.output !== undefined ? { $ai_output: args.output } : {}),
+		...(args.input !== undefined ? { $ai_input: boundedAiText(args.input) } : {}),
+		...(args.output !== undefined ? { $ai_output: boundedAiText(args.output) } : {}),
 		...(args.latencySeconds !== undefined ? { $ai_latency: args.latencySeconds } : {}),
 		...(args.isError !== undefined ? { $ai_is_error: args.isError } : {}),
-		...(args.error !== undefined ? { $ai_error: args.error } : {}),
+		...(args.error !== undefined ? { $ai_error: boundedAiText(args.error) } : {}),
 		...safeProps(args.properties),
 	}
 }
@@ -220,6 +266,47 @@ function aiDecisionEnvelope(args: Record<string, unknown>): Record<string, unkno
 	}
 }
 
+// A single oversized event must not take the rest of the batch down with it:
+// the flush is one request, and PostHog rejects the whole payload if it is
+// over the endpoint's ceiling. Split on serialized size instead.
+const MAX_BATCH_BYTES = 1_000_000
+
+// Exported for tests: the batch-splitting invariant is the only thing standing
+// between one runaway event and losing a whole batch of telemetry.
+export function splitBatchBySize(
+	batch: Array<Record<string, unknown>>,
+	maxBytes: number,
+): Array<Array<Record<string, unknown>>> {
+	const chunks: Array<Array<Record<string, unknown>>> = []
+	let current: Array<Record<string, unknown>> = []
+	let currentBytes = 0
+	for (const record of batch) {
+		let size: number
+		try {
+			size = JSON.stringify(record).length
+		} catch {
+			size = maxBytes
+		}
+		if (size > maxBytes) {
+			// Cannot be made to fit; send it alone so the rest still lands.
+			if (current.length) chunks.push(current)
+			chunks.push([record])
+			current = []
+			currentBytes = 0
+			continue
+		}
+		if (currentBytes + size > maxBytes && current.length) {
+			chunks.push(current)
+			current = []
+			currentBytes = 0
+		}
+		current.push(record)
+		currentBytes += size
+	}
+	if (current.length) chunks.push(current)
+	return chunks
+}
+
 export async function flushTelemetry(): Promise<void> {
 	const cfg = posthogConfig()
 	if (!cfg || queue.length === 0) {
@@ -229,14 +316,18 @@ export async function flushTelemetry(): Promise<void> {
 	const batch = queue
 	queue = []
 	try {
-		const res = await fetch(`${cfg.host}/batch/`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ api_key: cfg.key, batch }),
-		})
-		if (!res.ok) {
-			const text = await res.text()
-			console.warn(`[company-brain][posthog] flush failed: ${res.status} ${text}`)
+		for (const chunk of splitBatchBySize(batch, MAX_BATCH_BYTES)) {
+			const res = await fetch(`${cfg.host}/batch/`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ api_key: cfg.key, batch: chunk }),
+			})
+			if (!res.ok) {
+				const text = await res.text()
+				console.warn(
+					`[company-brain][posthog] flush failed: ${res.status} ${text} (chunk of ${chunk.length}/${batch.length})`,
+				)
+			}
 		}
 	} catch {
 		// Telemetry never breaks the turn.
