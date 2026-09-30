@@ -43,7 +43,13 @@ import {
 	settleTurn,
 	type TurnFinalizationAdapter,
 } from "./finalization"
-import { runModelLoop, type TurnAttempt } from "./loop"
+import {
+	applyTimeBudgetPolicy,
+	runModelLoop,
+	TURN_PAUSE_BUDGET_MS,
+	type TimeBudgetPolicyDecision,
+	type TurnAttempt,
+} from "./loop"
 import { resolveBrainMainProfile } from "./model-profile"
 import { shouldShowToolProgressCard } from "./progress"
 import {
@@ -196,6 +202,11 @@ export async function resumeTurnAfterApproval(
 	const state = restoredState(input)
 	state.pendingApproval = undefined
 	touchTurnState(state)
+	// A resumed turn gets its own time budget, so it re-pauses cleanly at a step
+	// boundary instead of running into the hard deadline and losing the envelope
+	// all over again.
+	const resumeStartedAt = Date.now()
+	let pauseRequested = false
 	let totalInputTokens = 0
 	let totalOutputTokens = 0
 	let lastProviderOutputChoices: unknown[] = []
@@ -405,11 +416,17 @@ export async function resumeTurnAfterApproval(
 		} else {
 			const idsToAnswer = approval.state.approvalIds?.length
 				? approval.state.approvalIds
-				: [approval.approvalId]
-			messages = [
-				...approval.state.messages,
-				buildApprovalResponseMessage(idsToAnswer, approved),
-			]
+				: approval.approvalId
+					? [approval.approvalId]
+					: []
+			// A pause resume synthesizes an envelope with no approval ids: there is
+			// nothing to answer, and an empty tool-approval-response would be noise.
+			messages = idsToAnswer.length
+				? [
+						...approval.state.messages,
+						buildApprovalResponseMessage(idsToAnswer, approved),
+					]
+				: approval.state.messages
 		}
 		telemetry.markGenerationStart({
 			input: [...buildCurrentSystemMessages(), ...messages],
@@ -443,9 +460,20 @@ export async function resumeTurnAfterApproval(
 				suspendRequested: () =>
 					Boolean(
 						connectedAppRuntime?.pendingApproval() ||
-							terminalCapture.requested(),
+							terminalCapture.requested() ||
+								pauseRequested,
 					),
 				abortSignal,
+				onBeforeStep: () => {
+					const timeBudget: TimeBudgetPolicyDecision = applyTimeBudgetPolicy(
+						state,
+						Date.now() - resumeStartedAt,
+						TURN_PAUSE_BUDGET_MS,
+					)
+					if (timeBudget.wrapUp) pauseRequested = true
+					return timeBudget
+				},
+
 				prepareMessages: (stepMessages) => {
 					currentRunLiveUpdateMessages.push(...consumeLiveUpdateMessages())
 					return [...stepMessages, ...currentRunLiveUpdateMessages]
@@ -594,6 +622,46 @@ export async function resumeTurnAfterApproval(
 				activeDiscoveryApps: Object.keys(state.apps.discovered),
 			})
 
+		// Same cooperative hand-off as the main turn: every tool call in the last
+		// step has settled, so the envelope is coherent when it lands.
+		const pausedResumeResult = (
+			messages: ModelMessage[],
+		): Extract<ComputeTurnResult, { status: "paused" }> => {
+			failurePhase = "completion"
+			telemetry.finishTurn({
+				outputChoices: lastProviderOutputChoices,
+				turnStatus: "paused",
+				inputTokens: totalInputTokens || undefined,
+				outputTokens: totalOutputTokens || undefined,
+				turnState: state,
+			})
+			console.log(
+				`[company-brain][${traceId}] resume re-paused at a step boundary messages=${messages.length}`,
+			)
+			return {
+				status: "paused",
+				state: {
+					userId: approval.state.userId,
+					actor: approval.state.actor,
+					question: approval.state.question ?? "",
+					messages: compactContinuation(messages),
+					approvalIds: [],
+					turnState: restoreTurnState(state),
+					assembly: snapshotTurnToolAssembly(
+						assemblyArgs,
+						toolDiscovery.enabledFamilies(),
+					),
+					botIdentity: approval.state.botIdentity,
+					detailedAppPolicy,
+					memoryScope: approval.state.memoryScope,
+					memoryTagSlackUserIds: approval.state.memoryTagSlackUserIds,
+					memory: capture.memory,
+					turnControl: approval.state.turnControl,
+					terminalProposal: undefined,
+				},
+			}
+		}
+
 		let sourceMessages = messages
 		let attempt: ResumeTurnAttempt = "approval_resume"
 		const finalizationAdapter: TurnFinalizationAdapter<
@@ -708,6 +776,11 @@ export async function resumeTurnAfterApproval(
 				abortSignal,
 			})
 			if (settlement.status === "continue") {
+				// Budget spent and no answer settled: re-pause here rather than begin a
+				// step it cannot finish. A publishable answer always wins over pausing.
+				if (pauseRequested) {
+					return pausedResumeResult(settlement.messages)
+				}
 				sourceMessages = settlement.messages
 				capture.memory = null
 				capture.connect = null

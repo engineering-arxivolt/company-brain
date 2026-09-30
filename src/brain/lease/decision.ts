@@ -8,6 +8,7 @@ import {
 	getSlackUserInfo,
 	type LeaseCardStatus,
 	postSlackApprovalCard,
+	postPausedTurnCard,
 	postSlackMessage,
 	resolvedLeaseBlocks,
 	type SlackLeaseCard,
@@ -38,6 +39,7 @@ import {
 	setApprovalCardTs,
 } from "../turn/approval"
 import { armApprovalExpiry } from "../turn/approval-expiry"
+import { persistPausedTurn } from "../turn/pause"
 import {
 	raceWithAbortSignal,
 	retainAbandoned,
@@ -774,6 +776,35 @@ async function runLeaseFollowUp(
 				out,
 				turnControl,
 			)
+			return
+		}
+		if (out.status === "paused") {
+			// Time ran out at a step boundary: keep the envelope and offer the
+			// Continue button instead of discarding the work. The row is left to
+			// complete normally, so the envelope's turnId is what fences a stale
+			// Continue against a newer turn in this thread.
+			await stream.finalize("", false, true)
+			if (turnControl) {
+				const pausedTurn = persistPausedTurn({
+					agent,
+					orgId: request.orgId,
+					teamId: request.teamId,
+					channel: request.channel,
+					threadTs: request.threadTs,
+					threadKey: turnControl.threadKey,
+					turnId: turnControl.turnId,
+					askerUser: request.lesseeSlackUser,
+					question: out.state.question ?? "",
+					envelope: out.state,
+				})
+				await postPausedTurnCard(
+					botToken,
+					request.channel,
+					request.threadTs,
+					request.lesseeSlackUser,
+					pausedTurn.pauseId,
+				)
+			}
 			return
 		}
 		reply = out.reply

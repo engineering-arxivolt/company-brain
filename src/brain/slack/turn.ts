@@ -41,10 +41,18 @@ import {
 	loadApproval,
 	markApprovalDecided,
 	markApprovalTerminal,
+	type ApprovalResumeState,
 	type PendingApproval,
 	setApprovalCardTs,
 } from "../turn/approval"
 import { armApprovalExpiry } from "../turn/approval-expiry"
+import {
+	loadPausedTurn,
+	markPausedTurnResumed,
+	markPausedTurnTerminal,
+	pausedTurnIsExpired,
+	persistPausedTurn,
+} from "../turn/pause"
 import { resolveApprovalIconUrl } from "../turn/approval-icons"
 import { computeTurn } from "../turn/compute"
 import { getHomeChannel } from "../turn/home-channel"
@@ -99,6 +107,7 @@ import {
 	postSlackApprovalCard,
 	postSlackEphemeral,
 	postSlackMessage,
+	postPausedTurnCard,
 	removeSlackReaction,
 	resolvedApprovalBlocks,
 	type SlackConversationInfo,
@@ -306,6 +315,305 @@ export type SlackApprovalDecision = {
 	userId: string
 	responseUrl?: string
 }
+
+export type SlackTurnContinue = {
+	teamId: string
+	pauseId: string
+	userId: string
+	responseUrl?: string
+}
+
+/**
+ * Replay a paused turn's saved envelope. Gated exactly like an approval: only
+ * the original asker, only while the paused turn is still the newest thing on
+ * the thread, and only once — a resumed turn that pauses again writes its own
+ * envelope rather than reviving this one.
+ */
+export async function runSlackContinueTurn(
+	agent: CompanyBrainAgent,
+	turnContinue: SlackTurnContinue,
+): Promise<void> {
+	const claim: TurnClaim = {}
+	try {
+		await runSlackContinueTurnInner(agent, turnContinue, claim)
+	} finally {
+		reapUnfinishedThreadTurn(agent, claim.control)
+	}
+}
+
+async function runSlackContinueTurnInner(
+	agent: CompanyBrainAgent,
+	turnContinue: SlackTurnContinue,
+	claim: TurnClaim,
+): Promise<void> {
+	const env = brainAgent(agent).env
+	const refuse = async (text: string) => {
+		if (turnContinue.responseUrl) {
+			await updateSlackInteractionResponse(turnContinue.responseUrl, {
+				text,
+				responseType: "ephemeral",
+			})
+		}
+	}
+	const paused = loadPausedTurn(agent, turnContinue.pauseId)
+	if (!paused) {
+		return refuse("I couldn't find that paused task — it may have expired.")
+	}
+	if (paused.teamId !== turnContinue.teamId) {
+		return refuse("That paused task belongs to a different Slack workspace.")
+	}
+	if (paused.askerUser !== turnContinue.userId) {
+		return refuse(`Only <@${paused.askerUser}> can continue this task.`)
+	}
+	if (paused.status !== "paused") {
+		return refuse(`That paused task is already ${paused.status}.`)
+	}
+	if (pausedTurnIsExpired(paused)) {
+		markPausedTurnTerminal(agent, paused.pauseId, "expired")
+		return refuse("That paused task expired after 15 minutes.")
+	}
+	const row = getThreadTurn(agent, paused.threadKey)
+	if (
+		!row ||
+		row.turn_id !== paused.turnId ||
+		row.status === "cancelled" ||
+		row.status === "superseded"
+	) {
+		markPausedTurnTerminal(agent, paused.pauseId, "expired")
+		return refuse(
+			"A newer message superseded that paused task. Ask me again to start over.",
+		)
+	}
+	// Consume before doing anything else: two rapid clicks must not resume twice.
+	if (!markPausedTurnResumed(agent, paused.pauseId)) {
+		return refuse("That paused task was already continued.")
+	}
+	let envelope: ApprovalResumeState
+	try {
+		envelope = JSON.parse(paused.stateJson) as ApprovalResumeState
+	} catch {
+		envelope = null as unknown as ApprovalResumeState
+	}
+	if (!envelope || !Array.isArray(envelope.messages)) {
+		markPausedTurnTerminal(agent, paused.pauseId, "error")
+		return refuse("I couldn't continue that task — its saved state was unreadable.")
+	}
+	const ws = await getWorkspaceByTeamId(env, turnContinue.teamId)
+	if (!ws || ws.orgId !== agent.name) {
+		markPausedTurnTerminal(agent, paused.pauseId, "error")
+		return refuse(
+			"I couldn't continue that task because the workspace configuration changed.",
+		)
+	}
+	const org: SlackOrg = {
+		id: ws.orgId,
+		name: ws.orgName,
+		slug: ws.orgSlug,
+		metadata: ws.orgMetadata,
+	}
+	const entitlement = await getCompanyBrainEntitlement(
+		env,
+		org.id,
+		(promise) => agent.waitUntil(promise),
+	)
+	if (!entitlement.allowed) {
+		return refuse(
+			companyBrainDenialMessage(entitlement.reason, env, companyBrainActivateUrl(env)),
+		)
+	}
+	const turnControl = beginThreadTurn(agent, {
+		threadKey: paused.threadKey,
+		askerUser: paused.askerUser,
+		originalQuestion: paused.question,
+		latestInstruction: null,
+		expected: threadTurnStartExpectation(row),
+	})
+	if (!turnControl) {
+		markPausedTurnTerminal(agent, paused.pauseId, "error")
+		return refuse(
+			"I couldn't continue that task — the thread moved on. Try asking me again.",
+		)
+	}
+	claim.control = turnControl
+	const botToken = await decryptToken(ws.botTokenEnc, env.ENCRYPTION_SECRET)
+	const stream = createSlackStreamSession({
+		botToken,
+		channel: paused.channel,
+		threadTs: paused.threadTs,
+		recipientUserId: paused.askerUser,
+		teamId: paused.teamId,
+		orgId: org.id,
+		publicProgress: true,
+		clearAssistantStatusOnProgress: true,
+		prepareReply: createSlackReplyReferenceResolver({
+			env,
+			teamId: paused.teamId,
+			botToken,
+		}),
+	})
+	attachTurnCancelNotifier(agent, turnControl, async (status) => {
+		await stream.discard(
+			status === "cancelled" ? "Got it, stopping here." : undefined,
+		)
+	})
+	if (turnContinue.responseUrl) {
+		await updateSlackInteractionResponse(turnContinue.responseUrl, {
+			text: "Picking up where I left off…",
+			replaceOriginal: true,
+		})
+	}
+	const { deadline, signal } = turnDeadlineSignal(turnControl.signal)
+	// The envelope carries the conversation exactly as it stopped; this is the
+	// only new instruction, so the model resumes the task rather than restarting.
+	const approval: PendingApproval = {
+		// Empty id marks "not an approval", so no tool-approval-response is injected.
+		approvalId: "",
+		turnId: `${paused.pauseId}:continue`,
+		orgId: org.id,
+		teamId: paused.teamId,
+		channel: paused.channel,
+		threadTs: paused.threadTs,
+		askerUser: paused.askerUser,
+		toolName: "task_continue",
+		toolInput: {},
+		summary: "Continue the paused task",
+		state: {
+			...envelope,
+			messages: [
+				...envelope.messages,
+				{
+					role: "user",
+					content:
+						"Continue this task from where it stopped. The saved state below already holds the methods you discovered and the calls you made — build on it rather than starting over.",
+				},
+			],
+			// Fence coordination and the live-update inbox on the turn we just opened.
+			turnControl,
+		},
+		status: "pending",
+		createdAt: Date.now(),
+		expiresAt: Date.now() + APPROVAL_EXPIRY_MS,
+	}
+	const resume = resumeTurnAfterApproval({
+		agent,
+		org,
+		approval,
+		approved: true,
+		progress: fencedProgress(agent, turnControl, stream.progress),
+		obs: {
+			traceId: generateId(),
+			distinctId: turnContinue.userId,
+			sessionId: `${paused.channel}:${paused.threadTs}`,
+			channel: paused.channel,
+			threadTs: paused.threadTs,
+			source: "slack_turn",
+		},
+		abortSignal: signal,
+		slackBotToken: botToken,
+	})
+	try {
+		const out = await raceWithAbortSignal(resume, signal)
+		if (out.status === "suspended") {
+			// The resumed turn asked for sign-off on a new action.
+			if (!markThreadTurnWaitingForApproval(agent, turnControl)) return
+			const now = Date.now()
+			const pending: PendingApproval = {
+				approvalId: `${paused.pauseId}:${out.approval.approvalId}`,
+				turnId: `${paused.pauseId}:${out.approval.approvalId}`,
+				orgId: org.id,
+				teamId: paused.teamId,
+				channel: paused.channel,
+				threadTs: paused.threadTs,
+				askerUser: paused.askerUser,
+				toolName: out.approval.toolName,
+				slug: out.approval.slug,
+				toolInput: out.approval.input,
+				summary: out.approval.summary,
+				state: out.state,
+				status: "pending",
+				createdAt: now,
+				expiresAt: now + APPROVAL_EXPIRY_MS,
+			}
+			insertPendingApproval(agent, pending)
+			await stream.finalize("", false)
+			const cardTs = await postSlackApprovalCard(
+				botToken,
+				paused.channel,
+				paused.threadTs,
+				{
+					approvalId: pending.approvalId,
+					summary: pending.summary,
+					toolName: pending.toolName,
+					slug: pending.slug,
+					iconUrl: await resolveApprovalIconUrl({
+						env,
+						orgId: pending.orgId,
+						actor: pending.state.actor,
+						slug: pending.slug,
+						toolName: pending.toolName,
+					}),
+					askerUser: pending.askerUser,
+					expiresAt: pending.expiresAt,
+				},
+			)
+			if (cardTs) {
+				setApprovalCardTs(agent, pending.approvalId, cardTs)
+				await armApprovalExpiry(agent, pending)
+				markBotThread(agent, paused.teamId, paused.channel, paused.threadTs)
+			}
+			return
+		}
+		if (out.status === "paused") {
+			// Out of time again: hand back a fresh envelope for the next click.
+			await stream.finalize("", false, true)
+			const nextPause = persistPausedTurn({
+				agent,
+				orgId: org.id,
+				teamId: paused.teamId,
+				channel: paused.channel,
+				threadTs: paused.threadTs,
+				threadKey: paused.threadKey,
+				turnId: turnControl.turnId,
+				askerUser: paused.askerUser,
+				question: out.state.question ?? paused.question,
+				envelope: out.state,
+			})
+			await postPausedTurnCard(
+				botToken,
+				paused.channel,
+				paused.threadTs,
+				paused.askerUser,
+				nextPause.pauseId,
+			)
+			markThreadTurnCompleted(agent, turnControl)
+			return
+		}
+		const reply = out.reply
+		const finalizeResult = await stream.finalize(reply, false)
+		if (reply.trim() && !finalizeResult.streamed) {
+			await stream.postFallback(reply)
+		}
+	} catch (err) {
+		retainAbandoned(resume, (promise) => brainAgent(agent).waitUntil(promise))
+		if (turnWasInterrupted(agent, turnControl)) return
+		const timedOut = deadline.aborted
+		console.error("[company-brain] turn continue failed:", err)
+		await stream.finalize(
+			timedOut
+				? "This is still taking a while, so I paused again — reply here and I'll pick it back up."
+				: "Sorry, I hit an error while continuing that task.",
+			!timedOut,
+		)
+	}
+	try {
+		if (isThreadTurnCurrent(agent, turnControl)) {
+			markThreadTurnCompleted(agent, turnControl)
+		}
+	} finally {
+		reapUnfinishedThreadTurn(agent, turnControl)
+	}
+}
+
 
 async function updateDecisionResponse(
 	env: Env,
@@ -950,6 +1258,36 @@ async function runSlackApprovalDecisionInner(
 			setApprovalCardTs(agent, nextPending.approvalId, cardTs)
 			await armApprovalExpiry(agent, nextPending)
 			markBotThread(agent, approval.teamId, approval.channel, approval.threadTs)
+			return
+		}
+		if (out.status === "paused") {
+			// The approved action has had its chance to run, so this approval is
+			// spent; the fresh envelope is what the Continue button replays.
+			if (decision.approved) {
+				markApprovalTerminal(agent, approval.approvalId, "executed")
+			}
+			await stream.finalize("", false, true)
+			if (turnControl) {
+				const pausedTurn = persistPausedTurn({
+					agent,
+					orgId: approval.orgId,
+					teamId: approval.teamId,
+					channel: approval.channel,
+					threadTs: approval.threadTs,
+					threadKey: turnControl.threadKey,
+					turnId: turnControl.turnId,
+					askerUser: approval.askerUser,
+					question: out.state.question ?? approval.state.question ?? "",
+					envelope: out.state,
+				})
+				await postPausedTurnCard(
+					botToken,
+					approval.channel,
+					approval.threadTs,
+					approval.askerUser,
+					pausedTurn.pauseId,
+				)
+			}
 			return
 		}
 		turnResult = out
@@ -2972,6 +3310,42 @@ async function runSlackTurnInner(
 			markBotThread(agent, msg.teamId, channel, threadTs)
 			console.log(
 				`[company-brain] approval suspended id=${pending.approvalId} org=${org.id} channel=${channel} thread=${threadTs}`,
+			)
+			return
+		}
+		if (out.status === "paused") {
+			if (passiveInvestigation) {
+				// Nothing asked interactively, so there is nobody to press Continue.
+				passiveTerminalReason = "timeout"
+				markThreadTurnCompleted(agent, turnControl)
+				return
+			}
+			await stream.finalize("", false, true)
+			if (turnControl) {
+				const pausedTurn = persistPausedTurn({
+					agent,
+					orgId: org.id,
+					teamId: msg.teamId,
+					channel,
+					threadTs,
+					threadKey: turnControl.threadKey,
+					turnId: turnControl.turnId,
+					askerUser: ev.user ?? "",
+					question: out.state.question ?? question,
+					envelope: out.state,
+				})
+				await postPausedTurnCard(
+					botToken,
+					channel,
+					threadTs,
+					ev.user ?? "",
+					pausedTurn.pauseId,
+				)
+			}
+			markThreadTurnCompleted(agent, turnControl)
+			markBotThread(agent, msg.teamId, channel, threadTs)
+			console.log(
+				`[company-brain] turn paused at the step boundary org=${org.id} channel=${channel} thread=${threadTs}`,
 			)
 			return
 		}

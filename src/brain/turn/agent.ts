@@ -34,6 +34,7 @@ import type {
 import type { ReactionQueuePayload } from "../slack/reaction-queue"
 import type {
 	SlackApprovalDecision,
+	SlackTurnContinue,
 	SlackConnectCompletion,
 } from "../slack/turn"
 import type { SlackOrg } from "../slack/workspace"
@@ -289,6 +290,10 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 
 	async onApprovalDecision(decision: SlackApprovalDecision): Promise<void> {
 		return (await this.loadImpl()).onApprovalDecision(this, decision)
+	}
+
+	async onTurnContinue(turnContinue: SlackTurnContinue): Promise<void> {
+		return (await this.loadImpl()).onTurnContinue(this, turnContinue)
 	}
 
 	async onLeaseDecision(decision: SlackLeaseDecision): Promise<void> {

@@ -13,10 +13,11 @@ import {
 	type TurnState,
 	touchTurnState,
 } from "./state"
+import { TURN_DEADLINE_MS } from "./util"
 
 type StreamTextOptions = Parameters<TurnDeps["streamText"]>[0]
 
-export type TurnAttempt = "initial" | "live_update" | "approval_resume"
+export type TurnAttempt = "initial" | "live_update" | "approval_resume" | "pause_resume"
 
 export type BudgetPolicyDecision = {
 	remaining: number
@@ -72,6 +73,38 @@ export function applyProgressPacingPolicy(
 	}
 }
 
+// Wall-clock budget for one attempt, mirroring the step budget above. Warns
+// once at the end of the runway, then wraps up so the time pause lands at a
+// step boundary exactly like an approval suspension instead of yanking the
+// deadline out from under a running tool call.
+export const TURN_PAUSE_HEADROOM_MS = 3 * 60 * 1000
+
+// The soft pause arms this far before TURN_DEADLINE_MS, leaving the headroom
+// for one worst-case step (MCP calls are bounded at 60s/75s each) plus the card
+// write. A step that outlives it falls through to the hard deadline, which the
+// rescue backstop covers.
+export const TURN_PAUSE_BUDGET_MS = TURN_DEADLINE_MS - TURN_PAUSE_HEADROOM_MS
+
+export type TimeBudgetPolicyDecision = {
+	warned: boolean
+	wrapUp: boolean
+}
+
+export function applyTimeBudgetPolicy(
+	state: TurnState,
+	elapsedMs: number,
+	budgetMs: number,
+): TimeBudgetPolicyDecision {
+	const remaining = budgetMs - elapsedMs
+	const warning = `Time: ~${Math.max(0, Math.round(remaining / 1000))}s left. Consolidate and answer from the evidence you have.`
+	const before = state.version
+	if (remaining <= TURN_PAUSE_HEADROOM_MS) {
+		addTurnWarning(state, warning)
+	}
+	const warned = state.version !== before
+	return { warned, wrapUp: remaining <= 0 }
+}
+
 export type RunModelLoopArgs = {
 	deps: TurnDeps
 	env: Env
@@ -90,7 +123,7 @@ export type RunModelLoopArgs = {
 	functionId: string
 	prepareMessages?: (messages: ModelMessage[]) => ModelMessage[]
 	/** Runs at the top of each step, before turn_state is rendered, so it may mutate state (e.g. pacing nudges). */
-	onBeforeStep?: (stepNumber: number) => void
+	onBeforeStep?: (stepNumber: number) => TimeBudgetPolicyDecision | undefined
 	onPreparedStep?: (args: {
 		stepNumber: number
 		input: ModelMessage[]
@@ -142,7 +175,7 @@ export function runModelLoop(args: RunModelLoopArgs) {
 		],
 		prepareStep: ({ messages, stepNumber }) => {
 			const budget = applyStepBudgetPolicy(args.state)
-			args.onBeforeStep?.(stepNumber)
+			const timeBudget = args.onBeforeStep?.(stepNumber)
 			const sourceMessages = args.prepareMessages?.(messages) ?? messages
 			const preparedMessages = replaceTrailingTurnState(
 				sourceMessages,
@@ -150,7 +183,9 @@ export function runModelLoop(args: RunModelLoopArgs) {
 				renderCache,
 			)
 			const system = args.system()
-			const activeTools = resolveActiveTools(budget.wrapUp)
+			const activeTools = resolveActiveTools(
+				budget.wrapUp || timeBudget?.wrapUp === true,
+			)
 			args.onPreparedStep?.({
 				stepNumber,
 				input: [...system, ...preparedMessages],

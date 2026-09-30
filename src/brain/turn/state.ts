@@ -241,7 +241,9 @@ export function beginTurnAttempt(
 	state.budget.steps = { limit, used: 0 }
 	state.warnings = state.warnings.filter(
 		(warning) =>
-			!warning.startsWith("Budget: ") && !warning.startsWith("Pacing:"),
+			!warning.startsWith("Budget: ") &&
+			!warning.startsWith("Pacing:") &&
+			!warning.startsWith("Time: "),
 	)
 	touchTurnState(state)
 }

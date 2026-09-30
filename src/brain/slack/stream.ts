@@ -483,7 +483,7 @@ export function createSlackStreamSession(args: {
 			const closingTitle = failed
 				? `Ran into a problem (${elapsed})`
 				: paused
-					? `Taking longer than expected — reply to pick this back up (${elapsed})`
+					? `Taking longer than expected (${elapsed})`
 					: outgoingReply.trim()
 						? `Answer ready (${elapsed})`
 						: settled

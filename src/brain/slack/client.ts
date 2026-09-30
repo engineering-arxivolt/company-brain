@@ -1,4 +1,5 @@
 import { slackCredentials } from "../../setup/config-store"
+import { TURN_CONTINUE_ACTION_ID } from "../constants"
 import { getCatalogIconUrlForToolLabel } from "../tools/mcp/catalog"
 import {
 	humanizeToolAction,
@@ -805,6 +806,47 @@ export function approvalBlocks(
 			child_blocks: childBlocks,
 		},
 	]
+}
+
+// The pause message carries its own Continue button: a typed reply also
+// resumes (via the rescued checkpoint), but a click replays the exact
+// persisted envelope without the person having to phrase anything.
+export function pausedTurnContinueBlocks(pauseId: string): unknown[] {
+	return [
+		{
+			type: "actions",
+			block_id: "brain_turn_continue_actions",
+			elements: [
+				{
+					type: "button",
+					action_id: TURN_CONTINUE_ACTION_ID,
+					value: pauseId,
+					style: "primary",
+					text: {
+						type: "plain_text",
+						text: "Continue where it left off",
+						emoji: true,
+					},
+				},
+			],
+		},
+	]
+}
+
+export async function postPausedTurnCard(
+	botToken: string,
+	channel: string,
+	threadTs: string,
+	askerUser: string,
+	pauseId: string,
+): Promise<string | undefined> {
+	return postSlackMessage(
+		botToken,
+		channel,
+		`I ran out of time mid-task. <@${askerUser}> press Continue to pick it back up from exactly where it stopped.`,
+		threadTs,
+		pausedTurnContinueBlocks(pauseId),
+	)
 }
 
 export async function postSlackApprovalCard(

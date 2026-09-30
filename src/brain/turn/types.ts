@@ -70,6 +70,12 @@ export type ComputeTurnResult =
 			approval: TurnApprovalRequest
 			state: ApprovalResumeState
 	  }
+	| {
+			/** The time budget ran out at a step boundary; `state` is a complete
+			 * resume envelope the Continue button replays. */
+			status: "paused"
+			state: ApprovalResumeState
+	  }
 
 export type ComputeTurnOptions = {
 	abortSignal?: AbortSignal

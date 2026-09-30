@@ -60,6 +60,7 @@ import { ensureTriageTraceSamplingTable } from "../slack/triage-sampling"
 import { ensureTurnControlTables } from "../slack/turn-control"
 import { brainAgent, type CompanyBrainAgent } from "./agent"
 import { ensureApprovalTables } from "./approval"
+import { ensurePausedTurnTables } from "./pause"
 import { ensureDecisionTables } from "./decision-log"
 import {
 	type ApprovalExpiryPayload,
@@ -124,10 +125,12 @@ import {
 	finalizeInterruptedSlackTurn as finalizeInterruptedSlackTurnImpl,
 	runSlackApprovalDecision,
 	runSlackConnectComplete,
+	runSlackContinueTurn,
 	runSlackDebugReaction,
 	runSlackMuteReaction,
 	runSlackTurn,
 	type SlackApprovalDecision,
+	type SlackTurnContinue,
 	type SlackConnectCompletion,
 } from "../slack/turn"
 import type { SlackOrg } from "../slack/workspace"
@@ -157,6 +160,7 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 	ensureBrainMemoryNodeTable(agent)
 	ensureBrainMemoryStateTable(agent)
 	ensureApprovalTables(agent)
+	ensurePausedTurnTables(agent)
 	ensureDecisionTables(agent)
 	ensureLeaseTables(agent)
 	ensureChimeBudgetTables(agent)
@@ -331,6 +335,19 @@ export async function onApprovalDecision(
 		await runSlackApprovalDecision(agent, decision)
 	} catch (err) {
 		console.error("[company-brain] approval decision failed:", err)
+	} finally {
+		await flushBrainTelemetry()
+	}
+}
+
+export async function onTurnContinue(
+	agent: CompanyBrainAgent,
+	turnContinue: SlackTurnContinue,
+): Promise<void> {
+	try {
+		await runSlackContinueTurn(agent, turnContinue)
+	} catch (err) {
+		console.error("[company-brain] turn continue failed:", err)
 	} finally {
 		await flushBrainTelemetry()
 	}
@@ -628,6 +645,15 @@ export async function debugTurn(
 	if (out.status === "suspended") {
 		return {
 			reply: `Approval needed for ${out.approval.slug ?? out.approval.toolName}.`,
+			memory: null,
+			written: false,
+		}
+	}
+	if (out.status === "paused") {
+		// Internal turns borrow no thread surface, so the soft pause never arms
+		// for them; this branch only keeps the result union exhaustive.
+		return {
+			reply: "I ran out of time on that one. Ask again to continue.",
 			memory: null,
 			written: false,
 		}

@@ -68,7 +68,10 @@ import {
 } from "./finalization"
 import {
 	applyProgressPacingPolicy,
+	applyTimeBudgetPolicy,
 	runModelLoop,
+	TURN_PAUSE_BUDGET_MS,
+	type TimeBudgetPolicyDecision,
 	type TurnAttempt,
 } from "./loop"
 import { resolveBrainMainProfile } from "./model-profile"
@@ -243,6 +246,14 @@ export async function computeTurn(
 	const hasStableThreadKey = Boolean(
 		input.options?.turnControl?.threadKey || input.slackLookup?.channel,
 	)
+	// Soft pause. When the time budget is spent the loop stops at the next step
+	// boundary and hands back a full resume envelope, the way an approval
+	// suspension does, instead of the caller yanking the deadline out from under
+	// an in-flight tool call. Only turns with a stable thread surface pause: the
+	// envelope is keyed to the thread, so anywhere else could never be resumed.
+	const softPauseEnabled = !ephemeral && hasStableThreadKey
+	const attemptStartedAt = Date.now()
+	let pauseRequested = false
 	// A failed or abandoned turn has still gathered evidence, and the completion
 	// path that would normally keep it never runs. Save what it found so the next
 	// turn in this thread continues instead of re-discovering everything. Never
@@ -662,23 +673,35 @@ export async function computeTurn(
 				suspendRequested: () =>
 					Boolean(
 						connectedAppRuntime?.pendingApproval() ||
-							terminalCapture.requested(),
+							terminalCapture.requested() ||
+							pauseRequested,
 					),
 				abortSignal,
 				onBeforeStep: () => {
+					const timeBudget: TimeBudgetPolicyDecision = softPauseEnabled
+						? applyTimeBudgetPolicy(
+								state,
+								Date.now() - attemptStartedAt,
+								TURN_PAUSE_BUDGET_MS,
+							)
+						: { warned: false, wrapUp: false }
+					if (timeBudget.wrapUp) pauseRequested = true
 					// Only pace the main investigation, and only when a live sink exists.
-					if (attempt !== "initial" || !pacingProgress?.narrate) return
+					if (attempt !== "initial" || !pacingProgress?.narrate) {
+						return timeBudget
+					}
 					if (!pacingInitialized) {
 						// Start the clock when the model actually begins, not during setup.
 						pacingInitialized = true
 						lastUserVisibleAt = Date.now()
-						return
+						return timeBudget
 					}
 					applyProgressPacingPolicy(
 						state,
 						Date.now() - lastUserVisibleAt,
 						updatesSent > 0,
 					)
+					return timeBudget
 				},
 				prepareMessages: (stepMessages) => {
 					currentRunLiveUpdateMessages.push(...consumeLiveUpdateMessages())
@@ -950,6 +973,68 @@ export async function computeTurn(
 				activeDiscoveryApps: Object.keys(state.apps.discovered),
 			})
 
+		// A clean step-boundary pause. Unlike a timeout this is cooperative: every
+		// tool call in the last step has settled, so the envelope below is a coherent
+		// conversation rather than a snapshot of work still in flight.
+		const pausedTurnResult = (
+			messages: ModelMessage[],
+		): Extract<ComputeTurnResult, { status: "paused" }> => {
+			failurePhase = "completion"
+			telemetry.finishTurn({
+				outputChoices: lastProviderOutputChoices,
+				turnStatus: "paused",
+				inputTokens: totalInputTokens || undefined,
+				outputTokens: totalOutputTokens || undefined,
+				turnState: state,
+			})
+			console.log(
+				`[company-brain][${traceId}] turn paused at a step boundary messages=${messages.length}`,
+			)
+			try {
+				const checkpoint = buildThreadInvestigationCheckpoint({
+					state,
+					// No answer exists, so none is invented: only the structured work
+					// travels, and any prior answer carries forward untouched.
+					answer: "",
+				})
+				if (checkpoint) {
+					state.checkpoint = saveThreadInvestigation({
+						agent,
+						threadKey: state.request.threadKey,
+						principalKey: investigationPrincipal,
+						checkpoint,
+					})
+				}
+			} catch (error) {
+				console.warn(
+					`[company-brain][${traceId}] checkpoint unavailable on pause: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			}
+			return {
+				status: "paused",
+				state: {
+					userId,
+					actor,
+					question,
+					messages: compactContinuation(messages),
+					// Empty: a time pause carries no approval, so the resume must not
+					// inject a tool-approval-response for anything.
+					approvalIds: [],
+					turnState: restoreTurnState(state),
+					assembly: snapshotTurnToolAssembly(
+						assemblyArgs,
+						toolDiscovery.enabledFamilies(),
+					),
+					botIdentity,
+					detailedAppPolicy,
+					memoryScope: slackLookup?.memoryScope,
+					memoryTagSlackUserIds: input.memoryTagSlackUserIds,
+					memory: capture.memory,
+					turnControl: options?.turnControl,
+					terminalProposal: undefined,
+				},
+			}
+		}
 		let sourceMessages = initialMessages
 		let attempt: ComputeTurnAttempt = "initial"
 		let output: Awaited<ReturnType<typeof readTurnOutput>> | undefined
@@ -1012,6 +1097,12 @@ export async function computeTurn(
 			if (settlement.status === "publish") {
 				output = settlement.candidate
 				break
+			}
+			// The model did not settle an answer and the time budget is spent: stop at
+			// this boundary with a full resume envelope rather than begin a step it
+			// cannot finish. A publishable answer always wins over pausing.
+			if (pauseRequested) {
+				return pausedTurnResult(settlement.messages)
 			}
 			sourceMessages = settlement.messages
 			attempt = "live_update"

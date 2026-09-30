@@ -1,6 +1,10 @@
 export const PUBLIC_CHANNEL_ROLLOUT_ACTION_ID = "brain_add_public_channels"
 export const PUBLIC_CHANNEL_ROLLOUT_DAYS = 7
 
+// Raised by the paused turn's card; `POST /brain/slack/interactions` routes it
+// to `onTurnContinue`, which replays the persisted resume envelope.
+export const TURN_CONTINUE_ACTION_ID = "brain_turn_continue"
+
 export const TEAM_INVITE_SELECT_ACTION_ID = "brain_add_team_select"
 export const TEAM_INVITE_SEND_ACTION_ID = "brain_add_team_send"
 export const TEAM_INVITE_NOTIFY_ALL_ACTION_ID = "brain_add_team_notify_all"
