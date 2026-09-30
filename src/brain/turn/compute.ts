@@ -93,6 +93,7 @@ import {
 	buildThreadInvestigationCheckpoint,
 	investigationPrincipalKey,
 	loadThreadInvestigation,
+	saveInterruptedTurnCheckpoint,
 	saveThreadInvestigation,
 } from "./thread-investigation"
 import { assembleTurnTools, snapshotTurnToolAssembly } from "./tools"
@@ -236,6 +237,37 @@ export async function computeTurn(
 	let totalOutputTokens = 0
 	let lastProviderOutputChoices: unknown[] = []
 	let failurePhase: TurnFailurePhase = "tool_assembly"
+	// A turn in a real thread gets a stable key that the next turn looks up. A
+	// turn with no thread surface falls back to the trace id, so anything written
+	// under it could never be read back -- a strictly wasted write.
+	const hasStableThreadKey = Boolean(
+		input.options?.turnControl?.threadKey || input.slackLookup?.channel,
+	)
+	// A failed or abandoned turn has still gathered evidence, and the completion
+	// path that would normally keep it never runs. Save what it found so the next
+	// turn in this thread continues instead of re-discovering everything. Never
+	// throws: this runs on failure paths, where masking the real error would be
+	// worse than losing the rescue.
+	const rescueInterruptedWork = (): void => {
+		if (ephemeral || !hasStableThreadKey) return
+		try {
+			const rescued = saveInterruptedTurnCheckpoint({
+				agent,
+				threadKey: state.request.threadKey,
+				principalKey: investigationPrincipalKey({ userId, actor }),
+				state,
+			})
+			if (rescued) {
+				console.log(
+					`[company-brain][${traceId}] rescued interrupted turn work methods=${rescued.discoveredMethods.length} trajectory=${rescued.trajectory.length} evidence=${rescued.verifiedEvidence.length}`,
+				)
+			}
+		} catch (error) {
+			console.warn(
+				`[company-brain][${traceId}] interrupted turn rescue failed: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
+	}
 	const finishFailedTurn = (error: unknown): void => {
 		const terminal = turnFailureTerminal(abortSignal)
 		telemetry.finishTurn({
@@ -249,6 +281,7 @@ export async function computeTurn(
 			failureCode: turnFailureCode(error, abortSignal),
 			turnState: state,
 		})
+		rescueInterruptedWork()
 	}
 	const investigationPrincipal = investigationPrincipalKey({ userId, actor })
 	try {

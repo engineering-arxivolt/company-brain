@@ -50,7 +50,15 @@ export function raceWithAbortSignal<T>(
 	})
 }
 
-export const TURN_DEADLINE_MS = 5 * 60 * 1000
+// Wall-clock ceiling for one turn. Past it the runtime stops awaiting, abandons
+// the in-flight work, and asks the person to reply so it can pick the task back
+// up. Two bounds hold this number in place:
+//   - APPROVAL_EXPIRY_MS (15 min) is the approval window, so a turn must never
+//     outlive it and start competing with a pending card's expiry.
+//   - limits.cpu_ms in wrangler.jsonc. This is a wall-clock bound; a turn that
+//     does more work inside it needs the matching CPU ceiling or the isolate is
+//     killed outright instead of pausing gracefully.
+export const TURN_DEADLINE_MS = 10 * 60 * 1000
 
 // The race stops awaiting; the operation still needs to meter and clean up.
 export function retainAbandoned(

@@ -311,3 +311,49 @@ export function buildThreadInvestigationCheckpoint(args: {
 		expiresAt: (args.now ?? Date.now()) + INVESTIGATION_IDLE_TTL_MS,
 	}
 }
+
+/**
+ * Rescue the work of a turn that never completed.
+ *
+ * A turn that crosses TURN_DEADLINE_MS is abandoned, not cancelled: it throws
+ * out before the completion path in `computeTurn`, so its reply, its memory
+ * writeback, and the `saveThreadInvestigation` call all never happen. Without
+ * this, the next turn in the thread restores nothing and re-discovers every
+ * method the interrupted turn had already found.
+ *
+ * Only real work is written. A turn that gathered nothing returns undefined
+ * before touching storage, so a trivial failure cannot refresh the TTL of a
+ * stale checkpoint.
+ *
+ * No answer is invented: `lastAnswer` and `verifiedEvidence` carry forward from
+ * the prior checkpoint untouched, rather than being backfilled with text the
+ * model never actually produced. The payload is the structured state -- the
+ * discovered methods, the calls already made, and the literal trajectory.
+ */
+export function saveInterruptedTurnCheckpoint(args: {
+	agent: CompanyBrainAgent
+	threadKey: string
+	principalKey: string
+	state: TurnState
+	now?: number
+}): ReusableInvestigation | undefined {
+	const hasWork =
+		Object.keys(args.state.apps.discovered).length > 0 ||
+		args.state.nativeCalls.length > 0 ||
+		args.state.trajectory.length > 0
+	if (!hasWork) return undefined
+
+	const checkpoint = buildThreadInvestigationCheckpoint({
+		state: args.state,
+		answer: "",
+		now: args.now,
+	})
+	if (!checkpoint) return undefined
+	return saveThreadInvestigation({
+		agent: args.agent,
+		threadKey: args.threadKey,
+		principalKey: args.principalKey,
+		checkpoint,
+		now: args.now,
+	})
+}
