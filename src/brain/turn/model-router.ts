@@ -1,5 +1,6 @@
 import { isTypeSafeConfigured, querySystemOne } from "../typesafe/client"
-import { type SupportedModel } from "@/lib/model-registry"
+import { registerOpenRouterModels, type SupportedModel } from "@/lib/model-registry"
+import { registerDynamicModelPrices } from "../billing/model-prices"
 import {
 	TRIAGE_MODEL,
 	BRAIN_MODEL,
@@ -10,6 +11,8 @@ import {
 	openAiCompatibleBaseUrl,
 	availableProviders,
 	providerKey,
+	catalogMainTurnModels,
+	setCatalogMainTurnModels,
 	OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
 	OPENROUTER_MAIN_MODEL,
 	OPENROUTER_ESCALATION_MODEL,
@@ -33,7 +36,12 @@ interface OpenRouterModel {
 		completion: string
 	}
 	context_length: number
-	supported_parameters: string[]
+	/**
+	 * Optional because the endpoint has been observed to omit it for some
+	 * entries. A model with no capability list is treated as incapable rather
+	 * than assumed capable — see classifyOpenRouterModels.
+	 */
+	supported_parameters?: string[]
 	architecture?: {
 		tokenizer: string
 	}
@@ -74,8 +82,26 @@ async function fetchOpenRouterModels(env: Env): Promise<OpenRouterModel[]> {
 	}
 }
 
-/** Classify OpenRouter models into pricing tiers */
-function classifyOpenRouterModels(models: OpenRouterModel[]): {
+/**
+ * Classify OpenRouter models into pricing tiers.
+ *
+ * Capability filter first, price second. A model that cannot do what the brain
+ * asks is not a cheaper option, it is a broken one:
+ *
+ * - "tools" — the answering turn drives its whole toolset through native tool
+ *   calling. Without it the turn cannot act at all.
+ * - "response_format" — the decision paths (triage, approval classification,
+ *   channel observation, research) parse typed JSON. The model registry is
+ *   explicit that a model without structured outputs "can silently degrade"
+ *   them, and silently-degrading triage means messages get acked instead of
+ *   answered. Tool support alone is not enough.
+ *
+ * Both checks fail closed: a model whose supported_parameters is absent or
+ * incomplete is excluded rather than admitted on an assumption.
+ */
+// Exported for tests: this filter is the only thing standing between a model
+// that cannot call tools or emit structured JSON and the turn that needs both.
+export function classifyOpenRouterModels(models: OpenRouterModel[]): {
 	free: string[]
 	cheap: string[]
 	premium: string[]
@@ -85,18 +111,20 @@ function classifyOpenRouterModels(models: OpenRouterModel[]): {
 	const premium: string[] = []
 
 	for (const m of models) {
+		const parameters = m.supported_parameters ?? []
+		const supportsTools = parameters.includes("tools")
+		const supportsStructuredOutputs = parameters.includes("response_format")
+
+		if (!supportsTools || !supportsStructuredOutputs) continue
+
 		const promptPrice = parseFloat(m.pricing?.prompt ?? "0")
 		const completionPrice = parseFloat(m.pricing?.completion ?? "0")
 		const avgPrice = (promptPrice + completionPrice) / 2
 
-		// Only consider models that support tools/function calling
-		const supportsTools = (m.supported_parameters || []).includes("tools")
-
-		if (!supportsTools) continue
-
 		if (avgPrice === 0) {
 			free.push(m.id)
-		} else if (avgPrice < 0.5) { // < $0.50/MTok avg
+		} else if (avgPrice < 0.5) {
+			// < $0.50/MTok avg
 			cheap.push(m.id)
 		} else {
 			premium.push(m.id)
@@ -106,7 +134,18 @@ function classifyOpenRouterModels(models: OpenRouterModel[]): {
 	return { free, cheap, premium }
 }
 
-/** Build dynamic tier config from OpenRouter catalog */
+/**
+ * Build the tier config from the live OpenRouter catalog.
+ *
+ * This used to fetch the catalog, classify it, sort it, and then discard all
+ * three buckets and return the same two hardcoded ids — so a deployment with
+ * many models on OpenRouter only ever used two of them, and paid a network
+ * call to learn nothing. The catalog now decides the tiers.
+ *
+ * The ids are registered into the runtime overlay first (see
+ * registerOpenRouterModels), because raw ids like "z-ai/glm-5.3-flash" are not
+ * in SUPPORTED_MODELS and the provider factory dispatches on getModelInfo().
+ */
 async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	const models = await fetchOpenRouterModels(env)
 	const { free, cheap, premium } = classifyOpenRouterModels(models)
@@ -122,18 +161,85 @@ async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	cheap.sort(sortByContext)
 	premium.sort(sortByContext)
 
-	// Build all tiers from models this deployment can actually reach.
-	// The dynamic catalog lists raw OpenRouter ids (e.g. "deepseek/deepseek-v4-flash")
-	// that are not in SUPPORTED_MODELS, so they must never be cast to
-	// SupportedModel and handed to the provider factory. Pin the tiers to the
-	// registered OpenRouter models instead: the cheap paid model answers, the
-	// frontier model escalates, and the free model stays on triage.
-	const fast = OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
-	const balanced = OPENROUTER_MAIN_MODEL
-	const strong = OPENROUTER_ESCALATION_MODEL
-	const long = OPENROUTER_ESCALATION_MODEL
+	// An empty or failed catalog must not change which model serves a turn.
+	// Fall back to the two known-good ids rather than serving something else.
+	if (!cheap.length && !premium.length) return hardcodedOpenRouterTiers()
 
-	return { fast, balanced, strong, long }
+	// Every capable id is registered and priced, including the free bucket: the
+	// `fast` tier is served from `free`, and an unregistered id resolves through
+	// getModelInfo's fallback to a different provider entirely. Free ids must
+	// price at $0 so isFreeModel keeps them off the answering turn's write path.
+	registerCatalogModels(models, [...free, ...cheap, ...premium])
+
+	// The answering turn owns tools that write to memory and GitHub/Linear, so
+	// the lead model is the cheapest PAID one, never a free model. See
+	// isFreeModel. Free models stay on the read-only triage tier.
+	const balanced = (cheap[0] ?? premium[0]) as SupportedModel
+	const strong = (premium[0] ?? cheap[1] ?? balanced) as SupportedModel
+
+	// Hand the paid hops to the answering chain. Without this the catalog is
+	// fetched, classified, registered and priced and then the chain ignores all
+	// of it and runs the pinned pair — the whole catalog would decide nothing.
+	// setCatalogMainTurnModels rejects a wholly-free pair, so `balanced` cannot
+	// put a free model on the write path here.
+	setCatalogMainTurnModels([balanced, strong])
+
+	return {
+		fast: (free[0] ?? cheap[0] ?? balanced) as SupportedModel,
+		balanced,
+		strong,
+		long: strong,
+	}
+}
+
+function hardcodedOpenRouterTiers(): ModelTierConfig {
+	return {
+		fast: OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
+		balanced: OPENROUTER_MAIN_MODEL,
+		strong: OPENROUTER_ESCALATION_MODEL,
+		long: OPENROUTER_ESCALATION_MODEL,
+	}
+}
+
+/** Make raw catalog ids resolvable by the provider factory, and priced. */
+function registerCatalogModels(
+	models: OpenRouterModel[],
+	ids: readonly string[],
+): void {
+	registerOpenRouterModels(ids)
+	registerDynamicModelPrices(
+		models
+			.filter((m) => ids.includes(m.id))
+			.map((m) => ({
+				id: m.id,
+				// OpenRouter quotes USD per token; the brain prices per MTok.
+				inputPerMTok: Number.parseFloat(m.pricing?.prompt ?? "0") * 1_000_000,
+				outputPerMTok:
+					Number.parseFloat(m.pricing?.completion ?? "0") * 1_000_000,
+			})),
+	)
+}
+
+/**
+ * Load the catalog and settle the model tiers before the answering turn builds
+ * its chain.
+ *
+ * `brainChainModelNames` is synchronous — the model factory has to resolve a
+ * concrete provider per candidate — so the catalog is fetched here, once, ahead
+ * of the chain. That makes the turn's model a function of a settled catalog
+ * rather than of whether a fetch happened to land first, which is the
+ * cold-start nondeterminism a sync read of the cache would have had.
+ *
+ * Never throws: a failed or empty catalog leaves the hardcoded tiers in place,
+ * so the worst case is today's behaviour.
+ */
+export async function primeOpenRouterTiers(env: Env): Promise<ModelTierConfig> {
+	// The OpenRouter branch keys off the same condition as the sync paths, so a
+	// deployment whose primary provider is not openai keeps its own tiers. A
+	// non-OpenRouter deployment primes nothing: there is no catalog to settle,
+	// and getDefaultTierConfig would not consult one.
+	if (!usesOpenRouterPrimary(env)) return nonOpenRouterTierConfig(env)
+	return buildOpenRouterTierConfig(env)
 }
 /** JEV question for model tier classification */
 const MODEL_TIER_QUESTION = {
@@ -155,60 +261,65 @@ Select the minimum sufficient tier. Prefer lower tiers when ambiguous.`,
 	},
 } as const
 
-/** Default tier configuration - maps to available models based on provider */
-async function getDefaultTierConfig(env: Env): Promise<ModelTierConfig> {
-	const providers = availableProviders(env)
-	const hasAnthropic = providers.includes("anthropic")
-	const hasOpenAI = providers.includes("openai")
-	const hasOpenRouter = Boolean(openAiCompatibleBaseUrl(env))
-	const hasGoogle = providers.includes("google")
-	const hasXAI = providers.includes("xai")
-
-	// Determine primary provider (first available in preference order)
-	const primaryProvider = providers[0]
-
-	// If using OpenRouter (OpenAI-compatible), use dynamic model catalog
-	if (hasOpenRouter && primaryProvider === "openai") {
-		return buildOpenRouterTierConfig(env)
+/**
+ * The tier mapping for an OpenAI-compatible deployment.
+ *
+ * Single source of truth for the three sync/async entry points that used to
+ * each hand-roll this same object, which is how they drifted apart. Prefers the
+ * catalog's picks when the catalog has been primed, so a primed deployment
+ * routes background callers through the same models the answering turn uses.
+ */
+function openRouterTierConfig(): ModelTierConfig {
+	const picked = catalogMainTurnModels()
+	return {
+		fast: OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
+		balanced: picked?.[0] ?? OPENROUTER_MAIN_MODEL,
+		strong: picked?.[1] ?? OPENROUTER_ESCALATION_MODEL,
+		long: picked?.[1] ?? OPENROUTER_ESCALATION_MODEL,
 	}
+}
 
-	// Anthropic primary
-	if (hasAnthropic) {
+/**
+ * Tier config for a deployment that is not on an OpenAI-compatible endpoint.
+ * The catalog is an OpenRouter concept and has no say here.
+ */
+function nonOpenRouterTierConfig(env: Env): ModelTierConfig {
+	const providers = availableProviders(env)
+	if (providers.includes("anthropic")) {
 		return {
-			fast: TRIAGE_MODEL,                                   // claude-haiku-4.5
-			balanced: "claude-sonnet-5",
-			strong: BRAIN_MODEL,                                  // grok-4.5 or configured main
+			fast: TRIAGE_MODEL,
+			balanced: "claude-sonnet-5" as SupportedModel,
+			strong: BRAIN_MODEL,
 			long: BRAIN_MODEL,
 		}
 	}
-
-	// Google primary
-	if (hasGoogle) {
-		return {
-			fast: "gemini-3.8-flash",
-			balanced: "gemini-3.8-flash",
-			strong: "gemini-3.8-flash",
-			long: "gemini-3.8-flash",
-		}
+	if (providers.includes("google")) {
+		const m = "gemini-3.8-flash" as SupportedModel
+		return { fast: m, balanced: m, strong: m, long: m }
 	}
-
-	// XAI primary
-	if (hasXAI) {
-		return {
-			fast: "grok-4.5",
-			balanced: "grok-4.5",
-			strong: "grok-4.5",
-			long: "grok-4.5",
-		}
+	if (providers.includes("xai")) {
+		const m = "grok-4.5" as SupportedModel
+		return { fast: m, balanced: m, strong: m, long: m }
 	}
-
-	// Fallback - shouldn't happen if providers exist
 	return {
 		fast: TRIAGE_MODEL,
 		balanced: BRAIN_FALLBACK_MODEL,
 		strong: BRAIN_MODEL,
 		long: BRAIN_MODEL,
 	}
+}
+
+/** True when the OpenAI-compatible endpoint is this deployment's primary route. */
+function usesOpenRouterPrimary(env: Env): boolean {
+	return Boolean(openAiCompatibleBaseUrl(env)) && availableProviders(env)[0] === "openai"
+}
+
+/** Default tier configuration - maps to available models based on provider */
+async function getDefaultTierConfig(env: Env): Promise<ModelTierConfig> {
+	// On OpenRouter the catalog decides the tiers; everywhere else the catalog is
+	// an OpenRouter concept with no say, so the provider table stands.
+	if (usesOpenRouterPrimary(env)) return buildOpenRouterTierConfig(env)
+	return nonOpenRouterTierConfig(env)
 }
 
 /**
@@ -279,35 +390,10 @@ export async function getModelForTier(env: Env, tier: ModelTier): Promise<Suppor
 
 /** Synchronous fallback using hardcoded config (for sync-only contexts) */
 export function getModelForTierSync(env: Env, tier: ModelTier): SupportedModel {
-	// Use hardcoded config for sync version
-	const providers = availableProviders(env)
-	const hasAnthropic = providers.includes("anthropic")
-	const hasOpenRouter = Boolean(openAiCompatibleBaseUrl(env))
-	const primaryProvider = providers[0]
-
-	if (hasOpenRouter && primaryProvider === "openai") {
-		const fast = OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
-		const balanced = OPENROUTER_MAIN_MODEL
-		const strong = OPENROUTER_ESCALATION_MODEL
-		const long = OPENROUTER_ESCALATION_MODEL
-		return { fast, balanced, strong, long }[tier]
+	if (usesOpenRouterPrimary(env)) {
+		return openRouterTierConfig()[tier]
 	}
-
-	if (hasAnthropic) {
-		return { fast: TRIAGE_MODEL, balanced: "claude-sonnet-5" as SupportedModel, strong: BRAIN_MODEL, long: BRAIN_MODEL }[tier]
-	}
-
-	if (providers.includes("google")) {
-		const m = "gemini-3.8-flash" as SupportedModel
-		return { fast: m, balanced: m, strong: m, long: m }[tier]
-	}
-
-	if (providers.includes("xai")) {
-		const m = "grok-4.5" as SupportedModel
-		return { fast: m, balanced: m, strong: m, long: m }[tier]
-	}
-
-	return { fast: TRIAGE_MODEL, balanced: BRAIN_FALLBACK_MODEL, strong: BRAIN_MODEL, long: BRAIN_MODEL }[tier]
+	return nonOpenRouterTierConfig(env)[tier]
 }
 
 /**
@@ -330,42 +416,14 @@ export async function getRoutedModel(
  */
 export function getHeuristicModelForTask(env: Env, taskDescription: string): SupportedModel {
 	// Use sync version to avoid async in hot paths
-	const config = (() => {
-		const providers = availableProviders(env)
-		const hasAnthropic = providers.includes("anthropic")
-		const hasOpenRouter = Boolean(openAiCompatibleBaseUrl(env))
-		const primaryProvider = providers[0]
-
-		if (hasOpenRouter && primaryProvider === "openai") {
-			// On OpenRouter: the cheap paid model answers, the frontier model is
+	const config = usesOpenRouterPrimary(env)
+		? // On OpenRouter: the cheap paid model answers, the frontier model is
 			// the escalation hop for hard turns, and the free models stay on the
 			// read-only triage path. This previously routed strong and long to
 			// the free 550B model, so a "comprehensive research" task silently
 			// ran on a free model while the async path escalated to gpt-5.6.
-			return {
-				fast: OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
-				balanced: OPENROUTER_MAIN_MODEL,
-				strong: OPENROUTER_ESCALATION_MODEL,
-				long: OPENROUTER_ESCALATION_MODEL,
-			}
-		}
-
-		if (hasAnthropic) {
-			return { fast: TRIAGE_MODEL, balanced: "claude-sonnet-5" as SupportedModel, strong: BRAIN_MODEL, long: BRAIN_MODEL }
-		}
-
-		if (providers.includes("google")) {
-			const m = "gemini-3.8-flash" as SupportedModel
-			return { fast: m, balanced: m, strong: m, long: m }
-		}
-
-		if (providers.includes("xai")) {
-			const m = "grok-4.5" as SupportedModel
-			return { fast: m, balanced: m, strong: m, long: m }
-		}
-
-		return { fast: TRIAGE_MODEL, balanced: BRAIN_FALLBACK_MODEL, strong: BRAIN_MODEL, long: BRAIN_MODEL }
-	})()
+			openRouterTierConfig()
+		: nonOpenRouterTierConfig(env)
 
 	const desc = taskDescription.toLowerCase()
 

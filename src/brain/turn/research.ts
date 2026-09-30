@@ -243,7 +243,11 @@ async function extractHighlights(
 		if (costLedger) {
 			recordFinishEvent(costLedger, result, FAST_MODEL_BILLING_NAME)
 		}
-		const out = getGenerateTextStructuredOutput(result, HighlightsSchema)
+		const out = getGenerateTextStructuredOutput(
+			result,
+			HighlightsSchema,
+			result.response?.modelId ?? FAST_MODEL_BILLING_NAME,
+		)
 		return {
 			stats: (out.stats ?? []).slice(0, 4),
 			highlights: (out.highlights ?? []).slice(0, 6),

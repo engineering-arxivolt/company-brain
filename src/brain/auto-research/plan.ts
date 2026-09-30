@@ -170,7 +170,11 @@ export async function derivePlan(
 			providerMetadata: result.providerMetadata,
 			responseBody: responseBodyFromResult(result),
 		})
-		const out = getGenerateTextStructuredOutput(result, PlanSchema)
+		const out = getGenerateTextStructuredOutput(
+			result,
+			PlanSchema,
+			result.response?.modelId ?? TRIAGE_MODEL,
+		)
 		const bySlackId = new Map(input.roster.map((r) => [r.slackUserId, r]))
 		const plan: ResearchPlan = {
 			focus: out.focus.trim(),

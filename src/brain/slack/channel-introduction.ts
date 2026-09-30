@@ -87,7 +87,11 @@ export async function extractChannelThemes(args: {
 				)
 			})
 		}
-		const output = getGenerateTextStructuredOutput(result, ThemeOutputSchema)
+		const output = getGenerateTextStructuredOutput(
+			result,
+			ThemeOutputSchema,
+			result.response?.modelId ?? TRIAGE_MODEL,
+		)
 		const valid = new Set(args.validMessageTs)
 		return output.themes.flatMap((theme, index) => {
 			const citations = [...new Set(theme.slackMessageTs)].filter((ts) =>
@@ -182,6 +186,7 @@ export async function composeChannelIntroduction(args: {
 		const output = getGenerateTextStructuredOutput(
 			result,
 			IntroductionOutputSchema,
+			result.response?.modelId ?? TRIAGE_MODEL,
 		)
 		return output.text.trim() || fallback
 	} catch (error) {

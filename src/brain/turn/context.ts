@@ -397,6 +397,35 @@ function endsWithToolApprovalResponse(messages: ModelMessage[]): boolean {
 	)
 }
 
+/**
+ * Append messages while keeping a trailing tool-approval-response last.
+ *
+ * The SDK only executes an approved tool call when the approval response is the
+ * final message; anything appended after it re-prompts for approval instead of
+ * running the tool. That turns "I approved it and nothing happened" into a
+ * second approval card for the same action.
+ *
+ * Live updates drained during a step are the thing that lands after it — a
+ * teammate typing in the thread mid-approval — so they are spliced in *before*
+ * the approval response rather than appended after it. They stay in the caller's
+ * own list, which is what later rebuilds the conversation; only the ordering
+ * handed to the SDK changes.
+ */
+export function appendKeepingApprovalLast(
+	messages: ModelMessage[],
+	additions: readonly ModelMessage[],
+): ModelMessage[] {
+	if (!additions.length) return [...messages]
+	if (!endsWithToolApprovalResponse(messages)) {
+		return [...messages, ...additions]
+	}
+	return [
+		...messages.slice(0, -1),
+		...additions,
+		messages[messages.length - 1] as ModelMessage,
+	]
+}
+
 export function replaceTrailingTurnState(
 	messages: ModelMessage[],
 	state: TurnState,

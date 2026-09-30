@@ -35,6 +35,7 @@ import { reportLegacyStructuredReply, type TurnCapture } from "./capture-tools"
 import { cardOutputPayload } from "./card-content"
 import {
 	applySystemCacheBreakpoints,
+	appendKeepingApprovalLast,
 	compactMessagesAtBoundary,
 } from "./context"
 import { getTurnDeps } from "./deps"
@@ -51,6 +52,7 @@ import {
 	type TurnAttempt,
 } from "./loop"
 import { resolveBrainMainProfile } from "./model-profile"
+import { primeOpenRouterTiers } from "./model-router"
 import { shouldShowToolProgressCard } from "./progress"
 import {
 	createTurnState,
@@ -150,6 +152,13 @@ export async function resumeTurnAfterApproval(
 	const env = brainAgent(agent).env
 	const profile = resolveBrainMainProfile(org.metadata)
 	throwIfAborted(abortSignal)
+	// Same deterministic catalog prime as the main turn: the resumed chain must
+	// resolve its models the same way a fresh turn would.
+	await primeOpenRouterTiers(env).catch((error) => {
+		console.warn(
+			`[company-brain] OpenRouter catalog unavailable on resume, using pinned models: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	})
 	const capture: TurnCapture = {
 		memory: approval.state.memory ?? null,
 		connect: null,
@@ -476,7 +485,12 @@ export async function resumeTurnAfterApproval(
 
 				prepareMessages: (stepMessages) => {
 					currentRunLiveUpdateMessages.push(...consumeLiveUpdateMessages())
-					return [...stepMessages, ...currentRunLiveUpdateMessages]
+					// The approval response must stay last, or the SDK re-prompts
+					// for approval instead of running the tool just approved.
+					return appendKeepingApprovalLast(
+						stepMessages,
+						currentRunLiveUpdateMessages,
+					)
 				},
 				functionId:
 					attempt === "approval_resume"
@@ -501,6 +515,8 @@ export async function resumeTurnAfterApproval(
 						outputChoices,
 						inputTokens: event.usage?.inputTokens,
 						outputTokens: event.usage?.outputTokens,
+						cachedInputTokens: event.usage?.inputTokenDetails?.cacheReadTokens,
+						servingModel: event.response?.modelId,
 						toolNames:
 							snapshot?.toolNames ??
 							toolDiscovery.activeToolNames(Object.keys(tools)),

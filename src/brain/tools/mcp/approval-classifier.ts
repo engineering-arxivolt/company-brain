@@ -267,7 +267,11 @@ export function createMcpApprovalClassifier(args: {
 						providerMetadata: result.providerMetadata,
 						responseBody: responseBodyFromResult(result),
 					})
-					const decision = getGenerateTextStructuredOutput(result, schema)
+					const decision = getGenerateTextStructuredOutput(
+						result,
+						schema,
+						result.response?.modelId ?? args.profile.name,
+					)
 					console.log(
 						`[company-brain][${args.traceId}] connected-app approval classified app=${input.serverSlug} method=${input.toolName} effect=${decision.effect} ms=${Date.now() - startedAt}`,
 					)

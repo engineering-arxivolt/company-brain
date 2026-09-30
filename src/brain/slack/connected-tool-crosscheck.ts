@@ -201,6 +201,7 @@ export async function crosscheckThemesWithConnectedTools(
 		const output = getGenerateTextStructuredOutput(
 			result,
 			CrosscheckOutputSchema,
+			result.response?.modelId ?? FAST_MODEL_BILLING_NAME,
 		)
 		const executedServers = executedMcpServers(result)
 		const byTheme = new Map(

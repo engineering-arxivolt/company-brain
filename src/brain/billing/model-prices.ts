@@ -182,9 +182,37 @@ export function resolveBillableModel(
 export function getModelTokenPrices(model: string): ModelTokenPrices | null {
 	const utility = UTILITY_MODEL_USD_PRICES[model]
 	if (utility) return utility
+	// Runtime-registered OpenRouter ids, priced from the live catalog.
+	const dynamic = DYNAMIC_MODEL_PRICES.get(model)
+	if (dynamic) return dynamic
 	const key = resolveBillableModel(model, model)
 	if (!isSupportedModel(key)) return null
 	return MODEL_USD_PRICES[key] ?? null
+}
+
+// Prices for models discovered at runtime. `isFreeModel` reads this to keep a
+// free model off the answering turn's write path, so it must be populated
+// whenever the catalog is loaded -- otherwise an unpriced dynamic model reads
+// as "not free" and would be allowed to write to memory and GitHub/Linear.
+const DYNAMIC_MODEL_PRICES = new Map<string, ModelTokenPrices>()
+
+/** Record catalog prices (USD per MTok) for runtime-registered models. */
+export function registerDynamicModelPrices(
+	entries: ReadonlyArray<{ id: string; inputPerMTok: number; outputPerMTok: number }>,
+): void {
+	for (const entry of entries) {
+		const id = entry?.id?.trim()
+		if (!id) continue
+		DYNAMIC_MODEL_PRICES.set(id, {
+			inputPerMTok: entry.inputPerMTok,
+			outputPerMTok: entry.outputPerMTok,
+		})
+	}
+}
+
+/** Test seam: drop runtime prices. */
+export function clearDynamicModelPrices(): void {
+	DYNAMIC_MODEL_PRICES.clear()
 }
 
 export function usdFromTokenUsage(

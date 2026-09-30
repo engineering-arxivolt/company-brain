@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, beforeEach, afterEach } from "vitest"
 import { degradedAsError } from "../observability"
 import {
 	availableProviders,
@@ -13,11 +13,25 @@ import {
 	OPENROUTER_MAIN_MODEL,
 	OPENROUTER_ESCALATION_MODEL,
 	autoAddedMainTurnHasFreeModel,
+	autoAddedMainTurnModels,
+	catalogMainTurnModels,
+	setCatalogMainTurnModels,
+	clearCatalogMainTurnModels,
 	isFreeModel,
 } from "./brain-model"
 import { BRAIN_MAIN_MODEL_CHOICES, TRIAGE_MODEL } from "./model-profile"
-import { getModelTokenPrices } from "../billing/model-prices"
-import { getModelInfo, getModelReasoningProviderOptions, usesChatCompletions } from "@/lib/model-registry"
+import {
+	getModelTokenPrices,
+	registerDynamicModelPrices,
+	clearDynamicModelPrices,
+} from "../billing/model-prices"
+import {
+	getModelInfo,
+	getModelReasoningProviderOptions,
+	usesChatCompletions,
+	registerOpenRouterModels,
+	clearDynamicModels,
+} from "@/lib/model-registry"
 
 const asEnv = (vars: Record<string, string>) => vars as unknown as Env
 
@@ -343,5 +357,96 @@ describe("degraded telemetry marker", () => {
 		expect(
 			degradedAsError({ [DEGRADED_METADATA_KEY]: { degraded: true, exhausted: "a,b" } }),
 		).toEqual({ isError: true, error: "all model candidates out of quota (a,b)" })
+	})
+})
+
+
+// ── The catalog actually decides the answering chain ─────────────────────────
+//
+// The catalog used to be fetched, classified, registered and priced, and then
+// ignored: primeOpenRouterTiers' result was discarded and the chain ran the
+// pinned pair. These tests pin the loop shut. They reset the module-level
+// catalog state, because that state is process-wide and would otherwise leak
+// into every other suite in this file.
+describe("catalog-driven answering chain", () => {
+	beforeEach(() => {
+		clearCatalogMainTurnModels()
+		clearDynamicModels()
+		clearDynamicModelPrices()
+	})
+	afterEach(() => {
+		clearCatalogMainTurnModels()
+		clearDynamicModels()
+		clearDynamicModelPrices()
+	})
+
+	it("runs the pinned pair when the catalog has not been primed", () => {
+		expect(catalogMainTurnModels()).toBeNull()
+		expect(autoAddedMainTurnModels()).toEqual([
+			OPENROUTER_MAIN_MODEL,
+			OPENROUTER_ESCALATION_MODEL,
+		])
+	})
+
+	it("leads the chain with the catalog's picks once primed", () => {
+		registerOpenRouterModels(["vendor/cheap", "vendor/frontier"])
+		registerDynamicModelPrices([
+			{ id: "vendor/cheap", inputPerMTok: 0.15, outputPerMTok: 0.5 },
+			{ id: "vendor/frontier", inputPerMTok: 3, outputPerMTok: 15 },
+		])
+		setCatalogMainTurnModels(["vendor/cheap" as never, "vendor/frontier" as never])
+
+		const chain = brainChainModelNames("gemini-3.8-flash", openRouterEnv, {
+			mainTurn: true,
+		})
+
+		expect(chain.slice(0, 2)).toEqual(["vendor/cheap", "vendor/frontier"])
+	})
+
+	it("refuses a wholly-free catalog pair, keeping the pinned hops", () => {
+		registerOpenRouterModels(["vendor/free-a", "vendor/free-b"])
+		registerDynamicModelPrices([
+			{ id: "vendor/free-a", inputPerMTok: 0, outputPerMTok: 0 },
+			{ id: "vendor/free-b", inputPerMTok: 0, outputPerMTok: 0 },
+		])
+
+		setCatalogMainTurnModels(["vendor/free-a" as never, "vendor/free-b" as never])
+
+		// The answering turn writes to memory; it must not be talked onto a free
+		// model by a catalog that happens to only offer free ones.
+		expect(catalogMainTurnModels()).toBeNull()
+		expect(autoAddedMainTurnHasFreeModel()).toBe(false)
+	})
+
+	it("drops a free hop from a mixed catalog pair but keeps the paid one", () => {
+		registerOpenRouterModels(["vendor/free-a", "vendor/paid"])
+		registerDynamicModelPrices([
+			{ id: "vendor/free-a", inputPerMTok: 0, outputPerMTok: 0 },
+			{ id: "vendor/paid", inputPerMTok: 0.2, outputPerMTok: 0.8 },
+		])
+
+		setCatalogMainTurnModels(["vendor/free-a" as never, "vendor/paid" as never])
+
+		expect(catalogMainTurnModels()).toEqual(["vendor/paid"])
+		expect(autoAddedMainTurnHasFreeModel()).toBe(false)
+	})
+
+	// The bug this closes: the free bucket was excluded from registration, but
+	// free[0] is what the `fast` tier is served from. An unregistered id falls
+	// through getModelInfo's fallback to a different provider entirely -- a free
+	// OpenRouter model was being served by xAI -- and isFreeModel reported false,
+	// so the write-path guard did not catch it.
+	it("resolves and prices a catalog free model instead of falling back to xAI", () => {
+		registerOpenRouterModels(["vendor/free"])
+		registerDynamicModelPrices([
+			{ id: "vendor/free", inputPerMTok: 0, outputPerMTok: 0 },
+		])
+		const freeId = "vendor/free" as never
+
+		expect(getModelInfo(freeId).provider).toBe("openai")
+		expect(getModelInfo(freeId).modelId).toBe("vendor/free")
+		expect(usesChatCompletions(freeId)).toBe(true)
+		// Priced at $0, so the write-path guard can see it for what it is.
+		expect(isFreeModel(freeId)).toBe(true)
 	})
 })

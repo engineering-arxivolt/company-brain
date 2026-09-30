@@ -329,6 +329,10 @@ export function createBrainTurnTelemetry(
 			outputChoices: unknown[]
 			inputTokens?: number
 			outputTokens?: number
+			/** Cache-read tokens, when the provider reports them. */
+			cachedInputTokens?: number
+			/** Upstream model id that served this step, from the response. */
+			servingModel?: string
 			toolNames: string[]
 			latencyMs?: number
 			isError?: boolean
@@ -354,6 +358,12 @@ export function createBrainTurnTelemetry(
 			// Serialize prompt and completion for PostHog
 			const serializedPrompt = JSON.stringify(args.input)
 			const serializedCompletion = JSON.stringify(args.outputChoices)
+			// The model that actually served this step, not the profile that was
+			// requested. On OpenRouter the chain head is the cheap cached model
+			// and the requested profile is something else entirely, so labelling
+			// with the request made every generation read as the wrong provider.
+			// Per-step because the fallback chain can switch mid-turn.
+			const servingModel = args.servingModel
 			captureAiGeneration({
 				distinctId,
 				traceId,
@@ -361,12 +371,15 @@ export function createBrainTurnTelemetry(
 				spanId: generateId(),
 				parentId: turnSpanId,
 				spanName: `company_brain_${args.attempt}_step_${args.stepNumber}`,
-				model: modelInfo.modelId,
+				model: servingModel ?? modelInfo.modelId,
 				provider: modelInfo.provider,
 				input: args.input,
 				outputChoices: args.outputChoices,
 				inputTokens: args.inputTokens,
 				outputTokens: args.outputTokens,
+				...(args.cachedInputTokens !== undefined
+					? { cachedInputTokens: args.cachedInputTokens }
+					: {}),
 				latencySeconds:
 					typeof args.latencyMs === "number" ? args.latencyMs / 1000 : 0,
 				tools: args.toolNames.map((name) => ({
@@ -378,7 +391,10 @@ export function createBrainTurnTelemetry(
 				prompt: serializedPrompt,
 				completion: serializedCompletion,
 				groups,
-				properties: generationProperties,
+				properties: {
+					...generationProperties,
+					...(servingModel ? { brain_requested_model: modelInfo.modelId } : {}),
+				},
 			})
 		},
 

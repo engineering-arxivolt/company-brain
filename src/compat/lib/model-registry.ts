@@ -148,7 +148,63 @@ const MODEL_INFO = {
 } as const satisfies Record<SupportedModel, SupportedModelInfo>
 
 export function getModelInfo(modelName: SupportedModel): SupportedModelInfo {
-	return MODEL_INFO[modelName]
+	const known = MODEL_INFO[modelName] ?? DYNAMIC_MODELS.get(modelName)
+	if (known) return known
+	// An unregistered id must not crash a turn: fall back to a registered,
+	// reachable model rather than returning undefined into the provider factory.
+	// Logged because this fallback is silent and cross-provider: an id that should
+	// have been registered by the catalog overlay otherwise becomes a real request
+	// to whichever provider the fallback names, which is how a free OpenRouter
+	// model once ended up served by xAI.
+	console.warn(
+		`[company-brain] unregistered model "${modelName}"; falling back to grok-4.5. Register it via registerOpenRouterModels if it came from the OpenRouter catalog.`,
+	)
+	return MODEL_INFO["grok-4.5"]
+}
+
+// ── Runtime catalog overlay ─────────────────────────────────────────────────
+//
+// The OpenRouter catalog lists ids like "z-ai/glm-5.3-flash" that are not in
+// SUPPORTED_MODELS. Without an overlay they cannot be handed to the provider
+// factory, which dispatches on getModelInfo(). The overlay registers them at
+// runtime, always as OpenAI-compatible chat-completions models, because that is
+// the only shape an OpenRouter id can take.
+//
+// This is populated from the live catalog before the answering turn builds its
+// model chain (see primeOpenRouterCatalog), so the chain is decided from a
+// settled catalog rather than depending on whether a fetch happened to land
+// first. An unregistered id resolves to the registered fallback rather than
+// crashing the turn.
+const DYNAMIC_MODELS = new Map<string, SupportedModelInfo>()
+
+/**
+ * Register OpenRouter ids discovered at runtime. Idempotent per id.
+ *
+ * Ids that already exist in the static registry are skipped: a registered model
+ * keeps its own provider and API shape, and admitting it here too would make
+ * `isDynamicModel` claim a model is catalog-discovered when it is not.
+ */
+export function registerOpenRouterModels(ids: readonly string[]): void {
+	for (const id of ids) {
+		const trimmed = id?.trim()
+		if (!trimmed || DYNAMIC_MODELS.has(trimmed)) continue
+		if (isSupportedModel(trimmed)) continue
+		DYNAMIC_MODELS.set(trimmed, {
+			modelId: trimmed,
+			provider: "openai",
+			api: "chat",
+		})
+	}
+}
+
+/** True when this id came from the runtime catalog rather than the registry. */
+export function isDynamicModel(modelName: string): boolean {
+	return DYNAMIC_MODELS.has(modelName)
+}
+
+/** Test seam: drop runtime-registered models. */
+export function clearDynamicModels(): void {
+	DYNAMIC_MODELS.clear()
 }
 
 /**

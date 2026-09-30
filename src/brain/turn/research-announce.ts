@@ -118,7 +118,11 @@ export async function announceResearchDone(
 				err instanceof Error ? err.message : err,
 			)
 		})
-		const out = getGenerateTextStructuredOutput(result, DigestSchema)
+		const out = getGenerateTextStructuredOutput(
+			result,
+			DigestSchema,
+			result.response?.modelId ?? TRIAGE_MODEL,
+		)
 		const facts = (out.facts ?? [])
 			.flatMap((f) => {
 				const clean = f.trim()

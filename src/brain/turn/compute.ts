@@ -56,6 +56,7 @@ import { reportLegacyStructuredReply, type TurnCapture } from "./capture-tools"
 import { cardOutputPayload } from "./card-content"
 import {
 	applySystemCacheBreakpoints,
+	appendKeepingApprovalLast,
 	buildTurnMessageLayout,
 	compactMessagesAtBoundary,
 } from "./context"
@@ -75,6 +76,7 @@ import {
 	type TurnAttempt,
 } from "./loop"
 import { resolveBrainMainProfile } from "./model-profile"
+import { primeOpenRouterTiers } from "./model-router"
 import {
 	buildPassiveInvocationContext,
 	isPassiveNoReply,
@@ -185,6 +187,16 @@ export async function computeTurn(
 	const abortSignal = options?.abortSignal
 	throwIfAborted(abortSignal)
 	const capture: TurnCapture = { memory: null, connect: null }
+	// Settle the model catalog before anything builds the answering chain.
+	// brainChainModelNames is synchronous, so the catalog has to be loaded here
+	// rather than read from a cache that may or may not be warm -- otherwise the
+	// same turn would pick different models depending on cold start. Failures
+	// are swallowed: the hardcoded tiers remain the floor.
+	await primeOpenRouterTiers(env).catch((error) => {
+		console.warn(
+			`[company-brain] OpenRouter catalog unavailable, using pinned models: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	})
 	const telemetry = createBrainTurnTelemetry(org.id, userId, obs, profile.name)
 	const traceId = telemetry.traceId
 	recordDecision(agent, {
@@ -705,7 +717,13 @@ export async function computeTurn(
 				},
 				prepareMessages: (stepMessages) => {
 					currentRunLiveUpdateMessages.push(...consumeLiveUpdateMessages())
-					return [...stepMessages, ...currentRunLiveUpdateMessages]
+					// Defensive: the initial turn never ends on an approval
+					// response, but a re-prompted step could, and the SDK only
+					// executes an approved call when that response is last.
+					return appendKeepingApprovalLast(
+						stepMessages,
+						currentRunLiveUpdateMessages,
+					)
 				},
 				functionId:
 					attempt === "initial"
@@ -730,6 +748,8 @@ export async function computeTurn(
 						outputChoices,
 						inputTokens: event.usage?.inputTokens,
 						outputTokens: event.usage?.outputTokens,
+						cachedInputTokens: event.usage?.inputTokenDetails?.cacheReadTokens,
+						servingModel: event.response?.modelId,
 						toolNames:
 							snapshot?.toolNames ??
 							toolDiscovery.activeToolNames(Object.keys(tools)),

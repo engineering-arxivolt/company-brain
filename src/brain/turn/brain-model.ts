@@ -63,11 +63,70 @@ export const OPENROUTER_ESCALATION_MODEL: SupportedModel = "claude-sonnet-5-open
 /**
  * The models this module adds to the answering turn on its own initiative, in
  * chain order. Deliberately contains no free model — see `isFreeModel`.
+ *
+ * This is the floor used when the OpenRouter catalog has not been primed (or
+ * could not be reached). When it has, `setCatalogMainTurnModels` replaces it
+ * with the catalog's own picks — see `catalogMainTurnModels`.
  */
 const AUTO_ADDED_MAIN_TURN_MODELS: readonly SupportedModel[] = [
 	OPENROUTER_MAIN_MODEL,
 	OPENROUTER_ESCALATION_MODEL,
 ]
+
+// ── Catalog-derived answering hops ───────────────────────────────────────────
+//
+// `brainChainModelNames` is synchronous — the provider factory needs a concrete
+// model per candidate — so it cannot itself await the OpenRouter catalog. The
+// catalog is therefore settled once, ahead of the chain (see primeOpenRouterTiers
+// in model-router), and published here for the chain to read synchronously.
+//
+// This is what makes the catalog actually decide the answering turn. Without it
+// the catalog is fetched, classified, registered and priced, and then the chain
+// ignores all of it and runs the hardcoded pair above.
+//
+// `null` means "not primed or the catalog could not be reached", which is the
+// signal to use the pinned pair. A failed catalog must not silently change which
+// model serves a turn, so only a successful classification overwrites this.
+let catalogMainTurnModelsState: readonly SupportedModel[] | null = null
+
+/**
+ * Publish the catalog's chosen answering hops, in chain order.
+ *
+ * Only ever called with paid models: the answering turn owns the tools that
+ * write to memory and to GitHub/Linear/Notion, and a free model's plausible
+ * inventions get persisted and served back to the team as fact. A free hop is
+ * rejected here rather than downstream, because by the time the chain filters
+ * for free models a rejected call would have left the chain one hop short.
+ */
+export function setCatalogMainTurnModels(
+	models: readonly SupportedModel[],
+): void {
+	const paid = models.filter((name) => !isFreeModel(name))
+	if (paid.length === 0) {
+		console.warn(
+			`[company-brain] catalog offered only free models for the answering chain, keeping the pinned models: ${models.join(", ")}`,
+		)
+		return
+	}
+	if (paid.length < models.length) {
+		console.warn(
+			`[company-brain] dropping free model(s) from the catalog answering chain: ${models
+				.filter(isFreeModel)
+				.join(", ")}`,
+		)
+	}
+	catalogMainTurnModelsState = paid
+}
+
+/** The catalog's answering hops, or null when the catalog has not settled one. */
+export function catalogMainTurnModels(): readonly SupportedModel[] | null {
+	return catalogMainTurnModelsState
+}
+
+/** Test seam: forget the catalog's picks, restoring the pinned pair. */
+export function clearCatalogMainTurnModels(): void {
+	catalogMainTurnModelsState = null
+}
 
 /**
  * A free model is one the endpoint bills at $0 per token. It answers the
@@ -91,9 +150,17 @@ export function isFreeModel(modelName: SupportedModel): boolean {
  * True when a model this module would auto-add to the answering turn is free.
  * Guards `AUTO_ADDED_MAIN_TURN_MODELS` against a future edit that points one
  * of its entries at a `:free` id and silently reinstates the write path.
+ *
+ * Checks the catalog's picks too when they have been primed, since those are
+ * what the chain actually uses at that point.
  */
 export function autoAddedMainTurnHasFreeModel(): boolean {
-	return AUTO_ADDED_MAIN_TURN_MODELS.some(isFreeModel)
+	return autoAddedMainTurnModels().some(isFreeModel)
+}
+
+/** The hops auto-added to the answering turn right now, catalog or pinned. */
+export function autoAddedMainTurnModels(): readonly SupportedModel[] {
+	return catalogMainTurnModels() ?? AUTO_ADDED_MAIN_TURN_MODELS
 }
 
 /** Base URL of the configured OpenAI-compatible endpoint, if any. */
@@ -448,6 +515,11 @@ export function brainChainModelNames(
 	// key covers more quota than any single provider. The cheap model leads and
 	// the frontier model follows as an escalation hop rather than a default.
 	//
+	// The hops come from the live catalog when it has been primed (see
+	// setCatalogMainTurnModels), so the catalog decides the chain rather than
+	// being fetched, classified and discarded. The pinned pair is the floor for
+	// a deployment that has not primed it or could not reach it.
+	//
 	// No free model is added here. This chain owns the answering turn's tools,
 	// which write to memory and to GitHub/Linear/Notion; see `isFreeModel`. When
 	// every paid hop is out of credits the chain falls through to the degraded
@@ -458,7 +530,7 @@ export function brainChainModelNames(
 		openAiCompatibleBaseUrl(env) &&
 		env.OPENAI_API_KEY?.trim()
 	) {
-		candidates.push(...AUTO_ADDED_MAIN_TURN_MODELS)
+		candidates.push(...autoAddedMainTurnModels())
 	}
 
 	candidates.push(resolved)

@@ -59,7 +59,11 @@ export async function composeStarters(
 			err instanceof Error ? err.message : err,
 		)
 	})
-	const out = getGenerateTextStructuredOutput(result, StartersSchema)
+	const out = getGenerateTextStructuredOutput(
+		result,
+		StartersSchema,
+		result.response?.modelId ?? TRIAGE_MODEL,
+	)
 	const starters = (out.starters ?? [])
 		.flatMap((s) => {
 			const clean = s.trim().replace(/^["'>\-\d.\s]+/, "")

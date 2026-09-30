@@ -176,7 +176,19 @@ function aiEnvelope(args: Record<string, unknown>): Record<string, unknown> {
 		...(args.outputState !== undefined ? { $ai_output_state: args.outputState } : {}),
 		...(args.latencySeconds !== undefined ? { $ai_latency: args.latencySeconds } : {}),
 		...(args.isError !== undefined ? { $ai_is_error: args.isError } : {}),
-		...(args.error !== undefined ? { $ai_error: args.error } : {}),
+		...(args.error !== undefined ? { $ai_error: boundedAiText(args.error) } : {}),
+		// Token usage. Every call site already passed these, but the envelope
+		// never mapped them, so 0 of 380 generations carried a token count and
+		// no cost or cache-hit analysis was possible. Names follow PostHog's LLM
+		// schema, from which it derives total_input_tokens / total_output_tokens.
+		...(args.inputTokens !== undefined ? { input_tokens: args.inputTokens } : {}),
+		...(args.outputTokens !== undefined
+			? { output_tokens: args.outputTokens }
+			: {}),
+		...(args.totalTokens !== undefined ? { total_tokens: args.totalTokens } : {}),
+		...(args.cachedInputTokens !== undefined
+			? { cached_input_tokens: args.cachedInputTokens }
+			: {}),
 		...(args.tools !== undefined ? { $ai_tools: args.tools } : {}),
 		...(args.traceName !== undefined ? { $ai_trace_name: args.traceName } : {}),
 		...(args.prompt !== undefined ? { $ai_prompt: boundedAiText(args.prompt) } : {}),
