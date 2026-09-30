@@ -539,7 +539,7 @@ function preflightError(args: {
 			contract: expected,
 			suggestion:
 				"Apply each correction using the expected method signature, then retry the program.",
-			retryable: false,
+			retryable: true,
 			traceId: args.traceId,
 		})
 	}

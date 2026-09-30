@@ -353,6 +353,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 							suggestion:
 								"Correct the arguments using the expected signature and retry the method.",
 							traceId: this.target.traceId,
+							retryable: true,
 						}),
 					)
 				}
@@ -369,6 +370,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 							suggestion:
 								"Correct the arguments using the expected signature and retry the method.",
 							traceId: this.target.traceId,
+							retryable: true,
 						}),
 					)
 				}
@@ -458,6 +460,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 								suggestion:
 									"Correct the arguments using the expected signature and retry the method.",
 								traceId: this.target.traceId,
+							retryable: true,
 							}),
 						)
 					}
@@ -752,6 +755,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 							suggestion:
 								"Inspect the nested operation schema, then retry with the documented command grammar.",
 							traceId: this.target.traceId,
+							retryable: true,
 						}),
 					)
 				}
