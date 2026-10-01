@@ -113,10 +113,16 @@ describe("quota fallback chain", () => {
 	})
 	const brokenError = Object.assign(new Error("tool schema invalid"), { statusCode: 400 })
 
-	/** Minimal v2 stand-in that records calls and can be told to fail. */
+	/**
+	 * Minimal v3 stand-in that records calls and can be told to fail.
+	 *
+	 * v3-shaped on purpose: this mirrors every real provider, and the wrapper
+	 * under test claims v3. A v2-shaped fixture would hide exactly the mismatch
+	 * these tests exist to catch.
+	 */
 	const fakeModel = (modelId: string, fail?: unknown) =>
 		({
-			specificationVersion: "v2",
+			specificationVersion: "v3",
 			provider: "test",
 			modelId,
 			supportedUrls: {},
@@ -124,8 +130,11 @@ describe("quota fallback chain", () => {
 				if (fail) throw fail
 				return {
 					content: [{ type: "text", text: `answered by ${modelId}` }],
-					finishReason: "stop",
-					usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 1, cacheRead: 0, cacheWrite: 0 },
+						outputTokens: { total: 1, text: 1, reasoning: 0 },
+					},
 					warnings: [],
 				}
 			},
@@ -150,6 +159,33 @@ describe("quota fallback chain", () => {
 		expect(isPoolExhausted(Object.assign(new Error("x"), { statusCode: 402 }))).toBe(true)
 		expect(isPoolExhausted(new Error("free-models-per-day"))).toBe(true)
 		expect(isPoolExhausted(brokenError)).toBe(false)
+	})
+
+	/**
+	 * The wrapper is only a pass-through, so it must advertise the same
+	 * specification version as the candidates it wraps. Claiming "v2" while
+	 * every real provider is "v3" dropped the whole chain into the SDK's v2
+	 * compatibility shim, which re-converted already-v3 results.
+	 */
+	it("reports the same specification version as the models it wraps", () => {
+		const chain = withFallbackChain([fakeModel("a")]) as unknown as {
+			specificationVersion: string
+		}
+		expect(chain.specificationVersion).toBe("v3")
+	})
+
+	it("passes usage and finishReason through without reshaping them", async () => {
+		// Under the v2 shim these arrived as the string "0[object Object]" and an
+		// object respectively. `recordFromGeneration` reads usage with a
+		// `typeof === "number"` guard, so the reshaped string billed as zero.
+		const result = (await generate(
+			withFallbackChain([fakeModel("a")]),
+		)) as unknown as {
+			finishReason: unknown
+			usage: { inputTokens: { total: number } }
+		}
+		expect(result.usage.inputTokens.total).toBe(1)
+		expect(result.finishReason).toEqual({ unified: "stop", raw: undefined })
 	})
 
 	it("uses the first candidate when it works", async () => {

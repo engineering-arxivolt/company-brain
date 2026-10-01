@@ -4,10 +4,10 @@ import { createOpenAI } from "@ai-sdk/openai"
 import { createXai } from "@ai-sdk/xai"
 import type { LanguageModel } from "ai"
 import type {
-	LanguageModelV2,
-	LanguageModelV2CallOptions,
-	LanguageModelV2StreamPart,
-	LanguageModelV2Usage,
+	LanguageModelV3,
+	LanguageModelV3CallOptions,
+	LanguageModelV3StreamPart,
+	LanguageModelV3Usage,
 } from "@ai-sdk/provider"
 import { createAiGateway } from "ai-gateway-provider"
 import { captureException } from "@/lib/capture"
@@ -369,25 +369,37 @@ export function withFallbackChain(
 	degradedText: string | null = DEGRADED_NOTICE,
 ): LanguageModel {
 	const chain = models.filter((model): model is LanguageModel => Boolean(model))
-	const head = chain[0] as unknown as LanguageModelV2 | undefined
+	const head = chain[0] as unknown as LanguageModelV3 | undefined
 	if (!head) throw new Error("[company-brain] no model candidates provided")
 
-	const noUsage: LanguageModelV2Usage = {
-		inputTokens: undefined,
-		outputTokens: undefined,
-		totalTokens: undefined,
+	// Every candidate is a v3 model (verified across the google, anthropic,
+	// openai and xai providers), so this wrapper must report v3 too. Labelling
+	// it "v2" put the whole chain into the SDK's v2 compatibility shim, which
+	// re-converts results that are already v3-shaped: `finishReason` arrived as an
+	// object instead of a string, and `usage.inputTokens` arrived as the string
+	// "0[object Object]", so token-based billing silently recorded zero. It also
+	// printed a spurious "v2 specification compatibility mode" warning naming
+	// whichever model was chain head, which read as a routing error.
+	const noUsage: LanguageModelV3Usage = {
+		inputTokens: {
+			total: undefined,
+			noCache: undefined,
+			cacheRead: undefined,
+			cacheWrite: undefined,
+		},
+		outputTokens: { total: undefined, text: undefined, reasoning: undefined },
 	}
 
 	return {
-		specificationVersion: "v2",
+		specificationVersion: "v3",
 		modelId: head.modelId,
 		provider: head.provider,
 		supportedUrls: head.supportedUrls,
-		async doGenerate(options: LanguageModelV2CallOptions) {
+		async doGenerate(options: LanguageModelV3CallOptions) {
 			let lastError: unknown
 			const exhausted: string[] = []
 			for (const model of chain) {
-				const candidate = model as unknown as LanguageModelV2
+				const candidate = model as unknown as LanguageModelV3
 				try {
 					return await candidate.doGenerate(options)
 				} catch (err) {
@@ -404,17 +416,17 @@ export function withFallbackChain(
 			console.warn(`[company-brain] every model candidate out of quota; serving degraded notice`)
 			return {
 				content: [{ type: "text" as const, text: degradedText }],
-				finishReason: "stop" as const,
+				finishReason: { unified: "stop" as const, raw: undefined },
 				usage: noUsage,
 				warnings: [],
 				providerMetadata: degradedMetadata(exhausted),
 			}
 		},
-		async doStream(options: LanguageModelV2CallOptions) {
+		async doStream(options: LanguageModelV3CallOptions) {
 			let lastError: unknown
 			const exhausted: string[] = []
 			for (const model of chain) {
-				const candidate = model as unknown as LanguageModelV2
+				const candidate = model as unknown as LanguageModelV3
 				try {
 					return await candidate.doStream(options)
 				} catch (err) {
@@ -429,14 +441,14 @@ export function withFallbackChain(
 			if (degradedText === null) throw lastError
 			console.warn(`[company-brain] every model candidate out of quota; serving degraded notice`)
 			const metadata = degradedMetadata(exhausted)
-			const stream = new ReadableStream<LanguageModelV2StreamPart>({
+			const stream = new ReadableStream<LanguageModelV3StreamPart>({
 				start(controller) {
 					controller.enqueue({ type: "text-start", id: "0" })
 					controller.enqueue({ type: "text-delta", id: "0", delta: degradedText })
 					controller.enqueue({ type: "text-end", id: "0" })
 					controller.enqueue({
 						type: "finish",
-						finishReason: "stop",
+						finishReason: { unified: "stop", raw: undefined },
 						usage: noUsage,
 						providerMetadata: metadata,
 					})
@@ -445,7 +457,7 @@ export function withFallbackChain(
 			})
 			return { stream }
 		},
-	} satisfies LanguageModelV2 as unknown as LanguageModel
+	} satisfies LanguageModelV3 as unknown as LanguageModel
 }
 
 function walkErrorChain(value: unknown, visit: (record: Record<string, unknown>) => void): void {
@@ -576,8 +588,8 @@ export function getBrainModel(
 		(model, i) =>
 			models.findIndex(
 				(other) =>
-					(other as unknown as LanguageModelV2).modelId ===
-					(model as unknown as LanguageModelV2).modelId,
+					(other as unknown as LanguageModelV3).modelId ===
+					(model as unknown as LanguageModelV3).modelId,
 			) === i,
 	)
 	return withFallbackChain(unique, options.mainTurn ? DEGRADED_NOTICE : null)

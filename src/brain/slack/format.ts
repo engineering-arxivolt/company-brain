@@ -185,7 +185,7 @@ export function humanizeToolAction(raw: string): string {
 }
 
 export const BRAIN_TRACE_POSTHOG_BASE =
-	"https://us.posthog.com/project/148541/ai-observability/traces"
+	"https://us.posthog.com/project/613800/ai-observability/traces"
 
 export function markdownReplyBlocks(text: string): unknown[] {
 	const chunks = splitSlackMarkdown(text)
