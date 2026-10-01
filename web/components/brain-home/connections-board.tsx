@@ -136,15 +136,21 @@ export function useConnectionsBoard() {
 				}),
 			})
 			if (!res.ok) {
-				toast.error("Couldn't start the connection.")
+				// Surface the server's reason (e.g. a connector whose OAuth app
+				// credentials are not configured) rather than a generic failure.
+				const { error } = (await res.json().catch(() => ({}))) as {
+					error?: string
+				}
+				toast.error(error ?? "Couldn't start the connection.")
 				return
 			}
-			const data: { authUrl?: string; ok?: boolean } = await res.json()
+			const data: { authUrl?: string; ok?: boolean; error?: string } =
+				await res.json()
 			if (data.authUrl) window.open(data.authUrl, "_blank", "noopener")
 			else if (data.ok) {
 				toast.success(`${entry.name} connected.`)
 				await load()
-			} else toast.error("Couldn't start the connection.")
+			} else toast.error(data.error ?? "Couldn't start the connection.")
 		} catch {
 			toast.error("Couldn't start the connection.")
 		} finally {

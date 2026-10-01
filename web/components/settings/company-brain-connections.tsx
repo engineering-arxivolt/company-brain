@@ -483,7 +483,13 @@ export default function CompanyBrainConnections() {
 				return
 			}
 			if (!res.ok) {
-				toast.error("Couldn't start the connection.")
+				// The server explains a refused connect (e.g. a no-DCR app whose
+				// pre-registered client id/secret are missing). Keep that detail
+				// instead of replacing it with a generic failure.
+				const { error } = (await res.json().catch(() => ({}))) as {
+					error?: string
+				}
+				toast.error(error ?? "Couldn't start the connection.")
 				return
 			}
 			const data = (await res.json()) as {

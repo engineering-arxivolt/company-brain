@@ -15,6 +15,23 @@ MODEL_API_KEY=""
 # XAI_API_KEY=""
 
 # ── Optional ──────────────────────────────────────────────────────────────────
+# GitHub. GitHub does not support dynamic client registration, so unlike every
+# other catalog connector it cannot self-provision an OAuth app: it needs one
+# you registered, whose client id/secret you set here. Without them, connecting
+# GitHub fails with "GitHub is not configured on this deployment" (HTTP 501).
+#
+# One-time setup: GitHub -> Settings -> Developer settings -> OAuth Apps -> New
+# OAuth App. Set the Authorization callback URL to exactly:
+#   ${PUBLIC_URL}/brain/mcp-connections/callback
+# then paste the app's client id and secret below. Generate a personal access
+# token or client secret on the app page, whichever it shows.
+#
+# This file is LOCAL DEV ONLY. A deployed Cloudflare worker never reads it --
+# set these there with `wrangler secret put GITHUB_MCP_CLIENT_ID` (or via the
+# dashboard's Variables and Secrets), or GitHub stays unconnectable.
+# GITHUB_MCP_CLIENT_ID=""
+# GITHUB_MCP_CLIENT_SECRET="
+
 # Sandbox tools (shell, git, files). The containers block in wrangler.jsonc is
 # enabled, so they run on a Cloudflare container and local dev needs Docker
 # running. To use Daytona on any plan instead, comment that block out, set

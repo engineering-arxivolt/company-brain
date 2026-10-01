@@ -924,12 +924,13 @@ One-time registration per deploy environment:
 2. **Authorization callback URL** must match the API's public origin exactly: `${BETTER_AUTH_URL}/brain/mcp-connections/callback`. The connect + callback routes both derive the `redirect_uri` from `BETTER_AUTH_URL` via `publicApiOrigin`, not the raw request host (behind portless/tunnels the request host is internal `127.0.0.1`, which GitHub would reject with `redirect_uri` not associated). GitHub matches host exactly.
 3. Homepage URL can be the Supermemory app URL; app name is user-facing on the consent screen (e.g. "Supermemory Company Brain").
 4. Generate a client secret, then set both secrets on the API worker:
-   - `COMPANY_BRAIN_GITHUB_MCP_CLIENT_ID`
-   - `COMPANY_BRAIN_GITHUB_MCP_CLIENT_SECRET`
+   - `GITHUB_MCP_CLIENT_ID`
+   - `GITHUB_MCP_CLIENT_SECRET`
 
-   Named distinctly from `GITHUB_CLIENT_ID/SECRET` and `AUTH_GITHUB_ID/SECRET`, which are unrelated (login + other GitHub usage).
-5. Declare both names in `wrangler.jsonc` `secrets.required`. Wrangler only surfaces **declared** secrets into the worker env, so an undeclared secret stays `undefined` at runtime even when it is present in `.dev.vars`/`.env`.
-6. If the org enforces OAuth App access restrictions, an org owner must approve the app before members' tokens can see org-private repos.
+   These are the exact names the `github` catalog entry's `preregisteredClientEnv` reads, and they are distinct from `GITHUB_CLIENT_ID/SECRET` and `AUTH_GITHUB_ID/SECRET`, which are unrelated (login + other GitHub usage). `.dev.vars.example` documents them for self-hosted local dev.
+5. Put them where the worker can actually read them. On a **deployed Cloudflare worker** they are plain environment variables as far as the worker is concerned, so set them with `wrangler secret put GITHUB_MCP_CLIENT_ID` (or Workers & Pages -> your Worker -> Settings -> Variables and Secrets); either way the value arrives as `env.GITHUB_MCP_CLIENT_ID`. `.dev.vars` is **local dev only** and does not reach a deployed worker. For the self-hosted local `wrangler dev` path, `.dev.vars` (seeded from `.dev.vars.example`) is the right place.
+6. Optionally list both names in `wrangler.jsonc` `secrets.required`. This is **not** what makes them readable at runtime — it only drives local-dev validation warnings and type generation. A secret that is set but undeclared still reaches the worker; a declared-but-unset one is the case that warns.
+7. If the org enforces OAuth App access restrictions, an org owner must approve the app before members' tokens can see org-private repos.
 
 Scope is fixed on the authorize URL via the entry's `oauthScope` (`repo read:org read:user`); it applies to every user, and `repo` is read+write across all repos the user can access (OAuth apps have no per-repo scoping). Endpoints are still resolved from GitHub's advertised authorization-server metadata (`/.well-known/oauth-authorization-server/login/oauth`); only registration is skipped. If the pre-registered creds are absent the connect route returns a clean 501 rather than attempting DCR.
 
@@ -1044,7 +1045,7 @@ Required for the Slack bot path:
 Optional:
 
 - Sentry/AI/model provider keys used by the broader API runtime.
-- `COMPANY_BRAIN_GITHUB_MCP_CLIENT_ID` / `COMPANY_BRAIN_GITHUB_MCP_CLIENT_SECRET`: GitHub catalog OAuth app (see [GitHub OAuth app](#github-oauth-app-catalog-no-dcr)); absent means GitHub can't be connected.
+- `GITHUB_MCP_CLIENT_ID` / `GITHUB_MCP_CLIENT_SECRET`: GitHub catalog OAuth app (see [GitHub OAuth app](#github-oauth-app-catalog-no-dcr)); absent means GitHub can't be connected.
 - `CONTEXT_DEV_API_KEY`: context.dev key for [`search_web` and `web_extract`](#web-tools); absent means both tools are omitted from the turn's toolset.
 
 ## Design Implications
