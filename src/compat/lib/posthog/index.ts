@@ -170,10 +170,24 @@ function aiEnvelope(args: Record<string, unknown>): Record<string, unknown> {
 		...(args.spanName !== undefined ? { $ai_span_name: args.spanName } : {}),
 		...(args.model !== undefined ? { $ai_model: args.model } : {}),
 		...(args.provider !== undefined ? { $ai_provider: args.provider } : {}),
-		...(args.input !== undefined ? { $ai_input: args.input } : {}),
-		...(args.inputState !== undefined ? { $ai_input_state: args.inputState } : {}),
-		...(args.outputChoices !== undefined ? { $ai_output_choices: args.outputChoices } : {}),
-		...(args.outputState !== undefined ? { $ai_output_state: args.outputState } : {}),
+		// These four are the model's raw message arrays and the turn envelope.
+		// They are the largest payloads this worker ever emits, and `enqueue`
+		// deliberately skips `safeProps` for `$ai_*` events, so nothing else
+		// would bound them. Left raw they produced a single 2.16MB
+		// `$ai_generation` event against PostHog's 983KB per-event ceiling --
+		// which is dropped on arrival, so the turn's most valuable telemetry
+		// (the transcript of the step that asked for approval) silently
+		// vanished. Bound them exactly like prompt/completion.
+		...(args.input !== undefined ? { $ai_input: boundedAiText(args.input) } : {}),
+		...(args.inputState !== undefined
+			? { $ai_input_state: boundedAiText(args.inputState) }
+			: {}),
+		...(args.outputChoices !== undefined
+			? { $ai_output_choices: boundedAiText(args.outputChoices) }
+			: {}),
+		...(args.outputState !== undefined
+			? { $ai_output_state: boundedAiText(args.outputState) }
+			: {}),
 		...(args.latencySeconds !== undefined ? { $ai_latency: args.latencySeconds } : {}),
 		...(args.isError !== undefined ? { $ai_is_error: args.isError } : {}),
 		...(args.error !== undefined ? { $ai_error: boundedAiText(args.error) } : {}),
@@ -295,7 +309,10 @@ export function splitBatchBySize(
 	for (const record of batch) {
 		let size: number
 		try {
-			size = JSON.stringify(record).length
+			// Bytes, not characters. PostHog enforces a byte ceiling, so sizing
+			// chunks by `.length` under-counts every non-ASCII payload (Slack
+			// text is full of it) and lets a "small" chunk come back 413.
+			size = new TextEncoder().encode(JSON.stringify(record)).byteLength
 		} catch {
 			size = maxBytes
 		}
@@ -319,6 +336,51 @@ export function splitBatchBySize(
 	return chunks
 }
 
+function postBatch(
+	cfg: { key: string; host: string },
+	chunk: Array<Record<string, unknown>>,
+): Promise<Response> {
+	return fetch(`${cfg.host}/batch/`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ api_key: cfg.key, batch: chunk }),
+	})
+}
+
+/**
+ * Last-resort shrink for a single event PostHog refuses outright.
+ *
+ * Only the free-text leaves are touched — everything scalar (model id, span
+ * name, latency, token counts) is what makes the event worth keeping, and
+ * `boundedAiText` upstream should mean this is never reached in practice.
+ * Returns null when there is nothing left to strip, so the caller can tell
+ * "retry is pointless" from "retry is worth it".
+ */
+function shrinkOversizedEvent(
+	record: Record<string, unknown> | undefined,
+): Record<string, unknown> | null {
+	if (!record || typeof record !== "object") return null
+	const properties =
+		record.properties && typeof record.properties === "object"
+			? (record.properties as Record<string, unknown>)
+			: undefined
+	if (!properties) return null
+	const next: Record<string, unknown> = { ...record, properties: {} }
+	let changed = false
+	for (const [key, value] of Object.entries(properties)) {
+		if (typeof value === "string" && value.length > AI_TEXT_LIMIT) {
+			;(next.properties as Record<string, unknown>)[key] = elideMiddle(
+				value,
+				AI_TEXT_LIMIT,
+			)
+			changed = true
+			continue
+		}
+		;(next.properties as Record<string, unknown>)[key] = value
+	}
+	return changed ? next : null
+}
+
 export async function flushTelemetry(): Promise<void> {
 	const cfg = posthogConfig()
 	if (!cfg || queue.length === 0) {
@@ -329,11 +391,25 @@ export async function flushTelemetry(): Promise<void> {
 	queue = []
 	try {
 		for (const chunk of splitBatchBySize(batch, MAX_BATCH_BYTES)) {
-			const res = await fetch(`${cfg.host}/batch/`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ api_key: cfg.key, batch: chunk }),
-			})
+			let res = await postBatch(cfg, chunk)
+			// PostHog rejects a single event that exceeds its per-event ceiling
+			// outright, and no amount of batching helps: the event is dropped and
+			// the warning repeats on every flush forever. Retry once with the
+			// oversized record's free-text fields collapsed, so a runaway
+			// generation still reports its identity, latency, and token counts
+			// instead of vanishing. Envelope scalars ($ai_model, $ai_latency,
+			// token counts) survive; only the text is lost, and losing the text
+			// is the point.
+			if (!res.ok && res.status === 413 && chunk.length === 1) {
+				const shrunk = shrinkOversizedEvent(chunk[0])
+				if (shrunk) {
+					console.warn(
+						`[company-brain][posthog] event ${String(chunk[0]?.event)} exceeded the ` +
+							`per-event size limit; retrying with its text fields elided`,
+					)
+					res = await postBatch(cfg, [shrunk])
+				}
+			}
 			if (!res.ok) {
 				const text = await res.text()
 				console.warn(

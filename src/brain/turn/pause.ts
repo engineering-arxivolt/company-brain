@@ -1,5 +1,5 @@
 import { generateId } from "@repo/lib/generate-id"
-import type { ApprovalResumeState } from "./approval"
+import { type ApprovalResumeState, serializeResumeState } from "./approval"
 import type { CompanyBrainAgent } from "./agent"
 
 export const PAUSED_TURN_TTL_MS = 15 * 60 * 1000
@@ -196,7 +196,11 @@ export function persistPausedTurn(args: {
 		turnId: args.turnId,
 		askerUser: args.askerUser,
 		question: args.question,
-		stateJson: JSON.stringify(args.envelope),
+		// Same SQLite per-value ceiling as `brain_pending_approval`, and the
+		// same envelope. A paused turn that cannot be written is worse than one
+		// that resumes with a trimmed transcript: the Continue card would offer
+		// a button that does nothing.
+		stateJson: serializeResumeState(args.envelope),
 		status: "paused",
 		createdAt,
 		expiresAt: createdAt + PAUSED_TURN_TTL_MS,

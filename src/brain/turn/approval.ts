@@ -152,6 +152,90 @@ function rowToApproval(row: PendingApprovalRow): PendingApproval | null {
 	}
 }
 
+/**
+ * SQLite caps a single TEXT/BLOB value at 2,000,000 bytes (Cloudflare's D1
+ * and Durable Object SQLite share this ceiling). The resume envelope embeds
+ * the entire compacted conversation, so a long turn or a fat connected-app
+ * tool result can push `state_json` past that limit — and when it does, the
+ * INSERT throws inside `insertPendingApproval`. That kills the whole turn: the
+ * approval card is never posted, the asker gets a generic "I hit an error"
+ * reply, and the only trace is a `SqlError` stack with no indication that
+ * size was the cause.
+ *
+ * So bound the envelope before it reaches SQL. Messages are the bulk and are
+ * compacted from the oldest end, which is what `compactMessagesAtBoundary`
+ * already does for tool results; this is the last line of defence that keeps
+ * the persisted row inside the storage ceiling. The tail is preserved because
+ * the live question, the pending approval request, and the model's in-flight
+ * reasoning all live there.
+ *
+ * Well under the hard 2MB limit on purpose: the row also carries the summary
+ * and tool input, and the ceiling applies to the value, not the table.
+ */
+export const MAX_RESUME_STATE_BYTES = 1_500_000
+
+function byteLength(value: string): number {
+	// Cheap ASCII fast path; the encoder is only paid for non-ASCII text.
+	let ascii = true
+	for (let i = 0; i < value.length; i++) {
+		if (value.charCodeAt(i) > 127) {
+			ascii = false
+			break
+		}
+	}
+	return ascii ? value.length : new TextEncoder().encode(value).byteLength
+}
+
+/** Oldest-first message budget: drop whole messages from the front. */
+function shrinkMessagesToFit(
+	messages: ModelMessage[],
+	overheadBytes: number,
+): { messages: ModelMessage[]; dropped: number } | null {
+	let dropped = 0
+	let working = messages
+	while (dropped < messages.length - 1) {
+		// Always keep the final message: it carries the approval request the
+		// resume has to resolve.
+		working = messages.slice(dropped + 1)
+		dropped += 1
+		if (byteLength(JSON.stringify(working)) + overheadBytes <= MAX_RESUME_STATE_BYTES) {
+			return { messages: working, dropped }
+		}
+	}
+	return null
+}
+
+/**
+ * Serialize a resume envelope for storage, guaranteeing the result fits
+ * SQLite's per-value ceiling. Throws rather than returning an oversized string:
+ * a silently truncated envelope would resume with a corrupt transcript, which
+ * is far worse than a loud, attributable failure.
+ */
+export function serializeResumeState(state: ApprovalResumeState): string {
+	const serialized = JSON.stringify(state)
+	if (byteLength(serialized) <= MAX_RESUME_STATE_BYTES) return serialized
+
+	// Everything except `messages` is small and structurally required.
+	const { messages: _messages, ...rest } = state
+	const overhead =
+		byteLength(JSON.stringify(rest)) + byteLength(state.question ?? "") + 512
+	const shrunk = shrinkMessagesToFit(state.messages, overhead)
+	if (!shrunk) {
+		throw new Error(
+			`[company-brain] approval resume envelope is too large to persist: ` +
+				`${byteLength(serialized)} bytes exceeds the ${MAX_RESUME_STATE_BYTES}-byte ` +
+				`storage budget even after dropping every prior message`,
+		)
+	}
+	console.warn(
+		`[company-brain] approval resume envelope truncated to fit storage: ` +
+			`${byteLength(serialized)} -> ${byteLength(JSON.stringify(shrunk.messages)) + overhead} bytes ` +
+			`(dropped ${shrunk.dropped} of ${state.messages.length} messages); ` +
+			`the resumed turn will have less context to work from`,
+	)
+	return JSON.stringify({ ...state, messages: shrunk.messages })
+}
+
 export function insertPendingApproval(
 	agent: CompanyBrainAgent,
 	approval: PendingApproval,
@@ -174,7 +258,7 @@ export function insertPendingApproval(
 			${approval.slug ?? null},
 			${JSON.stringify(approval.toolInput)},
 			${approval.summary},
-			${JSON.stringify(approval.state)},
+			${serializeResumeState(approval.state)},
 			${approval.status},
 			${approval.createdAt},
 			${approval.expiresAt},
@@ -214,7 +298,7 @@ export function checkpointApprovalResumeState(
 ): void {
 	agent.sql`
 		UPDATE brain_pending_approval
-		SET state_json = ${JSON.stringify(state)}
+		SET state_json = ${serializeResumeState(state)}
 		WHERE approval_id = ${approvalId}
 	`
 }

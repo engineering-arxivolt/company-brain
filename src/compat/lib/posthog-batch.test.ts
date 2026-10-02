@@ -1,5 +1,11 @@
-import { describe, expect, it, beforeEach } from "vitest"
-import { elideMiddle, splitBatchBySize } from "./posthog"
+import { describe, expect, it, beforeEach, vi, afterEach } from "vitest"
+import {
+	captureAiGeneration,
+	configurePostHog,
+	elideMiddle,
+	flushTelemetry,
+	splitBatchBySize,
+} from "./posthog"
 import {
 	clearDynamicModelPrices,
 	getModelTokenPrices,
@@ -37,6 +43,22 @@ describe("splitBatchBySize", () => {
 		expect(chunks.flat()).toEqual(batch)
 	})
 
+	// PostHog enforces a byte ceiling, so sizing by `.length` under-counted
+	// every multi-byte payload and let an "oversized" chunk come back 413.
+	it("measures chunks in bytes, not characters", () => {
+		// Each emoji is 1 char but 4 UTF-8 bytes.
+		const batch = Array.from({ length: 10 }, () => sized(400))
+		for (const record of batch) {
+			;(record.properties as Record<string, unknown>).blob =
+				"🙂".repeat(200)
+		}
+		const chunks = splitBatchBySize(batch, LIMIT)
+		for (const chunk of chunks) {
+			const bytes = new TextEncoder().encode(JSON.stringify(chunk)).byteLength
+			expect(bytes).toBeLessThanOrEqual(LIMIT)
+		}
+	})
+
 	// A single event larger than the limit cannot be made to fit. Sending it
 	// alone at least keeps it from taking everyone else's batch down with it.
 	it("isolates an event that cannot fit", () => {
@@ -52,6 +74,131 @@ describe("splitBatchBySize", () => {
 		const small = [sized(10), sized(10)]
 		const chunks = splitBatchBySize([...small, sized(5_000)], LIMIT)
 		expect(chunks.flat().slice(0, 2)).toEqual(small)
+	})
+})
+
+describe("$ai_* envelope bounds every large payload", () => {
+	const huge = () =>
+		Array.from({ length: 6 }, (_, i) => ({
+			role: "assistant",
+			content: "x".repeat(500_000) + i,
+		}))
+
+	/** Capture one event and return the exact body PostHog would receive. */
+	async function captureAndRead(
+		rec: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		const bodies: string[] = []
+		vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+			bodies.push(String(init.body))
+			return new Response("1", { status: 200 })
+		})
+		captureAiGeneration(rec)
+		await flushTelemetry()
+		expect(bodies.length).toBe(1)
+		const body = JSON.parse(bodies[0] as string) as {
+			batch: Array<Record<string, unknown>>
+		}
+		return body.batch[0] as Record<string, unknown>
+	}
+
+	beforeEach(() => {
+		configurePostHog({
+			POSTHOG_API_KEY: "phc_test",
+			POSTHOG_HOST: "https://ph.test",
+		})
+	})
+	afterEach(() => {
+		vi.unstubAllGlobals()
+		vi.restoreAllMocks()
+	})
+
+	// The 413 in production: one `$ai_generation` event reached 2,160,129 bytes
+	// against PostHog's 983,040-byte per-event ceiling and was dropped on
+	// arrival, taking the turn's most valuable telemetry with it. `$ai_input`,
+	// `$ai_output_choices`, `$ai_input_state`, and `$ai_output_state` were
+	// passed through raw while only prompt/completion were bounded.
+	it("keeps a runaway generation under PostHog's per-event limit", async () => {
+		const record = await captureAndRead({
+			traceId: "t1",
+			model: "grok-4.5",
+			latencySeconds: 1.5,
+			input: huge(),
+			outputChoices: huge(),
+			inputState: huge(),
+			outputState: huge(),
+			prompt: JSON.stringify(huge()),
+			completion: JSON.stringify(huge()),
+		})
+		const bytes = new TextEncoder().encode(JSON.stringify(record)).byteLength
+		expect(bytes).toBeLessThan(983_040)
+	})
+
+	it("keeps the scalar envelope fields that make the event worth keeping", async () => {
+		const record = await captureAndRead({
+			traceId: "t1",
+			spanName: "company_brain_initial_step_0",
+			model: "grok-4.5",
+			provider: "xai",
+			latencySeconds: 1.5,
+			inputTokens: 1234,
+			outputTokens: 56,
+			input: huge(),
+			outputChoices: huge(),
+		})
+		const props = record.properties as Record<string, unknown>
+		expect(props.$ai_model).toBe("grok-4.5")
+		expect(props.$ai_provider).toBe("xai")
+		expect(props.$ai_span_name).toBe("company_brain_initial_step_0")
+		expect(props.$ai_latency).toBe(1.5)
+		expect(props.input_tokens).toBe(1234)
+		// The text is bounded but still present -- not dropped.
+		expect(typeof props.$ai_input).toBe("string")
+		expect(String(props.$ai_input).length).toBeGreaterThan(0)
+	})
+
+	it("leaves a small generation untouched", async () => {
+		const record = await captureAndRead({
+			traceId: "t1",
+			input: [{ role: "user", content: "hello" }],
+		})
+		const props = record.properties as Record<string, unknown>
+		expect(props.$ai_input).toBe('[{"role":"user","content":"hello"}]')
+	})
+
+	// Belt and braces: even if something upstream sends a payload no envelope
+	// bound catches, the flush must not drop it forever. PostHog rejects an
+	// oversized single event outright, so the retry has to strip the text and
+	// resubmit rather than warning on every future flush.
+	it("retries a 413'd event with its text elided instead of dropping it", async () => {
+		const bodies: string[] = []
+		vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+			const body = String(init.body)
+			bodies.push(body)
+			const oversized = new TextEncoder().encode(body).byteLength > 983_040
+			return oversized
+				? new Response("413 maximum AI event size exceeded", { status: 413 })
+				: new Response("1", { status: 200 })
+		})
+		// Force the oversized shape: a property the envelope does not bound.
+		captureAiGeneration({
+			traceId: "t1",
+			properties: { giant_blob: "x".repeat(2_000_000) },
+		})
+		await flushTelemetry()
+
+		// Two attempts: the original, then the elided retry.
+		expect(bodies.length).toBe(2)
+		const retried = JSON.parse(bodies[1] as string) as {
+			batch: Array<Record<string, unknown>>
+		}
+		const props = retried.batch[0]?.properties as Record<string, unknown>
+		// Identity survives; only the unbindable blob is elided.
+		expect(props.$ai_trace_id).toBe("t1")
+		expect(props.giant_blob).toMatch(/elided/)
+		expect(
+			new TextEncoder().encode(bodies[1]).byteLength,
+		).toBeLessThan(983_040)
 	})
 })
 
