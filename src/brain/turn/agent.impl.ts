@@ -499,8 +499,15 @@ export async function finalizeInterruptedSlackTurn(
 	agent: CompanyBrainAgent,
 	snapshot: SlackTurnFiberSnapshot,
 ): Promise<void> {
-	await finalizeInterruptedSlackTurnImpl(agent, snapshot)
-	await flushBrainTelemetry()
+	// try/finally, like the sibling handlers: a throw here used to skip the
+	// flush entirely, and since the PostHog queue is a module-level array the
+	// isolate then discarded every event queued so far. One failure erased the
+	// telemetry trail needed to diagnose it.
+	try {
+		await finalizeInterruptedSlackTurnImpl(agent, snapshot)
+	} finally {
+		await flushBrainTelemetry()
+	}
 }
 
 function markFailedTriageClaim(

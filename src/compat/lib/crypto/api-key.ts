@@ -4,6 +4,11 @@
  */
 
 export async function deriveEncryptionKey(secret: string): Promise<CryptoKey> {
+	// Same trap as generateKey: PBKDF2 imports zero bytes happily, so an empty
+	// secret yields a valid and entirely predictable key instead of an error.
+	if (!secret?.trim()) {
+		throw new Error("Encryption secret is missing or empty")
+	}
 	const encoder = new TextEncoder()
 	const keyMaterial = await crypto.subtle.importKey(
 		"raw",

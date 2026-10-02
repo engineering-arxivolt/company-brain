@@ -25,9 +25,14 @@ function fromBase64url(value: string): Uint8Array {
 }
 
 async function signingKey(env: Env): Promise<CryptoKey> {
+	// Guard before interpolating: an unset secret would otherwise sign as the
+	// literal `session:undefined` — a constant, guessable HMAC key that would
+	// let anyone mint a valid session cookie.
+	const secret = env.ENCRYPTION_SECRET?.trim()
+	if (!secret) throw new Error("Encryption secret is missing or empty")
 	return crypto.subtle.importKey(
 		"raw",
-		encoder.encode(`session:${env.ENCRYPTION_SECRET}`),
+		encoder.encode(`session:${secret}`),
 		{ name: "HMAC", hash: "SHA-256" },
 		false,
 		["sign", "verify"],

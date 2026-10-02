@@ -1,5 +1,6 @@
 import { configureFromEnv } from "../../config"
 import { configurePostHog } from "../../compat/lib/posthog"
+import { captureException } from "../../compat/lib/capture"
 import { hydrateSecrets } from "../../setup/secrets"
 import { runInDbScope } from "@repo/db"
 import {
@@ -50,6 +51,7 @@ import {
 	parseSlackTurnFiberSnapshot,
 	recoverableSlackTurnMessage,
 	SLACK_TURN_FIBER_NAME,
+	slackTurnRecoveryCanRetry,
 	type SlackTurnFiberCheckpoint,
 	type SlackTurnFiberSnapshot,
 	slackTurnFiberIdempotencyKey,
@@ -202,13 +204,33 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		checkpoint({ phase: "completed" })
 	}
 
-	override async onStart(): Promise<void> {
+	/**
+	 * Everything the agent needs on `env` before any handler runs, in one place.
+	 *
+	 * The DO has two boot paths and they do NOT run in a fixed order: the agents
+	 * SDK dispatches fiber recovery from its `onStart` wrapper *before* invoking
+	 * our `onStart` (see `_checkRunFibers` vs `_onStart` in
+	 * agents/dist/index.js), so on an alarm-woken object recovery runs first and
+	 * nothing has configured `env` yet. Both paths therefore call this, and a
+	 * third caller can never drift from them.
+	 *
+	 * `configurePostHog` matters as much as the secrets here: it writes
+	 * `globalThis.__POSTHOG_ENV`, which is per-isolate. Without it
+	 * `posthogConfig()` returns null and `flushTelemetry` silently empties its
+	 * queue, so every event recorded during recovery would be thrown away —
+	 * exactly the diagnosis data a failed recovery is supposed to produce.
+	 */
+	private async bootstrapEnv(): Promise<void> {
 		await hydrateSecrets(this.env)
 		configureFromEnv(this.env)
 		configurePostHog({
 			POSTHOG_API_KEY: this.env.POSTHOG_API_KEY ?? this.env.POSTHOG_KEY,
 			POSTHOG_HOST: this.env.POSTHOG_HOST,
 		})
+	}
+
+	override async onStart(): Promise<void> {
+		await this.bootstrapEnv()
 		return (await this.loadImpl()).onStart(this)
 	}
 
@@ -234,6 +256,54 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		if (context.name !== SLACK_TURN_FIBER_NAME) {
 			return super.onFiberRecovered(context)
 		}
+		await this.bootstrapEnv()
+		try {
+			return await this.recoverSlackTurnFiber(context)
+		} catch (error) {
+			// The SDK has no retry of its own here. Rethrowing makes
+			// `_runFiberRecoveryHook` record status `error` and delete the run
+			// row; returning `aborted` is just as terminal, because
+			// `_isTerminalFiberStatus` treats completed/aborted/interrupted/error
+			// alike. Neither one re-runs the turn, so the retry has to be ours.
+			const snapshot = parseSlackTurnFiberSnapshot(context.snapshot)
+			if (snapshot && slackTurnRecoveryCanRetry(snapshot)) {
+				captureException(error, {
+					tags: { area: "slack-turn-fiber", event: "recovery-retry" },
+					extra: {
+						fiberId: context.id,
+						attempt: snapshot.attempt + 1,
+					},
+				})
+				// Re-arm through the same attempt-bounded path the interruption
+				// path uses, so this cannot loop: the re-armed snapshot carries
+				// attempt+1, which the next recovery finalizes instead of retrying.
+				await this.startSlackTurnFiber(snapshot.message, snapshot)
+				return { status: "completed", snapshot }
+			}
+			// Out of retries. `aborted` stays terminal and, unlike `error`, it
+			// suppresses the SDK's own fiber:recovery:failed event
+			// (`_fiberRecoveryErrorMessage` routes `aborted` through `reason`,
+			// never `error`), so this log is the record of the give-up.
+			captureException(error, {
+				tags: { area: "slack-turn-fiber", event: "recovery-gave-up" },
+				extra: {
+					fiberId: context.id,
+					attempt: snapshot?.attempt,
+					phase: snapshot?.phase,
+				},
+			})
+			return {
+				status: "aborted",
+				reason: `Slack turn recovery could not complete: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			}
+		}
+	}
+
+	private async recoverSlackTurnFiber(
+		context: FiberRecoveryContext,
+	): FiberRecoveryPromise {
 		const snapshot = parseSlackTurnFiberSnapshot(context.snapshot)
 		if (!snapshot) {
 			return {

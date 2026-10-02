@@ -70,17 +70,33 @@ function applyModelApiKey(env: Env): void {
 	}
 }
 
+// Hydration runs on the request path *and* from the Durable Object's fiber
+// recovery hook, which the agents SDK dispatches before onStart. Memoize per Env
+// so those paths share one value from a single KV read rather than each
+// resolving their own.
+const hydrated = new WeakMap<object, Promise<void>>()
+
 export async function hydrateSecrets(env: Env): Promise<void> {
-	applyModelApiKey(env)
-	if (!env.ENCRYPTION_SECRET?.trim()) {
-		env.ENCRYPTION_SECRET = await encryptionSecret(env)
-	}
-	if (!configuredPublicUrl.has(env)) {
-		configuredPublicUrl.set(env, Boolean(env.PUBLIC_URL?.trim()))
-	}
-	if (!env.PUBLIC_URL?.trim()) {
-		env.PUBLIC_URL = (await env.BRAIN_KV.get(PUBLIC_URL_KV_KEY)) ?? ""
-	}
+	const cached = hydrated.get(env as unknown as object)
+	if (cached) return cached
+	const run = (async () => {
+		applyModelApiKey(env)
+		if (!env.ENCRYPTION_SECRET?.trim()) {
+			env.ENCRYPTION_SECRET = await encryptionSecret(env)
+		}
+		if (!configuredPublicUrl.has(env)) {
+			configuredPublicUrl.set(env, Boolean(env.PUBLIC_URL?.trim()))
+		}
+		if (!env.PUBLIC_URL?.trim()) {
+			env.PUBLIC_URL = (await env.BRAIN_KV.get(PUBLIC_URL_KV_KEY)) ?? ""
+		}
+	})().catch((error: unknown) => {
+		// Never cache a failure: the next caller must get a fresh attempt.
+		hydrated.delete(env as unknown as object)
+		throw error
+	})
+	hydrated.set(env as unknown as object, run)
+	return run
 }
 
 /** Remember the origin this deployment is served from, for the agent's sake. */

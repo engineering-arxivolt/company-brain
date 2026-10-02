@@ -1,5 +1,12 @@
 // Encryption helpers
 export async function generateKey(secret: string): Promise<CryptoKey> {
+	// An empty secret used to import cleanly: PBKDF2 accepts zero bytes of key
+	// material and derives a perfectly valid, entirely predictable key. A missing
+	// ENCRYPTION_SECRET therefore didn't fail here, it failed much later as an
+	// opaque AES-GCM authentication error on some unrelated decrypt call.
+	if (!secret?.trim()) {
+		throw new Error("Encryption secret is missing or empty")
+	}
 	const encoder = new TextEncoder()
 	const keyMaterial = await crypto.subtle.importKey(
 		"raw",

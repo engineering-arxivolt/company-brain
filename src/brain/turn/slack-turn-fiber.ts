@@ -71,6 +71,33 @@ export function slackTurnFiberIdempotencyKey(
 	].join(":")
 }
 
+/**
+ * Whether a failed recovery may be handed back to the turn pipeline.
+ *
+ * The agents SDK offers no retry for managed fibers: rethrowing from
+ * `onFiberRecovered` makes `_runFiberRecoveryHook` record status `error` and
+ * delete the run row, and returning `aborted` is equally terminal —
+ * `_isTerminalFiberStatus` treats `completed`/`aborted`/`interrupted`/`error`
+ * alike. Retryability therefore has to be ours, and it has to be bounded so a
+ * turn that dies the same way twice cannot loop.
+ *
+ * Never re-arm once the user has been answered (a duplicate reply) or once a
+ * terminal proposal is saved (recovery publishes it verbatim, so there is
+ * nothing left to run).
+ *
+ * Returns a plain boolean rather than a type predicate on purpose: a predicate
+ * would narrow the caller to `null` on the *false* branch, which is the branch
+ * that still needs to read `attempt`/`phase` for the give-up log.
+ */
+export function slackTurnRecoveryCanRetry(
+	snapshot: SlackTurnFiberSnapshot | null,
+): boolean {
+	if (!snapshot) return false
+	if (snapshot.replyMessageTs || snapshot.approvalMessageTs) return false
+	if (snapshot.terminalProposal) return false
+	return snapshot.attempt < MAX_SLACK_TURN_RECOVERY_ATTEMPTS
+}
+
 export function parseSlackTurnFiberSnapshot(
 	value: unknown,
 ): SlackTurnFiberSnapshot | null {
