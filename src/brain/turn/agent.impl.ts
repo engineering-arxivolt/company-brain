@@ -69,6 +69,10 @@ import {
 import { computeTurn } from "./compute"
 import { maybeNudgeInstallTools } from "./install-nudge"
 import { clearInteractionObserveState } from "./interaction-observe"
+import {
+	type ParallelMonitorEvent,
+	runParallelMonitorEvent,
+} from "./parallel-monitor"
 
 export {
 	getWorkspacePrompt,
@@ -433,6 +437,19 @@ export async function onSlackConnectComplete(
 		await runSlackConnectComplete(agent, completion)
 	} catch (err) {
 		console.error("[company-brain] slack connect completion failed:", err)
+	} finally {
+		await flushBrainTelemetry()
+	}
+}
+
+export async function onParallelMonitorEvent(
+	agent: CompanyBrainAgent,
+	event: ParallelMonitorEvent,
+): Promise<void> {
+	try {
+		await runParallelMonitorEvent(agent, event)
+	} catch (err) {
+		console.error("[company-brain] parallel monitor event failed:", err)
 	} finally {
 		await flushBrainTelemetry()
 	}

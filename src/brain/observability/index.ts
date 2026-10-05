@@ -43,6 +43,7 @@ export type BrainObservabilityInput = {
 		| "slack_chime_thread"
 		| "slack_chime_channel"
 		| "slack_connect_retry"
+		| "parallel_monitor"
 		| "slack_approval"
 		| "automation"
 		| "scheduled_reminder"

@@ -52,6 +52,14 @@ interface Env {
 	/** Google Workspace OAuth app for Gmail/Calendar/Drive tools. */
 	GOOGLE_WORKSPACE_CLIENT_ID?: string
 	GOOGLE_WORKSPACE_CLIENT_SECRET?: string
+	/** Parallel API key, used to create and manage monitors. */
+	PARALLEL_API_KEY?: string
+	/**
+	 * Parallel webhook signing secret (Settings -> Webhooks, a `whsec_` value).
+	 * Absent means POST /brain/webhooks/parallel answers 501 and no monitor can
+	 * ever reach the brain.
+	 */
+	PARALLEL_WEBHOOK_SECRET?: string
 }
 
 interface Env {

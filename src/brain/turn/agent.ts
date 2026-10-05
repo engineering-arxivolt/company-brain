@@ -44,6 +44,7 @@ import type { ScheduledTaskPayload } from "../tools/scheduling"
 import type { ApprovalExpiryPayload } from "./approval-expiry"
 import type { HomeChannel } from "./home-channel"
 import type { InstallNudgeArm } from "./install-nudge"
+import type { ParallelMonitorEvent } from "./parallel-monitor"
 import type { PostTurnReflectPayload } from "./post-turn-reflect"
 import type { ResearchOnSignupInput } from "./research"
 import {
@@ -397,6 +398,16 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		completion: SlackConnectCompletion,
 	): Promise<void> {
 		return (await this.loadImpl()).onSlackConnectComplete(this, completion)
+	}
+
+	/**
+	 * A Parallel Monitor detected a material change. Unlike every other inbound
+	 * entry point here, the caller is a third-party webhook rather than Slack,
+	 * so `metadata` in the delivery is the only record of which channel asked
+	 * for this monitor.
+	 */
+	async onParallelMonitorEvent(event: ParallelMonitorEvent): Promise<void> {
+		return (await this.loadImpl()).onParallelMonitorEvent(this, event)
 	}
 
 	async debugTurn(input: { text: string; userId?: string }) {
