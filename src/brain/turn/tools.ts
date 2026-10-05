@@ -41,6 +41,7 @@ import { sandboxToolsConfigured } from "../tools/sandbox/client"
 import { createSandboxTools } from "../tools/sandbox/tools"
 import { createSchedulerTools } from "../tools/scheduler"
 import { createSendToTools } from "../tools/send-to"
+import { createBrainWebMonitorTool } from "../tools/web/monitor"
 import type { TurnActor } from "./actor"
 import type { CompanyBrainAgent } from "./agent"
 import { createCaptureTools, type TurnCapture } from "./capture-tools"
@@ -429,6 +430,24 @@ export async function assembleTurnTools(
 	let mcpSetupFailed = false
 	if (webSearchTool) tools.search_web = webSearchTool
 	if (webExtractTool) tools.web_extract = webExtractTool
+	// A monitor outlives the turn and posts back on its own schedule, so it is
+	// only offered where the request came from a real Slack conversation we can
+	// route the finding back into. It returns null without an API key or a
+	// PUBLIC_URL, since the webhook URL is not ours to invent.
+	const webMonitorTool =
+		!passiveInvestigation &&
+		!scheduledRun &&
+		slackLookup?.teamId &&
+		createBrainWebMonitorTool({
+			deps,
+			env,
+			orgId: org.id,
+			teamId: slackLookup.teamId,
+			channelId: slackLookup.channel,
+			threadTs: slackLookup.threadTs,
+			traceId,
+		})
+	if (webMonitorTool) tools.create_web_monitor = webMonitorTool
 	const sandboxTools = sandboxToolsConfigured(env)
 		? createSandboxTools({
 				env,
