@@ -1217,6 +1217,7 @@ export function mapToolLabel(
 	if (n === "SEARCH_COMPANY_BRAIN") return "Searching the company brain"
 	if (n === "SEARCH_WEB") return "Searching the web"
 	if (n === "WEB_EXTRACT") return "Reading the page"
+	if (n === "BROWSE_WEBSITE") return "Browsing the page"
 	if (n === "RESOLVE_ENTITY") return "Identifying who that is"
 	if (n === "GET_CONFIGURATION") return "Reviewing my setup"
 	if (n === "UPDATE_CONFIGURATION") return "Updating my setup"
@@ -1312,6 +1313,8 @@ export function mapToolDetail(
 			prettyToken(firstInputString(input, ["intent"])),
 		])
 	if (n === "SEARCH_WEB") return query ? `“${query}”` : undefined
+	if (n === "BROWSE_WEBSITE")
+		return firstInputString(input, ["task", "start_url"])?.slice(0, 150)
 	if (n === "RESOLVE_ENTITY")
 		return firstInputString(input, ["name", "entity", "query", "who"])
 	if (n === "RUN_APP_CODE") {

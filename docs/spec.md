@@ -812,6 +812,14 @@ The provider enforces a per-minute request cap per API key. `web_extract` spends
 
 The SDK's own `maxRetries` is set to `0` deliberately: it defaults to 2 and retries timeouts, which would silently turn a 15s bound into 45s.
 
+### `browse_website`
+
+Drives a real headless browser for interactive web work that plain page reading cannot do: clicking through multi-step flows, filling forms, checking logged-in dashboards, verifying what a page actually shows, or scraping JavaScript-heavy sites. The model passes a concrete goal plus a starting URL; the reply cites the start URL as its source. Available only when `BROWSER_SERVICE_URL` and `BROWSER_SERVICE_TOKEN` are both set — otherwise the tool is omitted from the turn's toolset and `search_web` / `web_extract` cover the web.
+
+- Runs against a self-hosted [browser-use](https://docs.browser-use.com/quickstart) sidecar in `./browser-service` (FastAPI + headless Chromium, your own LLM key — no Browser-Use Cloud). The worker cannot run Chromium, so the tool POSTs `{ task, start_url }` to the sidecar's `/run` with `Bearer` auth; the sidecar answers `{ ok, result, steps, ms }`.
+- 5-minute client timeout so the run settles inside the turn's pause budget and a slow page still leaves room to pause and offer Continue. Timeouts and sidecar 504s tell the model to break the goal into a smaller step; a sidecar 429 (it runs one job at a time) tells the model the browser is busy and to retry in a minute; any other failure says to narrow the task or fall back to `web_extract`.
+- Results are capped at 12,000 characters with the overflow labelled inline, because a browser transcript can run long and one call must not flood the turn.
+
 ## Reminder Scheduling
 
 Reminder permissions are action-specific. The creator can list full details, cancel, and replace a reminder. A direct target or primary participant stored in `relatedSlackUserIds` receives only the id, label, creator, and next-run metadata needed to identify the reminder and may cancel it, but cannot inspect its instruction or destination, replace it, or take ownership. Replacement preserves the original creator identity and future delivery credentials. Omitting a replacement destination preserves the stored destination; explicitly selecting origin or personal DM rebinds the complete channel, thread, and memory-scope tuple so stale fields cannot survive the move. Manual reminders default to the originating Slack channel/thread. They move to another channel only when the asker explicitly selects it; `deliverTo: "channel"` without a named channel safely remains at the origin. Personal DM delivery goes only to the asker and must also be explicitly selected.
@@ -1047,6 +1055,7 @@ Optional:
 - Sentry/AI/model provider keys used by the broader API runtime.
 - `GITHUB_MCP_CLIENT_ID` / `GITHUB_MCP_CLIENT_SECRET`: GitHub catalog OAuth app (see [GitHub OAuth app](#github-oauth-app-catalog-no-dcr)); absent means GitHub can't be connected.
 - `CONTEXT_DEV_API_KEY`: context.dev key for [`search_web` and `web_extract`](#web-tools); absent means both tools are omitted from the turn's toolset.
+- `BROWSER_SERVICE_URL` / `BROWSER_SERVICE_TOKEN`: self-hosted browser-use sidecar for [`browse_website`](#browse_website); absent means the tool is omitted.
 
 ## Design Implications
 

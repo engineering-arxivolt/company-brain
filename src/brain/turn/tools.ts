@@ -359,6 +359,7 @@ export async function assembleTurnTools(
 		traceId,
 		args.costLedger,
 	)
+	const browseWebsiteTool = deps.createBrainBrowserAgentTool(env, traceId)
 	const tools: ToolSet = {
 		search_company_brain: brainTool,
 		resolve_entity: resolveEntityTool,
@@ -430,6 +431,9 @@ export async function assembleTurnTools(
 	let mcpSetupFailed = false
 	if (webSearchTool) tools.search_web = webSearchTool
 	if (webExtractTool) tools.web_extract = webExtractTool
+	// Self-hosted browser-use sidecar on the owner's VPS. Null when
+	// BROWSER_SERVICE_URL/TOKEN are unset, so Docker-less devs lose nothing.
+	if (browseWebsiteTool) tools.browse_website = browseWebsiteTool
 	// A monitor outlives the turn and posts back on its own schedule, so it is
 	// only offered where the request came from a real Slack conversation we can
 	// route the finding back into. It returns null without an API key or a

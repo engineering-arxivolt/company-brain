@@ -43,6 +43,14 @@ MODEL_API_KEY=""
 # FIRECRAWL_API_KEY=""
 # CONTEXT_DEV_API_KEY=""
 
+# Interactive browser (browser-use on your own VPS, no cloud account). Points
+# the browse_website turn tool at a FastAPI sidecar; see ./browser-service.
+# Unset = the tool stays hidden and search_web/web_extract cover the web.
+# Deployed workers never read this file — set these with
+# `wrangler secret put BROWSER_SERVICE_URL` (and BROWSER_SERVICE_TOKEN).
+# BROWSER_SERVICE_URL=""
+# BROWSER_SERVICE_TOKEN=""
+
 # TypeSafe AI / Jev System 1 Decision Model: ultra-fast, zero-token-waste
 # decision engine for MCP action effect classification, skills routing, and triage.
 # TYPESAFE_API_KEY=""

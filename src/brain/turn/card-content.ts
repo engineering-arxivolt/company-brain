@@ -97,7 +97,7 @@ export function extractCardSources(output: unknown): TurnCardSource[] {
 }
 
 // Public cards leak personal-connection data, so only these tools show raw output.
-const PUBLIC_CARD_PAYLOAD_TOOLS = new Set(["search_web"])
+const PUBLIC_CARD_PAYLOAD_TOOLS = new Set(["search_web", "web_extract"])
 
 /**
  * Raw output stays restricted, but sources do not: a citation is provenance, and

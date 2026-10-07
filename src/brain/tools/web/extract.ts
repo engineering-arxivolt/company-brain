@@ -60,7 +60,7 @@ export function createBrainWebExtractTool(
 	const useContext = hasContextWeb(env)
 
 	return tool({
-		description: `Read the full text of public web pages you already have URLs for. Use this instead of search_web when someone shares a link, or when a search result's snippet is not enough. Handles PDFs and YouTube links (returns the transcript when captions exist). Up to ${MAX_URLS} URLs per call, read in parallel. Not for private or logged-in pages, and not for our own Slack, GitHub, Notion, or Linear — reach those through their connected app tools.`,
+		description: `Read the full text of public web pages you already have URLs for. Use this instead of search_web when someone shares a link, or when a search result's snippet is not enough. Handles PDFs and YouTube links (returns the transcript when captions exist). Up to ${MAX_URLS} URLs per call, read in parallel. Not for private or logged-in pages, and not for our own Slack, GitHub, Notion, or Linear — reach those through their connected app tools. If a page needs a login or JavaScript interaction that plain reading cannot handle, use browse_website instead when it is available.`,
 		inputSchema: z.object({
 			urls: z
 				.array(z.string().url())

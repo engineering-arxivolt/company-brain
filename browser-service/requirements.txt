@@ -1,0 +1,9 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2
+browser-use>=0.4
+playwright>=1.44
+# Pick the LLM client(s) you use — at least one is required:
+openai>=1.0
+anthropic>=0.40
+google-generativeai>=0.8

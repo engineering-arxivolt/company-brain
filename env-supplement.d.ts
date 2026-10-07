@@ -63,6 +63,9 @@ interface Env {
 }
 
 interface Env {
+	/** Self-hosted browser-use sidecar (VPS FastAPI). Unset = browse_website hidden. */
+	BROWSER_SERVICE_URL?: string
+	BROWSER_SERVICE_TOKEN?: string
 	/** Optional Context.dev key; web search and page reading use it when set. */
 	CONTEXT_DEV_API_KEY?: string
 	/** Optional Firecrawl key. Without one, web tools use its free keyless tier. */
