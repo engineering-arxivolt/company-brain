@@ -33,6 +33,8 @@ const WRITE_VERBS = new Set([
 	"publish",
 	"trigger",
 	"schedule",
+	"save",
+	"push",
 	"deploy",
 	"share",
 	"approve",

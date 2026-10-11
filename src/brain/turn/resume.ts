@@ -466,6 +466,7 @@ export async function resumeTurnAfterApproval(
 				alwaysActiveTools: [FINISH_TURN_TOOL_NAME],
 				state,
 				attempt,
+				terminalCapture,
 				suspendRequested: () =>
 					Boolean(
 						connectedAppRuntime?.pendingApproval() ||

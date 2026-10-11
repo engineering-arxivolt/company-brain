@@ -463,6 +463,14 @@ function outputText(output: unknown): string {
 		: safeJson(record.value)
 }
 
+export const ELIDED_TOOL_RESULT_PREFIX = "[elided:"
+export const STALE_TOOL_RESULT_CHAR_LIMIT = 2_000
+/**
+ * How many of the most recent `role: "tool"` turns stay verbatim. Anything
+ * older that still exceeds {@link STALE_TOOL_RESULT_CHAR_LIMIT} is stubbed.
+ */
+export const STALE_TOOL_RESULT_KEEP_RECENT_TURNS = 2
+
 function compactedValue(value: unknown): boolean {
 	return Boolean(
 		value &&
@@ -470,6 +478,92 @@ function compactedValue(value: unknown): boolean {
 			((value as { compacted?: unknown }).compacted === true ||
 				(value as { boundaryBounded?: unknown }).boundaryBounded === true),
 	)
+}
+
+export function stubTextForToolResult(toolName: string, chars: number): string {
+	return `[elided: the ${toolName} result was ${chars} characters and is more than 2 turns old; re-run the tool if you need it again.]`
+}
+
+function alreadyElided(output: unknown): boolean {
+	if (!output || typeof output !== "object") return false
+	const record = output as { type?: unknown; value?: unknown }
+	return (
+		record.type === "text" &&
+		typeof record.value === "string" &&
+		record.value.startsWith(ELIDED_TOOL_RESULT_PREFIX)
+	)
+}
+
+function executionDeniedOutput(output: unknown): boolean {
+	if (!output || typeof output !== "object") return false
+	return (output as { type?: unknown }).type === "execution-denied"
+}
+
+/**
+ * Per-step elision for long turns: stub any tool result older than
+ * {@link STALE_TOOL_RESULT_KEEP_RECENT_TURNS} tool turns that still exceeds
+ * {@link STALE_TOOL_RESULT_CHAR_LIMIT} characters. Pure string replacement —
+ * no model call. Idempotent: already-stubbed parts are left alone, so running
+ * this on every step never double-stubs.
+ *
+ * Shape note (AI SDK v6): `ToolResultPart.output` must stay an object
+ * (`{ type: "text", value }` | `{ type: "json", value }` | …). The
+ * OpenAI-compatible chat converter accepts exactly that object and sends
+ * `output.value` (text) or `JSON.stringify(output.value)` (json) as the plain
+ * tool-message string — so the stub MUST be
+ * `{ type: "text", value: stub }`, never a bare string (which violates the
+ * `ToolResultOutput` type and fails validation). There is no `result` field
+ * on the part in v6.
+ */
+export function elideStaleToolResults(
+	messages: ModelMessage[],
+): ModelMessage[] {
+	const toolTurns: number[] = []
+	messages.forEach((message, index) => {
+		if (message.role === "tool" && Array.isArray(message.content)) {
+			toolTurns.push(index)
+		}
+	})
+	if (!toolTurns.length) return messages.map((message) => ({ ...message }))
+	const recent = new Set(
+		toolTurns.slice(-STALE_TOOL_RESULT_KEEP_RECENT_TURNS),
+	)
+	return messages.map((message, messageIndex) => {
+		if (
+			message.role !== "tool" ||
+			!Array.isArray(message.content) ||
+			recent.has(messageIndex)
+		) {
+			return message
+		}
+		return {
+			...message,
+			content: message.content.map((part) => {
+				const item = part as {
+					type?: string
+					toolName?: unknown
+					output?: unknown
+				}
+				if (item.type !== "tool-result" || !item.output) return part
+				if (alreadyElided(item.output) || executionDeniedOutput(item.output)) {
+					return part
+				}
+				const text = outputText(item.output)
+				if (text.length <= STALE_TOOL_RESULT_CHAR_LIMIT) return part
+				const toolName =
+					typeof item.toolName === "string" && item.toolName
+						? item.toolName
+						: "tool"
+				return {
+					...item,
+					output: {
+						type: "text" as const,
+						value: stubTextForToolResult(toolName, text.length),
+					},
+				}
+			}),
+		} as ModelMessage
+	})
 }
 
 type ToolResultRef = {

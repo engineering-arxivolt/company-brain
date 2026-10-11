@@ -682,6 +682,7 @@ export async function computeTurn(
 				attempt,
 				// Continuations keep their own smaller cap.
 				stepLimit: attempt === "initial" ? stepLimit : undefined,
+				terminalCapture,
 				suspendRequested: () =>
 					Boolean(
 						connectedAppRuntime?.pendingApproval() ||

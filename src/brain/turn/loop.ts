@@ -1,5 +1,9 @@
 import type { ModelMessage, SystemModelMessage, ToolSet } from "ai"
-import { replaceTrailingTurnState, type TurnStateRenderCache } from "./context"
+import {
+	elideStaleToolResults,
+	replaceTrailingTurnState,
+	type TurnStateRenderCache,
+} from "./context"
 import type { TurnDeps } from "./deps"
 import {
 	CONTINUATION_MAX_STEPS,
@@ -14,6 +18,8 @@ import {
 	touchTurnState,
 } from "./state"
 import { TURN_DEADLINE_MS } from "./util"
+
+import type { TurnTerminalCapture } from "./terminal"
 
 type StreamTextOptions = Parameters<TurnDeps["streamText"]>[0]
 
@@ -138,6 +144,8 @@ export type RunModelLoopArgs = {
 	abortSignal?: AbortSignal
 	functionId: string
 	prepareMessages?: (messages: ModelMessage[]) => ModelMessage[]
+	/** Tracks finish_turn proposals so the planning gate can detect drift. */
+	terminalCapture?: TurnTerminalCapture
 	/** Runs at the top of each step, before turn_state is rendered, so it may mutate state (e.g. pacing nudges). */
 	onBeforeStep?: (stepNumber: number) => TimeBudgetPolicyDecision | undefined
 	onPreparedStep?: (args: {
@@ -192,7 +200,21 @@ export function runModelLoop(args: RunModelLoopArgs) {
 		prepareStep: ({ messages, stepNumber }) => {
 			const budget = applyStepBudgetPolicy(args.state)
 			const timeBudget = args.onBeforeStep?.(stepNumber)
-			const sourceMessages = args.prepareMessages?.(messages) ?? messages
+			const sourceMessages = elideStaleToolResults(
+				args.prepareMessages?.(messages) ?? messages,
+			)
+			// Planning gate: if the trace reaches step 3 with no terminal
+			// proposal, nudge via turn_state so the agent declares its plan
+			// before continuing instead of re-deriving context every turn.
+			if (stepNumber >= 3 && args.terminalCapture && !args.terminalCapture.requested()) {
+				const marker = "Planning: no finish_turn proposal yet."
+				if (!args.state.warnings.some((warning) => warning.startsWith("Planning:"))) {
+					addTurnWarning(
+						args.state,
+						`${marker} State your plan briefly in your next reasoning and steer toward finish_turn — what remains, in what order, and what evidence closes each item.`,
+					)
+				}
+			}
 			const preparedMessages = replaceTrailingTurnState(
 				sourceMessages,
 				args.state,
