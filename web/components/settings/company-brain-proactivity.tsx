@@ -1,7 +1,7 @@
 
 import { useQuery } from "@tanstack/react-query"
 import { cn } from "@lib/utils"
-import { Check, Loader2, Lock, Plus, X } from "lucide-react"
+import { Check, Image, Loader2, Lock, Plus, X } from "lucide-react"
 import { useState } from "react"
 import { useAuth } from "@lib/auth-context"
 import {
@@ -15,13 +15,32 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@ui/components/popover"
 import {
 	type BrainChannelProactivity,
+	type BrainPersonalityPreset,
+	type BrainPersonalitySettings,
 	type BrainProactivityDefault,
+	type BrainSettingsPatch,
 	useBrainSettings,
 	useUpdateBrainSettings,
 } from "@/hooks/use-brain-settings"
 import { useOrgMemberRole } from "@/hooks/use-org-member-role"
 import { dmSans125ClassName } from "@/lib/fonts"
 import { BACKEND } from "@lib/api"
+
+
+const PERSONALITY_PRESETS = [
+  { id: "playful", label: "Playful", description: "Emojis, reactions, GIFs on wins" },
+  { id: "balanced", label: "Balanced", description: "Sparse emojis, GIFs only, no reactions" },
+  { id: "professional", label: "Professional", description: "No emojis, no reactions, no GIFs" },
+] as const
+
+const GIF_MOODS = [
+  { id: "celebrate", label: "Celebrate", description: "General wins" },
+  { id: "shipped", label: "Shipped", description: "Deploys, releases" },
+  { id: "unblocked", label: "Unblocked", description: "Fixed blockers" },
+  { id: "thanks", label: "Thanks", description: "Appreciation" },
+  { id: "welcome", label: "Welcome", description: "Onboarding" },
+] as const
+
 
 
 type Channel = { id: string; name: string; isPrivate: boolean }
@@ -93,6 +112,7 @@ export default function CompanyBrainProactivity() {
 	const activeMode = proactivity?.default ?? "all_channels"
 	const overrides = proactivity?.channels ?? {}
 	const channels = channelsQuery.data ?? []
+	const personality = settingsQuery.data?.personality
 	const channelName = (id: string) =>
 		channels.find((ch) => ch.id === id)?.name ?? id
 	const addable = channels.filter(
@@ -109,6 +129,18 @@ export default function CompanyBrainProactivity() {
 		value: BrainChannelProactivity | null,
 	) => {
 		update.mutate({ proactivity: { channels: { [channelId]: value } } })
+	}
+
+	const setPreset = (preset: BrainPersonalityPreset) => {
+		update.mutate({ personality: { preset } })
+	}
+
+	const updateGif = (mood: string, url: string | null) => {
+		update.mutate({
+			personality: {
+				gifs: { [mood]: url },
+			},
+		})
 	}
 
 	return (
@@ -291,6 +323,100 @@ export default function CompanyBrainProactivity() {
 							)}
 						</div>
 					</div>
+
+
+	{/* Personality */}
+	<div className="flex flex-col gap-2">
+	<span className={fieldLabel}>Personality</span>
+	<div className="grid gap-3 sm:grid-cols-2">
+		{PERSONALITY_PRESETS.map((preset) => {
+		const isActive = personality?.preset === preset.id
+		return (
+			<button
+			key={preset.id}
+			type="button"
+			disabled={disabled}
+			aria-pressed={isActive}
+			onClick={() => setPreset(preset.id)}
+			className={cn(
+				dmSans125ClassName(),
+				"flex min-w-0 cursor-pointer flex-col gap-1.5 rounded-xl p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+				"bg-[#14161A] shadow-[inset_2.42px_2.42px_4.263px_rgba(11,15,21,0.7)]",
+				isActive
+				? "bg-[#10161f] ring-1 ring-[#2261CA]/45"
+				: "hover:bg-[#171A1F]",
+			)}
+			>
+			<span className="flex items-center justify-between gap-2">
+				<span className="truncate font-semibold text-[14px] tracking-[-0.15px] text-[#FAFAFA]">
+				{preset.label}
+				{preset.id === "balanced" ? (
+					<span className="ml-1.5 text-[11px] font-medium text-[#737B87]">
+					Default
+					</span>
+				) : null}
+				</span>
+				{isActive ? <Check className="size-4" /> : null}
+			</span>
+			<span className="text-[12px] font-medium leading-[1.5] text-[#737373]">
+				{preset.description}
+			</span>
+			</button>
+		)
+		})}
+	</div>
+	<div className="flex flex-col gap-2 mt-4">
+		<span className={fieldLabel}>GIF Library</span>
+		<div className="grid gap-3 sm:grid-cols-2">
+		{GIF_MOODS.map((mood) => {
+			const currentUrl = personality?.gifs?.[mood.id] ?? ""
+			const [url, setUrl] = useState(currentUrl)
+			return (
+			<div
+				key={mood.id}
+				className="flex min-h-[52px] items-center gap-3 rounded-xl p-4 bg-[#14161A] shadow-[inset_2.42px_2.42px_4.263px_rgba(11,15,21,0.7)] disabled:opacity-50"
+			>
+				<Image className="size-5" />
+				<div className="flex-1 min-w-0">
+				<label className={cn(dmSans125ClassName(), "text-[11px] font-medium text-[#737373]")}>
+					{mood.label}
+				</label>
+				<input
+					type="url"
+					value={url}
+					onChange={(e) => setUrl(e.target.value)}
+					onBlur={() => updateGif(mood.id, url)}
+					placeholder="https://media.giphy.com/media/.../giphy.gif"
+					disabled={disabled}
+					className={cn(
+					dmSans125ClassName(),
+					"mt-1 w-full rounded-lg bg-[#0D121A] px-3 py-2 text-[13px] text-[#FAFAFA] placeholder:text-[#5A5A5A] outline-none focus:ring-1 focus:ring-[#2261CA] disabled:cursor-not-allowed disabled:opacity-50",
+					)}
+				/>
+				<p className={cn(dmSans125ClassName(), "mt-1 text-[11px] text-[#5A5A5A]")}>
+					{mood.description}
+				</p>
+				</div>
+				{url && (
+				<button
+					type="button"
+					onClick={() => updateGif(mood.id, null)}
+					disabled={disabled}
+					className="p-1 text-[#737B87] hover:text-[#FAFAFA] disabled:cursor-not-allowed disabled:opacity-50"
+					aria-label={`Remove ${mood.label} GIF`}
+				>
+					<X className="size-4" />
+				</button>
+				)}
+			</div>
+			)
+		})}
+		</div>
+		<p className={cn(dmSans125ClassName(), "text-[11px] text-[#737B87]")}>
+		URLs must be HTTPS from Giphy or Tenor. Max 3000 chars.
+		</p>
+	</div>
+	</div>
 
 					{!isAdmin ? (
 						<div className="flex items-center gap-1.5 text-[12px] text-[#737373]">

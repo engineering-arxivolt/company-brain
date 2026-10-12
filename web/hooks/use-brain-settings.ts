@@ -8,14 +8,24 @@ const BASE = `${BACKEND}/brain/settings`
 export type BrainProactivityDefault = "all_channels" | "own_channel_only"
 export type BrainChannelProactivity = "proactive" | "quiet"
 
+export type BrainPersonalityPreset = "playful" | "balanced" | "professional"
+
+export type BrainPersonalitySettings = {
+	preset?: BrainPersonalityPreset
+	gifs?: Partial<Record<string, string>>
+}
+
 export type BrainSettingsResponse = {
 	proactivity: {
 		default: BrainProactivityDefault
 		channels: Record<string, BrainChannelProactivity>
 	}
+	personality: BrainPersonalitySettings
 	choices: {
 		proactivityDefault: BrainProactivityDefault[]
 		channelProactivity: BrainChannelProactivity[]
+		personalityPreset: BrainPersonalityPreset[]
+		personalityGifMoods: string[]
 	}
 }
 
@@ -24,6 +34,10 @@ export type BrainSettingsPatch = {
 	proactivity?: {
 		default?: BrainProactivityDefault | null
 		channels?: Record<string, BrainChannelProactivity | null> | null
+	} | null
+	personality?: {
+		preset?: BrainPersonalityPreset | null
+		gifs?: Record<string, string | null> | null
 	} | null
 }
 
