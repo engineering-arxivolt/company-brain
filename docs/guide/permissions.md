@@ -71,7 +71,7 @@ Sometimes a request needs a tool neither you nor the org has connected, but a te
 
 ## Who can change what
 
-- The **owner** is the first person who signed in. Owners and **admins** can install to Slack, add org-shared tool connections and org-wide skills, change org-wide settings (models, workspace prompt, proactivity), create automations that post to private channels, and manage everyone's automations.
+- The **owner** is the first person who signed in. Owners and **admins** can install to Slack, add org-shared tool connections and org-wide skills, change org-wide settings (models, workspace prompt, proactivity, personality), create automations that post to private channels, and manage everyone's automations.
 - **Members** sign in with Slack, connect their own tools, write personal skills, and manage their own automations.
 
 > [!NOTE]

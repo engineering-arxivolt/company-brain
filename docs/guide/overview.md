@@ -39,7 +39,7 @@ You don't need to mention it. It speaks up when it has something to add (see [Au
 
 ## Same knowledge, useful everywhere
 
-It's your team's knowledge, and Slack is where you reach it. The app UI on your deployment shows the rest: the brain's home, a **Graph** of its memories, and **Configure** for tools, models, skills, automations and proactivity.
+It's your team's knowledge, and Slack is where you reach it. The app UI on your deployment shows the rest: the brain's home, a **Graph** of its memories, and **Configure** for tools, models, skills, automations, proactivity and personality.
 
 Asking the brain from Claude Code, Cursor or other MCP clients was part of the hosted product and isn't in this build yet. See [Using outside Slack](outside-slack.md) for what works today.
 
