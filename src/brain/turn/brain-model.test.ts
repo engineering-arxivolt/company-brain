@@ -1,8 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest"
 import { degradedAsError } from "../observability"
 import {
+	allowFreeMainTurn,
 	availableProviders,
 	brainChainModelNames,
+	classifyPoolFailure,
 	isDegradedProviderMetadata,
 	DEGRADED_METADATA_KEY,
 	getBrainModel,
@@ -111,6 +113,9 @@ describe("quota fallback chain", () => {
 	const quotaError = Object.assign(new Error("free-models-per-day limit reached"), {
 		statusCode: 429,
 	})
+	const rateLimitError = Object.assign(new Error("rate limit exceeded"), {
+		statusCode: 429,
+	})
 	const brokenError = Object.assign(new Error("tool schema invalid"), { statusCode: 400 })
 
 	/**
@@ -154,11 +159,16 @@ describe("quota fallback chain", () => {
 	const text = (result: { content: Array<{ text?: string }> }) =>
 		result.content.map((part) => part.text ?? "").join("")
 
-	it("classifies only quota errors as retryable", () => {
+	it("classifies quota errors and momentary rate limits as survivable", () => {
 		expect(isPoolExhausted(quotaError)).toBe(true)
 		expect(isPoolExhausted(Object.assign(new Error("x"), { statusCode: 402 }))).toBe(true)
 		expect(isPoolExhausted(new Error("free-models-per-day"))).toBe(true)
-		expect(isPoolExhausted(brokenError)).toBe(false)
+		// A bare 429 is worth another hop too, but it is not exhaustion: the
+		// notice must not tell the user to add credits for a throttle.
+		expect(isPoolExhausted(rateLimitError)).toBe(true)
+		expect(classifyPoolFailure(rateLimitError)).toBe("rate_limited")
+		expect(classifyPoolFailure(quotaError)).toBe("exhausted")
+		expect(classifyPoolFailure(brokenError)).toBeNull()
 	})
 
 	/**
@@ -213,6 +223,53 @@ describe("quota fallback chain", () => {
 		expect(text(result)).toBe(DEGRADED_NOTICE)
 		expect(text(result)).toMatch(/degraded/i)
 		expect(text(result)).toMatch(/quota/i)
+	})
+
+	it("hops past a momentary 429 to the next candidate", async () => {
+		const chain = withFallbackChain([fakeModel("a", rateLimitError), fakeModel("b")])
+		expect(text(await generate(chain))).toBe("answered by b")
+	})
+
+	it("rethrows instead of serving the notice when every hop was only rate-limited", async () => {
+		// "Add credits" is wrong advice for a throttle: there is nothing to pay
+		// for and the next attempt likely works. The caller apologizes and the
+		// user retries, which is what actually clears it.
+		const chain = withFallbackChain([
+			fakeModel("a", rateLimitError),
+			fakeModel("b", rateLimitError),
+		])
+		await expect(generate(chain)).rejects.toThrow(/rate limit exceeded/)
+	})
+
+	it("applies the same 429 split to streaming", async () => {
+		const chain = withFallbackChain([
+			fakeModel("a", rateLimitError),
+			fakeModel("b", rateLimitError),
+		])
+		await expect(
+			(chain as unknown as { doStream: (o: unknown) => Promise<unknown> }).doStream({
+				prompt: [],
+			}),
+		).rejects.toThrow(/rate limit exceeded/)
+	})
+
+	it("serves the notice when a hop is drained and names only the exhausted hop", async () => {
+		// GLM is out of credits, the escalation hop is merely throttled: the
+		// outage is real, and the marker must name what actually needs topping
+		// up so the alert is actionable.
+		const chain = withFallbackChain([
+			fakeModel("a", quotaError),
+			fakeModel("b", rateLimitError),
+		])
+		const result = (await generate(chain)) as {
+			content: Array<{ text?: string }>
+			providerMetadata?: unknown
+		}
+		expect(text(result)).toBe(DEGRADED_NOTICE)
+		expect(isDegradedProviderMetadata(result.providerMetadata)).toEqual({
+			degraded: true,
+			exhausted: "test/a",
+		})
 	})
 
 	it("propagates non-quota failures so real bugs stay visible", async () => {
@@ -310,6 +367,21 @@ describe("quota fallback chain", () => {
 		}
 	})
 
+	it("keeps an explicitly picked free model as the last hop", () => {
+		// Picking a free model in Settings used to do nothing: the write-path
+		// gate dropped it and an exhausted paid tier served the degraded
+		// notice. The pick is consent, so it is kept — last, so the paid hops
+		// still lead and answer whenever they can.
+		const chain = brainChainModelNames("nemotron-3-super-free", openRouterEnv, {
+			mainTurn: true,
+		})
+		expect(chain).toEqual([
+			OPENROUTER_MAIN_MODEL,
+			OPENROUTER_ESCALATION_MODEL,
+			"nemotron-3-super-free",
+		])
+	})
+
 	it("keeps the free hop on the answering chain when the operator opts in", () => {
 		// Paid hops out of credits (e.g. GLM exhausted): BRAIN_ALLOW_FREE_MAIN_TURN=1
 		// puts nemotron-3-super-free FIRST so the turn answers without burning
@@ -353,6 +425,32 @@ describe("quota fallback chain", () => {
 			mainTurn: true,
 		})
 		expect(chain).toContain(OPENROUTER_MAIN_MODEL)
+	})
+})
+
+describe("free-model opt-in flag", () => {
+	const withFlag = (value: string) =>
+		asEnv({
+			OPENAI_API_KEY: "sk-or-v1-test",
+			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+			BRAIN_ALLOW_FREE_MAIN_TURN: value,
+		})
+
+	it("accepts forgiving spellings", () => {
+		// The value round-trips through wrangler.jsonc, the dashboard and CI
+		// substitutions, so casing and stray whitespace must not read as "off":
+		// a closed escape hatch looks exactly like the outage it exists to
+		// survive.
+		for (const on of ["1", "true", "TRUE", " true ", "Yes", "on"]) {
+			expect(allowFreeMainTurn(withFlag(on))).toBe(true)
+		}
+	})
+
+	it("treats anything else as off", () => {
+		for (const off of ["", "0", "false", "off", "no", "2"]) {
+			expect(allowFreeMainTurn(withFlag(off))).toBe(false)
+		}
+		expect(allowFreeMainTurn(asEnv({}))).toBe(false)
 	})
 })
 

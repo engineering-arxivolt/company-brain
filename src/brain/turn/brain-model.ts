@@ -31,12 +31,26 @@ const PROVIDER_DEFAULT_MODEL: Record<SupportedModelProvider, SupportedModel> = {
 	xai: "grok-4.5",
 }
 
-/** "1"/"true" to let a free OpenRouter model answer the main turn.
+/** "1"/"true"/"yes"/"on" (case- and whitespace-insensitive) to let a free
+ * OpenRouter model answer the main turn.
  * Off by default: the answering turn writes to memory/GitHub/Linear/Notion.
- * Opt in only when paid hops are out of credits (e.g. GLM exhausted). */
+ * Opt in only when paid hops are out of credits (e.g. GLM exhausted).
+ *
+ * Parsed forgivingly because the value round-trips through wrangler.jsonc, the
+ * dashboard and CI substitutions, where "TRUE " or "1 " must not silently read
+ * as "off" — the escape hatch failing closed looks exactly like the outage it
+ * exists to survive. */
 export function allowFreeMainTurn(env: Env): boolean {
-	const v = (env as unknown as Record<string, unknown>).BRAIN_ALLOW_FREE_MAIN_TURN
-	return v === "1" || v === "true" || v === true
+	const v = env.BRAIN_ALLOW_FREE_MAIN_TURN as unknown
+	if (v === true) return true
+	if (typeof v !== "string") return false
+	const normalized = v.trim().toLowerCase()
+	return (
+		normalized === "1" ||
+		normalized === "true" ||
+		normalized === "yes" ||
+		normalized === "on"
+	)
 }
 
 /**
@@ -345,10 +359,38 @@ export const DEGRADED_NOTICE =
 	"exhausted), so I can't answer this one — I'd only be guessing. Add credits " +
 	"to OpenRouter or an Anthropic API key in Settings and I'll be back."
 
-/** Quota exhaustion is the only failure worth surviving by trying the next model. */
-export function isPoolExhausted(error: unknown): boolean {
+/** Why a candidate failed in a way the chain survives by hopping on. */
+export type PoolFailure =
+	/** Out of credits: a 402, or a 429 whose message names the free daily pool. */
+	| "exhausted"
+	/** A momentary 429: retry, don't top up. */
+	| "rate_limited"
+
+/**
+ * Classifies a failure the chain is willing to survive by trying the next
+ * candidate. `null` means the error is not a provider capacity problem and
+ * must propagate untouched so real bugs stay visible.
+ *
+ * A 429 is ambiguous: OpenRouter uses it both for "free-models-per-day" (a
+ * quota — the fix is credits) and for momentary throttling (the fix is
+ * retrying). The message disambiguates. Treating every 429 as exhaustion made
+ * a single busy minute look like a drained account and served users the
+ * "add credits" notice for a condition that clears itself.
+ */
+export function classifyPoolFailure(error: unknown): PoolFailure | null {
 	const status = errorStatus(error)
-	return status === 402 || status === 429 || isFreePoolMessage(error)
+	if (status === 402) return "exhausted"
+	if (status === 429) return isQuotaMessage(error) ? "exhausted" : "rate_limited"
+	return isQuotaMessage(error) ? "exhausted" : null
+}
+
+/**
+ * True when a failure is one the chain survives by trying the next candidate.
+ * Broader than "exhausted": a momentary 429 is worth another hop even though
+ * it must not produce the "add credits" notice. See `classifyPoolFailure`.
+ */
+export function isPoolExhausted(error: unknown): boolean {
+	return classifyPoolFailure(error) !== null
 }
 
 /** Key the degraded marker travels under in the model response metadata. */
@@ -375,21 +417,27 @@ export function isDegradedProviderMetadata(
 }
 
 /**
- * Tries each candidate in order and, only when every one of them is out of
- * quota, answers with `degradedText`. Without an AI Gateway the SDK only ever
- * called the first candidate, so a second provider key bought nothing; this is
- * what makes the chain real. Non-quota errors (bad request, tool failure,
- * network) propagate untouched so real bugs stay visible.
+ * Tries each candidate in order and, only when every one failed with a
+ * capacity error AND at least one was genuinely out of quota, answers with
+ * `degradedText`. Without an AI Gateway the SDK only ever called the first
+ * candidate, so a second provider key bought nothing; this is what makes the
+ * chain real. Non-quota errors (bad request, tool failure, network) propagate
+ * untouched so real bugs stay visible.
  *
  * The degraded result is tagged in `providerMetadata` so telemetry can record a
  * total outage as the error it is — otherwise it looks in PostHog like a fast,
- * successful generation by whichever model was tried last.
+ * successful generation by whichever model was tried last. The `exhausted`
+ * list names the hops that failed, so the marker says which endpoint to top up.
  *
  * `degradedText: null` rethrows the quota error instead of serving a notice.
  * Background callers want that: triage, the post-turn observer and the approval
  * classifier each have their own recovery, and a user-facing notice would be
  * captured as a result — the observer would write "service is degraded" into the
  * team's memory as a durable note.
+ *
+ * A chain where every failure was a momentary 429 also rethrows: "add credits"
+ * is wrong advice for a rate limit, and the caller's own retry — or the user's
+ * next message — is the remedy that works.
  */
 export function withFallbackChain(
 	models: LanguageModel[],
@@ -425,22 +473,43 @@ export function withFallbackChain(
 		async doGenerate(options: LanguageModelV3CallOptions) {
 			let lastError: unknown
 			const exhausted: string[] = []
+			const rateLimited: string[] = []
 			for (const model of chain) {
 				const candidate = model as unknown as LanguageModelV3
 				try {
 					return await candidate.doGenerate(options)
 				} catch (err) {
-					if (!isPoolExhausted(err)) throw err
+					const failure = classifyPoolFailure(err)
+					if (!failure) throw err
 					lastError = err
-					exhausted.push(`${candidate.provider}/${candidate.modelId}`)
-					console.log(
-						`[company-brain] ${candidate.provider}/${candidate.modelId} out of quota (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
-					)
+					const id = `${candidate.provider}/${candidate.modelId}`
+					if (failure === "rate_limited") {
+						rateLimited.push(id)
+						console.log(
+							`[company-brain] ${id} rate-limited (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
+						)
+					} else {
+						exhausted.push(id)
+						console.log(
+							`[company-brain] ${id} out of quota (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
+						)
+					}
 				}
 			}
 			// Background callers opt out of the notice and handle the error themselves.
 			if (degradedText === null) throw lastError
-			console.log(`[company-brain] every model candidate out of quota; serving degraded notice`)
+			// The notice claims an account problem ("out of quota"). A chain that
+			// only ever hit momentary 429s has no exhausted hop to name and will
+			// answer on retry, so rethrow instead of telling the user to pay.
+			if (exhausted.length === 0) {
+				console.log(
+					`[company-brain] every model candidate rate-limited (${rateLimited.join(",")}); no hop exhausted, rethrowing`,
+				)
+				throw lastError
+			}
+			console.log(
+				`[company-brain] every model candidate out of quota; serving degraded notice exhausted=${exhausted.join(",")}${rateLimited.length > 0 ? ` rateLimited=${rateLimited.join(",")}` : ""}`,
+			)
 			return {
 				content: [{ type: "text" as const, text: degradedText }],
 				finishReason: { unified: "stop" as const, raw: undefined },
@@ -452,21 +521,41 @@ export function withFallbackChain(
 		async doStream(options: LanguageModelV3CallOptions) {
 			let lastError: unknown
 			const exhausted: string[] = []
+			const rateLimited: string[] = []
 			for (const model of chain) {
 				const candidate = model as unknown as LanguageModelV3
 				try {
 					return await candidate.doStream(options)
 				} catch (err) {
-					if (!isPoolExhausted(err)) throw err
+					const failure = classifyPoolFailure(err)
+					if (!failure) throw err
 					lastError = err
-					exhausted.push(`${candidate.provider}/${candidate.modelId}`)
-					console.log(
-						`[company-brain] ${candidate.provider}/${candidate.modelId} out of quota (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
-					)
+					const id = `${candidate.provider}/${candidate.modelId}`
+					if (failure === "rate_limited") {
+						rateLimited.push(id)
+						console.log(
+							`[company-brain] ${id} rate-limited (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
+						)
+					} else {
+						exhausted.push(id)
+						console.log(
+							`[company-brain] ${id} out of quota (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
+						)
+					}
 				}
 			}
 			if (degradedText === null) throw lastError
-			console.log(`[company-brain] every model candidate out of quota; serving degraded notice`)
+			// Same rule as doGenerate: a rate-limit-only chain must not masquerade
+			// as a drained account.
+			if (exhausted.length === 0) {
+				console.log(
+					`[company-brain] every model candidate rate-limited (${rateLimited.join(",")}); no hop exhausted, rethrowing`,
+				)
+				throw lastError
+			}
+			console.log(
+				`[company-brain] every model candidate out of quota; serving degraded notice exhausted=${exhausted.join(",")}${rateLimited.length > 0 ? ` rateLimited=${rateLimited.join(",")}` : ""}`,
+			)
 			const metadata = degradedMetadata(exhausted)
 			const stream = new ReadableStream<LanguageModelV3StreamPart>({
 				start(controller) {
@@ -510,11 +599,20 @@ function errorStatus(error: unknown): number | undefined {
 	return found
 }
 
-function isFreePoolMessage(error: unknown): boolean {
+function isQuotaMessage(error: unknown): boolean {
 	let matched = false
 	walkErrorChain(error, (record) => {
-		const message = record.message
-		if (typeof message === "string" && /free-models-per-day/i.test(message)) matched = true
+		for (const key of ["message", "responseBody"]) {
+			const text = record[key]
+			if (
+				typeof text === "string" &&
+				/(free-models-per-day|insufficient[ _-]?(?:credits|quota)|quota exceeded|out of credits)/i.test(
+					text,
+				)
+			) {
+				matched = true
+			}
+		}
 	})
 	return matched
 }
@@ -529,16 +627,19 @@ function isFreePoolMessage(error: unknown): boolean {
  * @param options.mainTurn Only the user-facing Slack turn sets this. It gets
  *   the OpenRouter hops (the cheap cached model, then the frontier escalation
  *   model) at the head of the chain, a degraded notice when everything is out of
- *   quota, and never a free model — see `isFreeModel`. Background callers —
+ *   quota, and never a free model — see `isFreeModel` — with one exception: a
+ *   free model the operator picked in Settings is kept as the last hop.
+ *   Background callers —
  *   triage, the post-turn observer, the approval classifier — leave it off: they
  *   keep the cheap model they resolved and handle quota errors with their own
  *   recovery rather than showing a user-facing notice. Those paths are
  *   read-only, so a free model is acceptable there.
  *
- * Applies the write-path rule: a free model is dropped unless dropping it would
- * leave nothing, in which case it is kept rather than failing the turn outright.
- * That case is a deployment with no paid provider configured at all; it is
- * logged, and it is the only way a free model can reach the answering turn.
+ * Applies the write-path rule: a free model is dropped unless dropping it
+ * would leave nothing — a deployment with no paid provider at all, kept rather
+ * than failing the turn outright — or unless the operator explicitly picked
+ * that free model in Settings, in which case it is kept as the chain's last
+ * hop so an exhausted paid tier falls through to it. Both cases are logged.
  */
 export function brainChainModelNames(
 	modelName: SupportedModel,
@@ -590,20 +691,35 @@ export function brainChainModelNames(
 	// Escape hatch: BRAIN_ALLOW_FREE_MAIN_TURN=1 keeps the free hop when paid
 	// hops are out of credits (e.g. GLM exhausted) instead of degraded-notice.
 	if (!options.mainTurn) return deduped
-	if (allowFreeMainTurn(env)) return deduped
-	const paid = deduped.filter((name) => !isFreeModel(name))
-	if (paid.length === 0) return deduped
-	if (paid.length < deduped.length) {
-		console.log(
-			`[company-brain] dropping free model(s) from the answering chain: ${deduped
-				.filter((name) => isFreeModel(name))
-				.join(", ")}`,
-		)
+	// The diag line below must run whatever the branch: BRAIN_ALLOW_FREE_MAIN_TURN
+	// was exactly the case where the tail used to show no chain at all, because
+	// the flag-on path returned before it.
+	let survivors = deduped
+	if (!allowFreeMainTurn(env)) {
+		const paid = deduped.filter((name) => !isFreeModel(name))
+		if (paid.length > 0) {
+			// Picking a free model in Settings is consent, not accident: the pick
+			// is kept as the chain's LAST hop, so an exhausted paid tier falls
+			// through to it instead of the degraded notice. Only a pick that
+			// resolved to itself qualifies — a free model `resolveModel`
+			// substituted in because the picked provider had no key carries no
+			// such consent and stays dropped.
+			const pickedFree = resolved === modelName && isFreeModel(resolved)
+			survivors = pickedFree ? [...paid, resolved] : paid
+			const dropped = deduped.filter(
+				(name) => isFreeModel(name) && !survivors.includes(name),
+			)
+			if (dropped.length > 0) {
+				console.log(
+					`[company-brain] dropping free model(s) from the answering chain: ${dropped.join(", ")}`,
+				)
+			}
+		}
 	}
 	console.log(
-		`[company-brain][diag] chain=${JSON.stringify(paid)} mainTurn=${options.mainTurn} flag=${allowFreeMainTurn(env)} baseUrl=${openAiCompatibleBaseUrl(env) ?? "none"} openaiKeyPrefix=${env.OPENAI_API_KEY?.slice(0, 7) ?? "none"}`,
+		`[company-brain][diag] chain=${JSON.stringify(survivors)} mainTurn=${options.mainTurn} flag=${allowFreeMainTurn(env)} baseUrl=${openAiCompatibleBaseUrl(env) ?? "none"} openaiKeyPrefix=${env.OPENAI_API_KEY?.slice(0, 7) ?? "none"}`,
 	)
-	return paid
+	return survivors
 }
 
 export function getBrainModel(
