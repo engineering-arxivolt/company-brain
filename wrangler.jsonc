@@ -41,7 +41,7 @@
 		// answer the main turn instead of the degraded notice. Flip back to "0"
 		// (or delete) when paid quota returns — the answering turn writes to
 		// memory/GitHub/Linear, so free-by-default would persist hallucinations.
-		"BRAIN_ALLOW_FREE_MAIN_TURN": "1"
+		"BRAIN_ALLOW_FREE_MAIN_TURN": "1",
 		// opencode.ai fallback — free models (glm-5.1, kimi-k2.6, minimax-m2.7)
 		// when OpenRouter paid + free are both exhausted. Uncomment and deploy
 		// when OpenRouter is dry:
