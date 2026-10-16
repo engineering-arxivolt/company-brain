@@ -36,7 +36,12 @@
 		// OpenAI-compatible endpoint for the free models. This only applies to the
 		// chat-completions models in the registry; OpenAI's own models still go to
 		// api.openai.com. Point it elsewhere (e.g. Workers AI) to switch providers.
-		"OPENAI_BASE_URL": "https://openrouter.ai/api/v1"
+		"OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+		// "1" while GLM credits are exhausted: lets the free Nemotron-Super hop
+		// answer the main turn instead of the degraded notice. Flip back to "0"
+		// (or delete) when paid quota returns — the answering turn writes to
+		// memory/GitHub/Linear, so free-by-default would persist hallucinations.
+		"BRAIN_ALLOW_FREE_MAIN_TURN": "1"
 	},
 	"observability": {
 		"enabled": true

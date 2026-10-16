@@ -60,13 +60,13 @@ describe("free OpenAI-compatible models", () => {
 	it("falls back to a free model when the endpoint is the only provider", () => {
 		const model = inspect(getBrainModel("grok-4.5", openRouterEnv))
 
-		expect(model.modelId).toBe("nvidia/nemotron-3-ultra-550b-a55b:free")
+		expect(model.modelId).toBe("nvidia/nemotron-3-super-120b-a12b:free")
 	})
 
 	it("keeps triage on the light free model", () => {
 		const model = inspect(getBrainModel(TRIAGE_MODEL, openRouterEnv))
 
-		expect(model.modelId).toBe("qwen/qwen3.8-27b:free")
+		expect(model.modelId).toBe("google/gemma-4-31b-it:free")
 	})
 
 	it("leaves OpenAI's own models on the Responses API", () => {
@@ -82,16 +82,16 @@ describe("free OpenAI-compatible models", () => {
 	})
 
 	it("sends no Responses-API options for chat models", () => {
-		expect(getModelReasoningProviderOptions("nemotron-3-ultra-free", "high")).toEqual({})
+		expect(getModelReasoningProviderOptions("nemotron-3-super-free", "high")).toEqual({})
 		expect(getModelReasoningProviderOptions("gemma-4-31b-free", "low")).toEqual({})
 	})
 
 	it("marks only the free models as chat-completions", () => {
-		expect(usesChatCompletions("nemotron-3-ultra-free")).toBe(true)
-		expect(usesChatCompletions("qwen3.8-27b-free")).toBe(true)
+		expect(usesChatCompletions("nemotron-3-super-free")).toBe(true)
+		expect(usesChatCompletions("gemma-4-31b-free")).toBe(true)
 		expect(usesChatCompletions("gpt-5.6")).toBe(false)
-		expect(getModelInfo("nemotron-3-ultra-free").modelId).toBe(
-			"nvidia/nemotron-3-ultra-550b-a55b:free",
+		expect(getModelInfo("nemotron-3-super-free").modelId).toBe(
+			"nvidia/nemotron-3-super-120b-a12b:free",
 		)
 	})
 
@@ -303,11 +303,25 @@ describe("quota fallback chain", () => {
 			mainTurn: true,
 		})
 		expect(chain.length).toBeGreaterThan(0)
-		expect(chain).not.toContain("nemotron-3-ultra-free")
+		expect(chain).not.toContain("nemotron-3-super-free")
 		// Every survivor is a paid model, checked against the registry's own prices.
 		for (const name of chain) {
 			expect(isFreeModel(name)).toBe(false)
 		}
+	})
+
+	it("keeps the free hop on the answering chain when the operator opts in", () => {
+		// Paid hops out of credits (e.g. GLM exhausted): BRAIN_ALLOW_FREE_MAIN_TURN=1
+		// lets nemotron-3-super-free answer instead of the degraded notice.
+		const freeEnv = asEnv({
+			OPENAI_API_KEY: "sk-or-v1-test",
+			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+			BRAIN_ALLOW_FREE_MAIN_TURN: "1",
+		})
+		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
+			mainTurn: true,
+		})
+		expect(chain).toContain("nemotron-3-super-free")
 	})
 
 	it("leads the answering chain with the paid models, cheapest first", () => {

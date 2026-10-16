@@ -31,14 +31,30 @@ const PROVIDER_DEFAULT_MODEL: Record<SupportedModelProvider, SupportedModel> = {
 	xai: "grok-4.5",
 }
 
+/** "1"/"true" to let a free OpenRouter model answer the main turn.
+ * Off by default: the answering turn writes to memory/GitHub/Linear/Notion.
+ * Opt in only when paid hops are out of credits (e.g. GLM exhausted). */
+export function allowFreeMainTurn(env: Env): boolean {
+	const v = (env as unknown as Record<string, unknown>).BRAIN_ALLOW_FREE_MAIN_TURN
+	return v === "1" || v === "true" || v === true
+}
+
 /**
  * Free models to fall back to when the `openai` provider is really an
  * OpenAI-compatible endpoint (OpenRouter, Workers AI): OpenAI's own model ids
  * don't exist there. Triage runs on every message, so it takes the light one.
+ *
+ * Live-catalog verified 2026-10-16: `qwen/qwen3.8-27b:free` is GONE (404, the
+ * old triage pin resolves via getModelInfo fallback to xAI grok!) and
+ * `nemotron-3-ultra:free` lacks `response_format`, so triage/JSON paths
+ * silently degrade. `nemotron-3-super:free` (120B MoE, 12B active, 262k ctx)
+ * has tools + response_format + structured_outputs — closest free agentic
+ * stand-in for GLM-5.3-flash. `gemma-4-31b-it:free` (dense 31B, 262k) is the
+ * light triage pin with the same capability pair.
  */
-export const OPENAI_COMPATIBLE_FALLBACK_MODEL: SupportedModel = "nemotron-3-ultra-free"
+export const OPENAI_COMPATIBLE_FALLBACK_MODEL: SupportedModel = "nemotron-3-super-free"
 export const OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL: SupportedModel =
-	"qwen3.8-27b-free"
+	"gemma-4-31b-free"
 
 /**
  * Head of the brain chain when OpenRouter is configured. GLM-5.3-Flash is
@@ -92,15 +108,23 @@ let catalogMainTurnModelsState: readonly SupportedModel[] | null = null
 /**
  * Publish the catalog's chosen answering hops, in chain order.
  *
- * Only ever called with paid models: the answering turn owns the tools that
- * write to memory and to GitHub/Linear/Notion, and a free model's plausible
- * inventions get persisted and served back to the team as fact. A free hop is
- * rejected here rather than downstream, because by the time the chain filters
- * for free models a rejected call would have left the chain one hop short.
+ * Only ever called with paid models UNLESS the deployment opts into
+ * BRAIN_ALLOW_FREE_MAIN_TURN=1 (paid hops out of credits, e.g. GLM exhausted):
+ * the answering turn owns the tools that write to memory and to
+ * GitHub/Linear/Notion, and a free model's plausible inventions get persisted
+ * and served back to the team as fact. A free hop is rejected here rather than
+ * downstream, because by the time the chain filters for free models a rejected
+ * call would have left the chain one hop short.
  */
 export function setCatalogMainTurnModels(
 	models: readonly SupportedModel[],
+	env?: Env,
 ): void {
+	// Opt-in escape hatch: no paid hops left, operator accepts the risk.
+	if (env && allowFreeMainTurn(env)) {
+		catalogMainTurnModelsState = [...models]
+		return
+	}
 	const paid = models.filter((name) => !isFreeModel(name))
 	if (paid.length === 0) {
 		console.warn(
@@ -556,7 +580,10 @@ export function brainChainModelNames(
 	// not one added above, and not one `resolveModel` substituted in because the
 	// requested provider had no key. Background callers skip this: they are
 	// read-only, and their recovery paths expect to keep what they resolved.
+	// Escape hatch: BRAIN_ALLOW_FREE_MAIN_TURN=1 keeps the free hop when paid
+	// hops are out of credits (e.g. GLM exhausted) instead of degraded-notice.
 	if (!options.mainTurn) return deduped
+	if (allowFreeMainTurn(env)) return deduped
 	const paid = deduped.filter((name) => !isFreeModel(name))
 	if (paid.length === 0) return deduped
 	if (paid.length < deduped.length) {

@@ -74,6 +74,10 @@ interface Env {
 	POSTHOG_API_KEY?: string
 	POSTHOG_KEY?: string
 	POSTHOG_HOST?: string
+	/** "1" to let a free OpenRouter model answer the main turn when paid hops
+	 * are out of credits (e.g. GLM exhausted). Off by default: the answering
+	 * turn writes to memory/GitHub/Linear/Notion. */
+	BRAIN_ALLOW_FREE_MAIN_TURN?: string
 }
 
 interface Env {

@@ -51,7 +51,6 @@ export const BRAIN_TRIAGE_MODEL_CHOICES = [
 	"claude-haiku-4.5",
 	"claude-sonnet-5",
 	"glm-5.3-flash",
-	"qwen3.8-27b-free",
 	"gemma-4-31b-free",
 	"dots-3-note-free",
 ] as const satisfies readonly SupportedModel[]

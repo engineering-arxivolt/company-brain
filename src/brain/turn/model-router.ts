@@ -180,9 +180,10 @@ async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	// Hand the paid hops to the answering chain. Without this the catalog is
 	// fetched, classified, registered and priced and then the chain ignores all
 	// of it and runs the pinned pair — the whole catalog would decide nothing.
-	// setCatalogMainTurnModels rejects a wholly-free pair, so `balanced` cannot
-	// put a free model on the write path here.
-	setCatalogMainTurnModels([balanced, strong])
+	// setCatalogMainTurnModels rejects a wholly-free pair (unless the deploy
+	// opts into BRAIN_ALLOW_FREE_MAIN_TURN=1), so `balanced` cannot put a free
+	// model on the write path here by accident.
+	setCatalogMainTurnModels([balanced, strong], env)
 
 	return {
 		fast: (free[0] ?? cheap[0] ?? balanced) as SupportedModel,
