@@ -127,13 +127,13 @@ export function setCatalogMainTurnModels(
 	}
 	const paid = models.filter((name) => !isFreeModel(name))
 	if (paid.length === 0) {
-		console.warn(
+		console.log(
 			`[company-brain] catalog offered only free models for the answering chain, keeping the pinned models: ${models.join(", ")}`,
 		)
 		return
 	}
 	if (paid.length < models.length) {
-		console.warn(
+		console.log(
 			`[company-brain] dropping free model(s) from the catalog answering chain: ${models
 				.filter(isFreeModel)
 				.join(", ")}`,
@@ -290,6 +290,9 @@ export function brainProviderModel(
 				captureException(error, { tags: { feature: "company_brain" } })
 				throw error
 			}
+			console.log(
+				`[company-brain][diag] openai-chat model=${modelName} modelId=${modelId} baseURL=${baseURL} keyPrefix=${apiKey?.slice(0, 7) ?? "none"} keyLen=${apiKey?.length ?? 0}`,
+			)
 			return createOpenAI({ apiKey, baseURL }).chat(modelId)
 		}
 		case "anthropic":
@@ -430,14 +433,14 @@ export function withFallbackChain(
 					if (!isPoolExhausted(err)) throw err
 					lastError = err
 					exhausted.push(`${candidate.provider}/${candidate.modelId}`)
-					console.warn(
+					console.log(
 						`[company-brain] ${candidate.provider}/${candidate.modelId} out of quota (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
 					)
 				}
 			}
 			// Background callers opt out of the notice and handle the error themselves.
 			if (degradedText === null) throw lastError
-			console.warn(`[company-brain] every model candidate out of quota; serving degraded notice`)
+			console.log(`[company-brain] every model candidate out of quota; serving degraded notice`)
 			return {
 				content: [{ type: "text" as const, text: degradedText }],
 				finishReason: { unified: "stop" as const, raw: undefined },
@@ -457,13 +460,13 @@ export function withFallbackChain(
 					if (!isPoolExhausted(err)) throw err
 					lastError = err
 					exhausted.push(`${candidate.provider}/${candidate.modelId}`)
-					console.warn(
+					console.log(
 						`[company-brain] ${candidate.provider}/${candidate.modelId} out of quota (status=${errorStatus(err) ?? "unknown"}); trying next candidate`,
 					)
 				}
 			}
 			if (degradedText === null) throw lastError
-			console.warn(`[company-brain] every model candidate out of quota; serving degraded notice`)
+			console.log(`[company-brain] every model candidate out of quota; serving degraded notice`)
 			const metadata = degradedMetadata(exhausted)
 			const stream = new ReadableStream<LanguageModelV3StreamPart>({
 				start(controller) {
@@ -545,8 +548,6 @@ export function brainChainModelNames(
 	const resolved = resolveModel(modelName, env)
 	const gateway = hasBrainGateway(env)
 	const candidates: SupportedModel[] = []
-
-	// OpenRouter first when its OpenAI-compatible endpoint is configured: it
 	// fronts a cheap cached main model and a frontier escalation model, so one
 	// key covers more quota than any single provider. The cheap model leads and
 	// the frontier model follows as an escalation hop rather than a default.
@@ -593,12 +594,15 @@ export function brainChainModelNames(
 	const paid = deduped.filter((name) => !isFreeModel(name))
 	if (paid.length === 0) return deduped
 	if (paid.length < deduped.length) {
-		console.warn(
+		console.log(
 			`[company-brain] dropping free model(s) from the answering chain: ${deduped
 				.filter((name) => isFreeModel(name))
 				.join(", ")}`,
 		)
 	}
+	console.log(
+		`[company-brain][diag] chain=${JSON.stringify(paid)} mainTurn=${options.mainTurn} flag=${allowFreeMainTurn(env)} baseUrl=${openAiCompatibleBaseUrl(env) ?? "none"} openaiKeyPrefix=${env.OPENAI_API_KEY?.slice(0, 7) ?? "none"}`,
+	)
 	return paid
 }
 
