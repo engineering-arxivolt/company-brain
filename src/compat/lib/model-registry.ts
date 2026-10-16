@@ -45,13 +45,6 @@ export const SUPPORTED_MODELS = [
 	"gemini-2.5-pro",
 	// Workers AI models (prefixed with @cf/)
 	"@cf/meta/llama-3.2-1b-instruct",
-	// opencode.ai free models, reached through its OpenAI-compatible endpoint
-	// (set OPENCODE_BASE_URL). Free chat models work without an API key; a
-	// service account key enables paid models.
-	// See https://opencode.ai/v2/docs/console/api/inference/
-	"glm-5-1-free",
-	"kimi-k2-6-free",
-	"minimax-m2-7-free",
 ] as const
 
 export type SupportedModel = (typeof SUPPORTED_MODELS)[number]
@@ -149,22 +142,6 @@ const MODEL_INFO = {
 	},
 	"@cf/meta/llama-3.2-1b-instruct": {
 		modelId: "@cf/meta/llama-3.2-1b-instruct",
-		provider: "openai",
-		api: "chat",
-	},
-	// opencode.ai free models — OpenAI-compatible chat completions
-	"glm-5-1-free": {
-		modelId: "glm-5.1",
-		provider: "openai",
-		api: "chat",
-	},
-	"kimi-k2-6-free": {
-		modelId: "kimi-k2.6",
-		provider: "openai",
-		api: "chat",
-	},
-	"minimax-m2-7-free": {
-		modelId: "minimax-m2.7",
 		provider: "openai",
 		api: "chat",
 	},
@@ -333,9 +310,6 @@ export function getModelReasoningProviderOptions(
 		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
 		case "claude-sonnet-5-openrouter":
-		case "glm-5-1-free":
-		case "kimi-k2-6-free":
-		case "minimax-m2-7-free":
 			// Chat-completions endpoints take no Responses-API reasoning options;
 			// these models decide their own reasoning behaviour.
 			return {}
@@ -394,9 +368,6 @@ export function getModelInstantProviderOptions(
 		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
 		case "claude-sonnet-5-openrouter":
-		case "glm-5-1-free":
-		case "kimi-k2-6-free":
-		case "minimax-m2-7-free":
 			return {}
 	}
 }
