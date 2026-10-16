@@ -566,6 +566,12 @@ export function brainChainModelNames(
 		openAiCompatibleBaseUrl(env) &&
 		env.OPENAI_API_KEY?.trim()
 	) {
+		// Credits exhausted (e.g. GLM out): answer from the free hop first
+		// instead of burning two failed paid calls (latency + 429 noise)
+		// before falling through to it.
+		if (allowFreeMainTurn(env)) {
+			candidates.push(OPENAI_COMPATIBLE_FALLBACK_MODEL)
+		}
 		candidates.push(...autoAddedMainTurnModels())
 	}
 

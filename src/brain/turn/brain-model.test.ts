@@ -312,7 +312,8 @@ describe("quota fallback chain", () => {
 
 	it("keeps the free hop on the answering chain when the operator opts in", () => {
 		// Paid hops out of credits (e.g. GLM exhausted): BRAIN_ALLOW_FREE_MAIN_TURN=1
-		// lets nemotron-3-super-free answer instead of the degraded notice.
+		// puts nemotron-3-super-free FIRST so the turn answers without burning
+		// two failed paid calls, falling through to paid only if free is limited.
 		const freeEnv = asEnv({
 			OPENAI_API_KEY: "sk-or-v1-test",
 			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
@@ -321,7 +322,7 @@ describe("quota fallback chain", () => {
 		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
 			mainTurn: true,
 		})
-		expect(chain).toContain("nemotron-3-super-free")
+		expect(chain[0]).toBe("nemotron-3-super-free")
 	})
 
 	it("leads the answering chain with the paid models, cheapest first", () => {
