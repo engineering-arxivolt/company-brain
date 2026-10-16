@@ -45,7 +45,7 @@
 		// opencode.ai fallback — free models (glm-5.1, kimi-k2.6, minimax-m2.7)
 		// when OpenRouter paid + free are both exhausted. Uncomment and deploy
 		// when OpenRouter is dry:
-		// "OPENCODE_BASE_URL": "https://opencode.ai/inference/openai/v1"
+		"OPENCODE_BASE_URL": "https://opencode.ai/inference/openai/v1"
 	},
 	"observability": {
 		"enabled": true
