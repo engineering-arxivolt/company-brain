@@ -124,13 +124,19 @@ export { getDecisions } from "./decision-log"
 import type { Schedule } from "agents"
 import { flushBrainTelemetry } from "../observability"
 import { runSlackChimeIn } from "../slack/chime"
-import { isMuteReactionEvent, type SlackTurnMessage } from "../slack/events"
+import {
+	isDebugReactionEvent,
+	isFeedbackReactionEvent,
+	isMuteReactionEvent,
+	type SlackTurnMessage,
+} from "../slack/events"
 import {
 	finalizeInterruptedSlackTurn as finalizeInterruptedSlackTurnImpl,
 	runSlackApprovalDecision,
 	runSlackConnectComplete,
 	runSlackContinueTurn,
 	runSlackDebugReaction,
+	runSlackFeedbackReaction,
 	runSlackMuteReaction,
 	runSlackTurn,
 	type SlackApprovalDecision,
@@ -591,7 +597,13 @@ export async function onSlackReaction(
 			await runSlackMuteReaction(agent, msg)
 			return
 		}
-		await runSlackDebugReaction(agent, msg)
+		if (isFeedbackReactionEvent(msg.event)) {
+			await runSlackFeedbackReaction(agent, msg)
+			return
+		}
+		if (isDebugReactionEvent(msg.event)) {
+			await runSlackDebugReaction(agent, msg)
+		}
 	} catch (err) {
 		console.error("[company-brain] onSlackReaction failed:", err)
 	}

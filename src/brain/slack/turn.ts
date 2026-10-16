@@ -14,7 +14,11 @@ import {
 	memoryDocsFromWriteback,
 	type SlackMemoryScope,
 } from "../memory/writeback"
-import type { BrainObservabilityInput } from "../observability"
+import {
+	type BrainObservabilityInput,
+	captureBrainAnswerFeedback,
+	flushBrainTelemetry,
+} from "../observability"
 import {
 	botSpokePrevious,
 	buildThreadConversation,
@@ -149,6 +153,14 @@ import {
 	type SlackTurnMessage,
 	triageProfileUserIds,
 } from "./events"
+import {
+	BRAIN_EXPAND_REQUEST_TEXT,
+	feedbackKindForReaction,
+	getAnswerFeedback,
+	recordAnswerFeedback,
+	retractAnswerFeedback,
+	shouldStartAnswerExpansion,
+} from "./feedback"
 import { BRAIN_TRACE_POSTHOG_BASE } from "./format"
 import {
 	postSlackMcpConnectButtons,
@@ -1830,6 +1842,172 @@ export async function runSlackMuteReaction(
 			threadTs,
 		)
 	}
+}
+
+/**
+ * Teammate feedback reactions on delivered answers. 👍/👎 are recorded against
+ * the answer's trace (durable row + PostHog); ❓ starts a real follow-up turn
+ * that expands the answer, run as the reactor. Reacting to a message without a
+ * recorded trace is a silent no-op, so human messages are never affected.
+ */
+export async function runSlackFeedbackReaction(
+	agent: CompanyBrainAgent,
+	msg: SlackTurnMessage,
+): Promise<void> {
+	const ev = msg.event
+	const channel = ev.item?.channel
+	const messageTs = ev.item?.ts
+	if (!channel || !messageTs || !ev.user || !ev.reaction) return
+	const kind = feedbackKindForReaction(ev.reaction)
+	if (!kind) return
+	const action = ev.type === "reaction_added" ? "added" : "removed"
+
+	const ws = await getWorkspaceByTeamId(brainAgent(agent).env, msg.teamId)
+	if (!ws) return
+	if (ws.orgId !== agent.name) {
+		console.error(
+			`[company-brain] feedback reaction dropped: workspace rebound team=${msg.teamId} eventOrg=${agent.name} currentOrg=${ws.orgId}`,
+		)
+		return
+	}
+	// The bot never votes on itself; other apps are filtered by membership.
+	if (ws.botUserId && ev.user === ws.botUserId) return
+
+	const trace = lookupMessageTraceRecords(agent, channel, [messageTs]).get(
+		messageTs,
+	)
+	// Only delivered bot answers carry traces — everything else is a no-op.
+	if (!trace) {
+		console.info(
+			`[company-brain] feedback reaction ignored channel=${channel} ts=${messageTs} reason=trace_not_found`,
+		)
+		return
+	}
+
+	const botToken = await decryptToken(
+		ws.botTokenEnc,
+		brainAgent(agent).env.ENCRYPTION_SECRET,
+	)
+	const reactorLookup = await lookupSlackUserInfo(botToken, ev.user)
+	if (!reactorLookup.ok) {
+		console.warn(
+			`[company-brain] feedback reaction verification failed org=${ws.orgId} slackUser=${ev.user} reason=${reactorLookup.reason} error=${reactorLookup.error ?? "-"}`,
+		)
+		return
+	}
+	const reactorActor = (
+		await getOrgActorBySlackIdentity(brainAgent(agent).env, {
+			orgId: ws.orgId,
+			teamId: msg.teamId,
+			slackUserId: ev.user,
+			email: reactorLookup.user.email,
+		})
+	).actor
+	if (!reactorActor) {
+		console.warn(
+			`[company-brain] feedback reaction denied for non-member org=${ws.orgId} slackUser=${ev.user}`,
+		)
+		return
+	}
+
+	const { traceId, threadTs } = trace
+	if (action === "removed") {
+		const retracted = retractAnswerFeedback(agent, {
+			channel,
+			messageTs,
+			reactorUser: ev.user,
+			reaction: ev.reaction,
+		})
+		if (retracted) {
+			captureBrainAnswerFeedback({
+				orgId: ws.orgId,
+				distinctId: reactorActor.userId ?? ev.user,
+				traceId,
+				channel,
+				messageTs,
+				reaction: ev.reaction,
+				kind,
+				action,
+				reactor: ev.user,
+			})
+			await flushBrainTelemetry().catch(() => {})
+		}
+		return
+	}
+
+	// Read the prior vote before upserting: it gates the one-shot expansion.
+	const prior = getAnswerFeedback(agent, {
+		channel,
+		messageTs,
+		reactorUser: ev.user,
+	})
+	recordAnswerFeedback(agent, {
+		channel,
+		messageTs,
+		reactorUser: ev.user,
+		reaction: ev.reaction,
+		kind,
+		traceId,
+		threadTs,
+		createdAt: Date.now(),
+	})
+	captureBrainAnswerFeedback({
+		orgId: ws.orgId,
+		distinctId: reactorActor.userId ?? ev.user,
+		traceId,
+		channel,
+		messageTs,
+		reaction: ev.reaction,
+		kind,
+		action,
+		reactor: ev.user,
+	})
+	await flushBrainTelemetry().catch(() => {})
+
+	if (kind === "negative") {
+		await postSlackEphemeral(
+			botToken,
+			channel,
+			ev.user,
+			"Noted — thanks. If you reply here with what was off, I'll take another pass.",
+			threadTs,
+		)
+		return
+	}
+	if (!shouldStartAnswerExpansion({ action, kind, prior })) return
+	if (!threadTs) {
+		console.info(
+			`[company-brain] answer expansion skipped channel=${channel} ts=${messageTs} reason=no_thread`,
+		)
+		return
+	}
+
+	console.log(
+		`[company-brain] answer expansion requested org=${ws.orgId} channel=${channel} ts=${messageTs} by=${ev.user} trace=${traceId}`,
+	)
+	// A real turn runs as the reactor. The thread already carries the original
+	// question and the answer being expanded, so the nudge only asks for depth.
+	await runSlackTurn(
+		agent,
+		{
+			teamId: msg.teamId,
+			event: {
+				type: "message",
+				channel,
+				user: ev.user,
+				text: BRAIN_EXPAND_REQUEST_TEXT,
+				ts: syntheticSlackTs(),
+				thread_ts: threadTs,
+			},
+		},
+		{
+			forceFullTurn: true,
+			forceThreadTs: threadTs,
+			obsSource: "slack_answer_expand",
+			// No real Slack message exists to react to.
+			skipReactions: true,
+		},
+	)
 }
 
 async function warmLocalThreadContext(
@@ -3665,7 +3843,11 @@ async function runSlackTurnInner(
 					}
 				: { reaction: undefined, extraBlocks: undefined }
 		const reaction =
-			!passiveInvestigation && !failed && !paused && reply.trim()
+			!passiveInvestigation &&
+			!failed &&
+			!paused &&
+			reply.trim() &&
+			canReactToMessage
 				? expressive.reaction
 				: undefined
 		const extraBlocks =

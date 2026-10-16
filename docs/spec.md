@@ -759,6 +759,16 @@ Expressive delivery is propose-then-dispose: the model may pass a `reaction` and
 
 Guardrails: expression only attaches to a non-empty `answered` reply — never on `blocked`/`nothing_found`, canned fallbacks, passive investigations, scheduled runs, or denied approvals. Scheduled runs keep emoji but lose reactions and GIFs. Workspace-prompt opt-outs ("formal", "no emojis", "no GIFs") override the preset. At most one GIF and one reaction per turn, and `search_gifs` is capped at three searches per turn. Giphy works out of the box via its public beta key; `GIPHY_API_KEY` / `TENOR_API_KEY` secrets lift the shared rate limit and enable Tenor merging.
 
+## Answer Feedback Reactions
+
+Teammates react to any delivered answer to give quality signal and ask for more: 👍 (`thumbsup`) and 👎 (`thumbsdown`) are votes, ❓ (`question`) asks the bot to expand the answer in-thread. These join the existing reaction surface — 🔍 debug (`mag` / `bug`) and ⏹ mute (`black_square_for_stop`) are unchanged.
+
+Reactions only bind to real bot answers. Every delivered reply records a channel + `message_ts` → `trace_id` mapping (`brain_message_trace`), and a feedback reaction without one is a silent no-op — so reacting to human messages, progress cards, or narration never does anything. Recording is one durable row per (channel, message, reactor) in `brain_answer_feedback`, keyed by the reactor's org membership like every other reaction; a newer vote replaces the old, and `reaction_removed` retracts only when the removed emoji matches the stored vote. Each add/retract emits a `company_brain_answer_feedback` PostHog span parented to the answer's trace, carrying `feedback_kind` (positive / negative / expand), `feedback_reaction`, and `feedback_action`, so quality signals line up with the turn that produced the answer.
+
+- 👎 posts the reactor a short ephemeral nudge to say what was off.
+- ❓ starts a real follow-up turn in the thread, attributed to the reactor as the asker: a synthetic in-thread message carrying the expansion request with `obsSource: slack_answer_expand` and `skipReactions` (there is no real message to react to). The thread already holds the original question and the answer, so the model only receives the nudge to go deeper.
+- Expansions are one-shot per answer per person: re-adding ❓ over a standing vote does nothing, and removing ❓ clears the row so re-reacting re-arms it. Expansions need a thread root and are skipped (logged) when the answer has none.
+
 ## Company Brain Search
 
 `search_company_brain` is an AI SDK tool assembled for normal turns and, when needed, approval resumes. It is intentionally described as a company-knowledge tool, not a live-data tool. The model writes the search query itself from the current request, thread context, and any Slack channel lookup it performs to resolve unclear references. Queries should be clear natural-language questions or specific search statements with resolved subjects and time windows when known, not keyword fragments.

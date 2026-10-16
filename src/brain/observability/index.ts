@@ -43,6 +43,7 @@ export type BrainObservabilityInput = {
 		| "slack_chime_thread"
 		| "slack_chime_channel"
 		| "slack_connect_retry"
+		| "slack_answer_expand"
 		| "parallel_monitor"
 		| "slack_approval"
 		| "automation"
@@ -799,6 +800,49 @@ export function captureBrainTurnUpdateApplied(args: {
 			active_turn_update_applied: true,
 			slack_message_ts: args.messageTs,
 			brain_trace_id: args.traceId,
+		},
+	})
+}
+
+/**
+ * Teammate reaction feedback on a delivered answer, tied to the answer's
+ * trace so quality signals line up with the turn that produced it.
+ */
+export function captureBrainAnswerFeedback(args: {
+	orgId: string
+	distinctId: string
+	traceId: string
+	channel: string
+	messageTs: string
+	reaction: string
+	kind: string
+	action: "added" | "removed"
+	reactor: string
+}) {
+	captureAiSpan({
+		distinctId: args.distinctId,
+		traceId: args.traceId,
+		spanId: generateId(),
+		parentId: args.traceId,
+		spanName: "company_brain_answer_feedback",
+		inputState: {
+			reaction: args.reaction,
+			kind: args.kind,
+		},
+		outputState: { action: args.action },
+		groups: { company: args.orgId },
+		properties: {
+			app: "api",
+			feature: "company_brain",
+			orgId: args.orgId,
+			source: "slack_reaction",
+			feedback_action: args.action,
+			feedback_kind: args.kind,
+			feedback_reaction: args.reaction,
+			slack_channel: args.channel,
+			slack_message_ts: args.messageTs,
+			brain_trace_id: args.traceId,
+			reactor: args.reactor,
 		},
 	})
 }

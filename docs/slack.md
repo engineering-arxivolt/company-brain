@@ -201,7 +201,7 @@ Channel **ANSWER** replies in a **new thread** on the triggering message. Thread
 - Channels: temporary public progress cards; final answer as a new thread reply; card deleted or collapsed after.
 - Consequential tools: Approve/Deny card; asker only; ~15m expiry; supersede cancels stale cards.
 - Connect app: Block Kit button + OAuth; optional turn retry after connect (`onSlackConnectComplete`).
-- Reactions: processing ack → done; debug reactions can surface traces.
+- Reactions: processing ack → done; debug reactions can surface traces; 👍/👎/❓ on an answer record feedback and ❓ expands it in-thread (`slack/feedback.ts`).
 
 ## Memory writeback on Slack turns
 

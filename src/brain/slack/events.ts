@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { feedbackKindForReaction } from "./feedback"
 import type { SlackWorkspaceRow } from "./workspace"
 
 export const SlackAssistantContextSchema = z.object({
@@ -309,6 +310,15 @@ export function isMuteReactionEvent(ev: SlackEventInner): boolean {
 		return false
 	}
 	if (ev.reaction !== BRAIN_MUTE_REACTION) return false
+	return ev.item?.type === "message" && Boolean(ev.item.channel && ev.item.ts)
+}
+
+// Teammate feedback on delivered answers: 👍 quality, 👎 quality, ❓ expand.
+export function isFeedbackReactionEvent(ev: SlackEventInner): boolean {
+	if (ev.type !== "reaction_added" && ev.type !== "reaction_removed") {
+		return false
+	}
+	if (!feedbackKindForReaction(ev.reaction)) return false
 	return ev.item?.type === "message" && Boolean(ev.item.channel && ev.item.ts)
 }
 
