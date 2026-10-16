@@ -7,6 +7,10 @@ import type { LeaseEscalationPayload, SlackLeaseDecision } from "../lease/types"
 import { clearBrainProfileSync } from "../memory/profile-sync"
 import { ensureBrainMemoryTagTable } from "../memory/tags"
 import {
+	runContentDraftInteraction,
+	type SlackContentDraftInteraction,
+} from "../content/interactions"
+import {
 	advanceBrainMemoryResetEpoch,
 	clearBrainMemoryRegistry,
 	ensureBrainMemoryNodeTable,
@@ -384,6 +388,19 @@ export async function onSkillDraftInteraction(
 		await runSlackSkillDraftInteraction(agent, interaction)
 	} catch (err) {
 		console.error("[company-brain] skill draft interaction failed:", err)
+	} finally {
+		await flushBrainTelemetry()
+	}
+}
+
+export async function onContentDraftInteraction(
+	agent: CompanyBrainAgent,
+	interaction: SlackContentDraftInteraction,
+): Promise<void> {
+	try {
+		await runContentDraftInteraction(agent, interaction)
+	} catch (err) {
+		console.error("[company-brain] content draft interaction failed:", err)
 	} finally {
 		await flushBrainTelemetry()
 	}

@@ -2,6 +2,7 @@ import { generateId } from "@repo/lib/generate-id"
 import type { Schedule } from "agents"
 import { decryptToken } from "@/lib/crypto"
 import { orgCanRunCompanyBrain } from "@/lib/payments/company-brain-entitlement"
+import { runContentStudio } from "../content/generate"
 import type { SlackMemoryScope } from "../memory"
 import {
 	type BrainObservabilityInput,
@@ -36,7 +37,7 @@ export type ScheduledTaskPayload = {
 	memoryScope?: SlackMemoryScope
 	relatedSlackUserIds?: string[]
 	scheduledWhen?: ScheduleWhen
-	kind?: "reminder" | "digest"
+	kind?: "reminder" | "digest" | "content"
 	personalConnectionsOnly?: boolean
 	// Cadence, derived from the cron; drives the heading + lookback window.
 	cadence?: "daily" | "weekly"
@@ -402,6 +403,32 @@ async function runScheduledTaskInner(
 		console.log(
 			`[company-brain] scheduled task ${schedule.id} blocked: entitlement org=${org.id}`,
 		)
+		return
+	}
+
+	// Content studio rounds generate their own drafts and post their own
+	// review cards to the owner's DM; they never take the single-reply path.
+	// Malformed content payloads (no automation identity or no DM delivery)
+	// fall through to the normal digest behavior instead.
+	if (
+		payload.kind === "content" &&
+		payload.automationId &&
+		payload.deliverTo === "dm"
+	) {
+		await runContentStudio({
+			agent,
+			org,
+			teamId: payload.teamId,
+			botToken,
+			dmChannelId: target,
+			ownerUserId:
+				payload.creatorUserId ?? ws.installedByUserId ?? ws.orgId,
+			ownerSlackUserId: payload.creatorSlackUserId,
+			automationId: payload.automationId,
+			instruction: payload.instruction,
+			runTraceId: traceId,
+			env,
+		})
 		return
 	}
 

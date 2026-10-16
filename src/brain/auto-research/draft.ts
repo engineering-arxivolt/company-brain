@@ -205,7 +205,10 @@ export function houseStyle(text: string): string {
 }
 
 // The draft's own citations, split off the end of the reply so they can't be sent.
-function splitCitedSources(reply: string): { body: string; cited: string[] } {
+export function splitCitedSources(reply: string): {
+	body: string
+	cited: string[]
+} {
 	const at = reply.search(new RegExp(`^\\s*\\**${SOURCES_MARKER}`, "im"))
 	if (at < 0) return { body: reply.trim(), cited: [] }
 	const cited = reply

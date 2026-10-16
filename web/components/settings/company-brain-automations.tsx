@@ -16,6 +16,7 @@ import {
 	MessageCircleQuestion,
 	Plus,
 	Radar,
+	Sparkles,
 	Trash2,
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
@@ -47,6 +48,7 @@ type Automation = {
 	title: string
 	channelId: string
 	deliverTo: "channel" | "dm"
+	mode: "digest" | "content"
 	prompt: string
 	cron: string
 	timezone: string | null
@@ -108,6 +110,7 @@ type Draft = {
 	title: string
 	channelId: string
 	deliverTo: "channel" | "dm"
+	mode: "digest" | "content"
 	prompt: string
 	frequency: Frequency
 	weekday: number
@@ -121,6 +124,7 @@ function toDraft(a: Automation): Draft {
 		title: a.title,
 		channelId: a.channelId,
 		deliverTo: a.deliverTo === "dm" ? "dm" : "channel",
+		mode: a.mode === "content" ? "content" : "digest",
 		prompt: a.prompt,
 		frequency: parsed?.frequency ?? "daily",
 		weekday: parsed?.weekday ?? 1,
@@ -133,6 +137,7 @@ const emptyDraft = (): Draft => ({
 	title: "",
 	channelId: "",
 	deliverTo: "channel",
+	mode: "digest",
 	prompt: DEFAULT_PROMPT,
 	frequency: "daily",
 	weekday: 1,
@@ -153,6 +158,8 @@ type Preset = {
 	frequency: Frequency
 	weekday?: number
 	time: string
+	mode?: "digest" | "content"
+	deliverTo?: "channel" | "dm"
 }
 
 const PRESETS: Preset[] = [
@@ -253,13 +260,29 @@ const PRESETS: Preset[] = [
 		weekday: 5,
 		time: "16:00",
 	},
+	{
+		id: "social-content",
+		category: "product",
+		label: "Social content studio",
+		description:
+			"Post-ready drafts for your socials, from the last 24h of progress. Push to Buffer, remix, or dismiss.",
+		icon: Sparkles,
+		requiresApps: ["buffer"],
+		prompt:
+			"Angle the drafts toward what we shipped and learned recently, and keep the point-of-view posts sharp. Prefer concrete artifacts over summaries.",
+		frequency: "daily",
+		time: "09:00",
+		mode: "content",
+		deliverTo: "dm",
+	},
 ]
 
 function presetToDraft(p: Preset): Draft {
 	return {
 		title: p.label,
 		channelId: "",
-		deliverTo: "channel",
+		deliverTo: p.deliverTo ?? "channel",
+		mode: p.mode ?? "digest",
 		prompt: p.prompt,
 		frequency: p.frequency,
 		weekday: p.weekday ?? 1,
@@ -325,18 +348,24 @@ function AutomationCard({
 
 	const body = () => {
 		if (!draft.title.trim()) throw new Error("Give the automation a name.")
-		if (draft.deliverTo === "channel" && !draft.channelId)
+		if (
+			draft.mode !== "content" &&
+			draft.deliverTo === "channel" &&
+			!draft.channelId
+		)
 			throw new Error("Pick a channel to post to.")
 		const cron = toUtcCron(draft.time, draft.frequency, draft.weekday)
 		if (!cron) throw new Error("Pick a valid time.")
+		const deliverTo = draft.mode === "content" ? "dm" : draft.deliverTo
 		return {
 			title: draft.title.trim(),
-			deliverTo: draft.deliverTo,
-			channelId: draft.deliverTo === "dm" ? null : draft.channelId,
+			deliverTo,
+			channelId: deliverTo === "dm" ? null : draft.channelId,
 			prompt: draft.prompt.trim() || DEFAULT_PROMPT,
 			cron,
 			timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 			enabled: draft.enabled,
+			mode: draft.mode,
 		}
 	}
 
@@ -388,7 +417,12 @@ function AutomationCard({
 			if (!res.ok || b.ok === false)
 				throw new Error(b.reason ?? b.error ?? "Couldn't run.")
 		},
-		onSuccess: () => toast.success("Automation triggered — check the channel."),
+		onSuccess: () =>
+			toast.success(
+				draft.mode === "content"
+					? "Content studio triggered — drafts land in your DM."
+					: "Automation triggered — check the channel.",
+			),
 		onError: (err) =>
 			toast.error(err instanceof Error ? err.message : "Couldn't run."),
 	})
@@ -509,7 +543,11 @@ function AutomationCard({
 							</TooltipProvider>
 						</span>
 						<Select
-							value={draft.deliverTo === "dm" ? DM_VALUE : draft.channelId}
+							value={
+								draft.mode === "content" || draft.deliverTo === "dm"
+									? DM_VALUE
+									: draft.channelId
+							}
 							onValueChange={(v) =>
 								setDraft((d) =>
 									v === DM_VALUE
@@ -517,14 +555,16 @@ function AutomationCard({
 										: { ...d, deliverTo: "channel", channelId: v },
 								)
 							}
-							disabled={disabled}
+							disabled={disabled || draft.mode === "content"}
 						>
 							<SelectTrigger className={controlClass}>
 								<SelectValue placeholder="Select a channel…" />
 							</SelectTrigger>
 							<SelectContent className={selectContentClass}>
 								<SelectItem value={DM_VALUE} className={selectItemClass}>
-									📩 Direct message to me
+									{draft.mode === "content"
+										? "📩 Content drafts go to my DM"
+										: "📩 Direct message to me"}
 								</SelectItem>
 								{channels.map((ch) => (
 									<SelectItem
@@ -732,9 +772,11 @@ function AutomationRow({
 }) {
 	const parsed = fromUtcCron(automation.cron)
 	const target =
-		automation.deliverTo === "dm"
-			? "DM to you"
-			: `#${channels.find((c) => c.id === automation.channelId)?.name ?? "channel"}`
+		automation.mode === "content"
+			? "Content drafts → your DM"
+			: automation.deliverTo === "dm"
+				? "DM to you"
+				: `#${channels.find((c) => c.id === automation.channelId)?.name ?? "channel"}`
 	const cadence = parsed
 		? parsed.frequency === "weekly"
 			? `Weekly ${WEEKDAYS[parsed.weekday] ?? "Mon"} ${parsed.time}`
@@ -756,6 +798,7 @@ function AutomationRow({
 					cron: automation.cron,
 					timezone: automation.timezone,
 					enabled: !automation.enabled,
+					mode: automation.mode,
 				}),
 			})
 			if (res.status === 403)
@@ -781,7 +824,12 @@ function AutomationRow({
 			if (!res.ok || b.ok === false)
 				throw new Error(b.reason ?? b.error ?? "Couldn't run.")
 		},
-		onSuccess: () => toast.success("Automation triggered — check the channel."),
+		onSuccess: () =>
+			toast.success(
+				automation.mode === "content"
+					? "Content studio triggered — drafts land in your DM."
+					: "Automation triggered — check the channel.",
+			),
 		onError: (err) =>
 			toast.error(err instanceof Error ? err.message : "Couldn't run."),
 	})

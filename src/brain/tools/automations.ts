@@ -37,6 +37,13 @@ export const DEFAULT_AUTOMATION_PROMPT =
 
 export type DeliverTo = "channel" | "dm"
 
+/**
+ * What a scheduled run does: a digest summarizes and replies in one message;
+ * "content" runs the Content Studio, which drafts social posts and DMs a
+ * review card the owner acts on with buttons.
+ */
+export type AutomationMode = "digest" | "content"
+
 export type AutomationInput = {
 	title: string
 	channelId?: string | null
@@ -45,6 +52,7 @@ export type AutomationInput = {
 	cron: string
 	timezone?: string | null
 	enabled: boolean
+	mode?: AutomationMode
 }
 
 export type Automation = {
@@ -53,6 +61,7 @@ export type Automation = {
 	title: string
 	channelId: string
 	deliverTo: DeliverTo
+	mode: AutomationMode
 	creatorSlackUserId: string | null
 	prompt: string
 	cron: string
@@ -100,6 +109,10 @@ export function ensureAutomationTable(agent: CompanyBrainAgent): void {
 	try {
 		agent.sql`ALTER TABLE brain_automation ADD COLUMN creator_slack_user_id TEXT`
 	} catch {}
+	// Add the mode column for tables created before Content Studio existed.
+	try {
+		agent.sql`ALTER TABLE brain_automation ADD COLUMN mode TEXT NOT NULL DEFAULT 'digest'`
+	} catch {}
 }
 
 type AutomationRow = {
@@ -108,6 +121,7 @@ type AutomationRow = {
 	title: string
 	channel_id: string
 	deliver_to: string | null
+	mode: string | null
 	creator_slack_user_id: string | null
 	prompt: string
 	cron: string
@@ -125,6 +139,7 @@ function rowToAutomation(row: AutomationRow): Automation {
 		title: row.title,
 		channelId: row.channel_id,
 		deliverTo: row.deliver_to === "dm" ? "dm" : "channel",
+		mode: row.mode === "content" ? "content" : "digest",
 		creatorSlackUserId: row.creator_slack_user_id,
 		prompt: row.prompt,
 		cron: row.cron,
@@ -143,11 +158,11 @@ export function listAutomations(
 	ensureAutomationTable(agent)
 	const rows = viewer.isAdmin
 		? agent.sql<AutomationRow>`
-			SELECT id, enabled, title, channel_id, deliver_to, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at
+			SELECT id, enabled, title, channel_id, deliver_to, mode, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at
 			FROM brain_automation ORDER BY created_at ASC
 		`
 		: agent.sql<AutomationRow>`
-			SELECT id, enabled, title, channel_id, deliver_to, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at
+			SELECT id, enabled, title, channel_id, deliver_to, mode, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at
 			FROM brain_automation WHERE created_by = ${viewer.userId} ORDER BY created_at ASC
 		`
 	return rows.map(rowToAutomation)
@@ -159,7 +174,7 @@ export function getAutomation(
 ): Automation | null {
 	ensureAutomationTable(agent)
 	const rows = agent.sql<AutomationRow>`
-		SELECT id, enabled, title, channel_id, deliver_to, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at
+		SELECT id, enabled, title, channel_id, deliver_to, mode, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at
 		FROM brain_automation WHERE id = ${id}
 	`
 	return rows[0] ? rowToAutomation(rows[0]) : null
@@ -169,13 +184,18 @@ type Validated = {
 	title: string
 	channelId: string
 	deliverTo: DeliverTo
+	mode: AutomationMode
 	prompt: string
 	cron: string
 	timezone: string | null
 }
 
 function validate(input: AutomationInput): Validated {
-	const deliverTo: DeliverTo = input.deliverTo === "dm" ? "dm" : "channel"
+	// Content Studio drafts are review cards for one person, so content mode is
+	// DM-only no matter what the caller sends.
+	const mode: AutomationMode = input.mode === "content" ? "content" : "digest"
+	const deliverTo: DeliverTo =
+		mode === "content" ? "dm" : input.deliverTo === "dm" ? "dm" : "channel"
 	const title = input.title?.trim()
 	const cron = input.cron?.trim()
 	const channelId = input.channelId?.trim() ?? ""
@@ -193,6 +213,7 @@ function validate(input: AutomationInput): Validated {
 		title,
 		channelId,
 		deliverTo,
+		mode,
 		prompt: input.prompt?.trim() || DEFAULT_AUTOMATION_PROMPT,
 		cron,
 		timezone: input.timezone?.trim() || null,
@@ -218,9 +239,15 @@ async function resolveSlackUser(
 
 // Automations are read-only and org-scoped: they read only org-shared
 // connections (never an individual's personal creds) and post one summary.
+// Content-mode automations hand off to the Content Studio instead of the
+// single-reply digest path; they read the owner's own connections because the
+// drafts and Buffer pushes belong to that one person.
 function automationPayload(
 	teamId: string,
-	v: Pick<Validated, "title" | "channelId" | "prompt" | "cron" | "deliverTo">,
+	v: Pick<
+		Validated,
+		"title" | "channelId" | "prompt" | "cron" | "deliverTo" | "mode"
+	>,
 	creatorUserId: string,
 	slackUserId: string | null,
 	automationId: string,
@@ -235,7 +262,7 @@ function automationPayload(
 		deliverTo: v.deliverTo === "dm" ? "dm" : "channel",
 		creatorUserId,
 		creatorSlackUserId: slackUserId ?? undefined,
-		kind: "digest",
+		kind: v.mode === "content" ? ("content" as const) : ("digest" as const),
 		cadence: cronToCadence(v.cron),
 		// DM goes only to the owner, so its own personal connections are safe to
 		// read when no org-shared one exists; channel posts stay org-shared only.
@@ -292,8 +319,8 @@ export async function createAutomation(
 	// arm rolls the row back so we never leave an enabled row with no schedule.
 	agent.sql`
 		INSERT INTO brain_automation
-			(id, enabled, title, channel_id, deliver_to, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at)
-		VALUES (${id}, ${0}, ${v.title}, ${v.channelId}, ${v.deliverTo}, ${slackUserId}, ${v.prompt}, ${v.cron}, ${v.timezone}, ${null}, ${creatorUserId}, ${now}, ${now})
+			(id, enabled, title, channel_id, deliver_to, mode, creator_slack_user_id, prompt, cron, timezone, schedule_id, created_by, created_at, updated_at)
+		VALUES (${id}, ${0}, ${v.title}, ${v.channelId}, ${v.deliverTo}, ${v.mode}, ${slackUserId}, ${v.prompt}, ${v.cron}, ${v.timezone}, ${null}, ${creatorUserId}, ${now}, ${now})
 	`
 	if (input.enabled) {
 		let scheduleId: string
@@ -377,6 +404,7 @@ export async function updateAutomation(
 				title = ${v.title},
 				channel_id = ${v.channelId},
 				deliver_to = ${v.deliverTo},
+				mode = ${v.mode},
 				creator_slack_user_id = ${slackUserId},
 				prompt = ${v.prompt},
 				cron = ${v.cron},
@@ -446,6 +474,7 @@ export async function runAutomationNow(
 				prompt: a.prompt,
 				cron: a.cron,
 				deliverTo: a.deliverTo,
+				mode: a.mode,
 			},
 			a.createdBy ?? userId,
 			a.creatorSlackUserId,

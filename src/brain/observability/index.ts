@@ -49,6 +49,7 @@ export type BrainObservabilityInput = {
 		| "automation"
 		| "scheduled_reminder"
 		| "auto_research"
+		| "content_studio"
 		| "api"
 	triageResult?: string
 	/** PostHog distinct id — defaults to computeTurn userId when omitted. */

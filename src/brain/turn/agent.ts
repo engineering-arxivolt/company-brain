@@ -21,6 +21,7 @@ import type { JourneySnapshot } from "../journey/debug"
 import type { JourneyTickPayload } from "../journey/engine"
 import type { LeaseEscalationPayload, SlackLeaseDecision } from "../lease/types"
 import type { SlackSkillDraftInteraction } from "../skills/slack-interactions"
+import type { SlackContentDraftInteraction } from "../content/interactions"
 import type { SkillCreateInput, SkillEditableInput } from "../skills/store"
 import type { ChannelObservePayload } from "../slack/channel-observe"
 import type { SlackTurnMessage } from "../slack/events"
@@ -375,6 +376,15 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		interaction: SlackSkillDraftInteraction,
 	): Promise<void> {
 		return (await this.loadImpl()).onSkillDraftInteraction(this, interaction)
+	}
+
+	async onContentDraftInteraction(
+		interaction: SlackContentDraftInteraction,
+	): Promise<void> {
+		return (await this.loadImpl()).onContentDraftInteraction(
+			this,
+			interaction,
+		)
 	}
 
 	async runLeaseEscalation(payload: LeaseEscalationPayload): Promise<void> {

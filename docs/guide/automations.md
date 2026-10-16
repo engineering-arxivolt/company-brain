@@ -39,6 +39,16 @@ Common shapes worth stealing:
 
 Ask Company Brain in Slack to set one up, or manage them under **Configure → Automations**, where they run daily or weekly and you can **Run now** to test one. Anyone can create and manage their own (members can own up to 20); admins can manage everyone's.
 
+### Social content studio
+
+One preset works differently from the rest: **Social content studio**. Instead of a single digest message, it drafts social posts from the last 24 hours of company progress — a few different kinds each day (a build log, a lesson, a product spotlight, a behind-the-scenes note, a point of view, a question) — and DMs them to you as review cards. Each draft comes with buttons:
+
+- **Push to Buffer** creates the post on your connected Buffer account — as a Buffer draft or queue entry, never something instantly live — where you schedule it normally.
+- **Remix** rewrites that draft from a fresh angle.
+- **Dismiss** retires it. When the next round lands, leftover drafts are retired automatically so your DM stays current.
+
+It always delivers to your own DM (it runs as you, so personal connections like your Buffer account are in scope), and it's read-only apart from pushes you explicitly click. To enable pushing, connect Buffer under **Configure → Connectors** — it's a custom MCP server: `https://mcp.buffer.com/mcp` with an API key. Without it, the drafts still arrive; you just copy them wherever you post.
+
 ## Proactiveness (chime-in)
 
 Chime-in is different from an automation: there's no schedule, and no one asked. Company Brain is simply present in a channel, and it speaks up when staying quiet would waste someone's time.
