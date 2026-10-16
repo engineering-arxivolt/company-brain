@@ -45,6 +45,9 @@ export const BRAIN_MAIN_MODEL_CHOICES = [
 	"nemotron-3-ultra-free",
 	"nemotron-3-super-free",
 	"dots-3-note-free",
+	"glm-5-1-free",
+	"kimi-k2-6-free",
+	"minimax-m2-7-free",
 ] as const satisfies readonly SupportedModel[]
 
 export const BRAIN_TRIAGE_MODEL_CHOICES = [
@@ -53,6 +56,9 @@ export const BRAIN_TRIAGE_MODEL_CHOICES = [
 	"glm-5.3-flash",
 	"gemma-4-31b-free",
 	"dots-3-note-free",
+	"glm-5-1-free",
+	"kimi-k2-6-free",
+	"minimax-m2-7-free",
 ] as const satisfies readonly SupportedModel[]
 
 export const BRAIN_EFFORT_CHOICES = [

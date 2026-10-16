@@ -68,7 +68,9 @@ function usableModels<T extends SupportedModel>(
 }
 
 function hasOpenAiCompatibleEndpoint(env: Env): boolean {
-	return Boolean(env.OPENAI_BASE_URL?.trim())
+	return Boolean(
+		env.OPENAI_BASE_URL?.trim() || env.OPENCODE_BASE_URL?.trim(),
+	)
 }
 
 // Per-org Company Brain model config, stored on organization.metadata.brainModels.

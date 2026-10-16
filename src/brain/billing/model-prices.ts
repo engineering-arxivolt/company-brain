@@ -152,6 +152,10 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		inputPerMTok: 0,
 		outputPerMTok: 0,
 	},
+	// opencode.ai free models — $0 on free tier
+	"glm-5-1-free": { inputPerMTok: 0, outputPerMTok: 0 },
+	"kimi-k2-6-free": { inputPerMTok: 0, outputPerMTok: 0 },
+	"minimax-m2-7-free": { inputPerMTok: 0, outputPerMTok: 0 },
 }
 
 /** Not user-selectable, so absent from SUPPORTED_MODELS. Groq list rates, verified 2026-08-26: https://groq.com/pricing */

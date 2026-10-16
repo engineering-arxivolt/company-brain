@@ -192,6 +192,24 @@ export function openAiCompatibleBaseUrl(env: Env): string | undefined {
 	return env.OPENAI_BASE_URL?.trim() || undefined
 }
 
+/** Base URL for an OpenAI-compatible chat model, per-model.
+ * opencode.ai free models use OPENCODE_BASE_URL; everything else uses
+ * OPENAI_BASE_URL (typically OpenRouter). */
+export function openAiCompatibleBaseUrlForModel(
+	modelName: SupportedModel,
+	env: Env,
+): string | undefined {
+	const opencodeModels = new Set([
+		"glm-5-1-free",
+		"kimi-k2-6-free",
+		"minimax-m2-7-free",
+	])
+	if (opencodeModels.has(modelName)) {
+		return env.OPENCODE_BASE_URL?.trim() || undefined
+	}
+	return env.OPENAI_BASE_URL?.trim() || undefined
+}
+
 /** Provider API key from environment, if set. */
 export function providerKey(
 	provider: SupportedModelProvider,
@@ -282,7 +300,7 @@ export function brainProviderModel(
 			if (!usesChatCompletions(modelName)) {
 				return createOpenAI({ apiKey })(modelId)
 			}
-			const baseURL = openAiCompatibleBaseUrl(env)
+			const baseURL = openAiCompatibleBaseUrlForModel(modelName, env)
 			if (!baseURL) {
 				const error = new Error(
 					`[company-brain] ${modelName} runs on an OpenAI-compatible chat endpoint, but OPENAI_BASE_URL is not set.`,
@@ -575,6 +593,17 @@ export function brainChainModelNames(
 		}
 		candidates.push(...autoAddedMainTurnModels())
 	}
+	// Opencode.ai free models (glm-5.1, kimi-k2.6, minimax-m2.7) are the
+	// last-resort free hops when OpenRouter paid + free are both exhausted.
+	// They use a different base URL (OPENCODE_BASE_URL) and don't require an
+	// API key for free chat models.
+	if (
+		options.mainTurn &&
+		allowFreeMainTurn(env) &&
+		env.OPENCODE_BASE_URL?.trim()
+	) {
+		candidates.push("glm-5-1-free", "kimi-k2-6-free", "minimax-m2-7-free")
+	}
 
 	candidates.push(resolved)
 	const fallback = brainFallbackModelFor(resolved)
@@ -601,7 +630,7 @@ export function brainChainModelNames(
 		)
 	}
 	console.log(
-		`[company-brain][diag] chain=${JSON.stringify(paid)} mainTurn=${options.mainTurn} flag=${allowFreeMainTurn(env)} baseUrl=${openAiCompatibleBaseUrl(env) ?? "none"} openaiKeyPrefix=${env.OPENAI_API_KEY?.slice(0, 7) ?? "none"}`,
+		`[company-brain][diag] chain=${JSON.stringify(paid)} mainTurn=${options.mainTurn} flag=${allowFreeMainTurn(env)} baseUrl=${openAiCompatibleBaseUrl(env) ?? "none"} opencodeUrl=${env.OPENCODE_BASE_URL?.trim() ?? "none"} openaiKeyPrefix=${env.OPENAI_API_KEY?.slice(0, 7) ?? "none"}`,
 	)
 	return paid
 }

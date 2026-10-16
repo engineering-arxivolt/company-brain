@@ -78,6 +78,10 @@ interface Env {
 	 * are out of credits (e.g. GLM exhausted). Off by default: the answering
 	 * turn writes to memory/GitHub/Linear/Notion. */
 	BRAIN_ALLOW_FREE_MAIN_TURN?: string
+	/** Base URL for opencode.ai OpenAI-compatible chat completions.
+	 * Set to https://opencode.ai/inference/openai/v1 to use opencode.ai
+	 * free models (glm-5.1, kimi-k2.6, minimax-m2.7) when OpenRouter is dry. */
+	OPENCODE_BASE_URL?: string
 }
 
 interface Env {
