@@ -11,8 +11,7 @@ export type BrainChannelProactivity = "proactive" | "quiet"
 export type BrainPersonalityPreset = "playful" | "balanced" | "professional"
 
 export type BrainPersonalitySettings = {
-	preset?: BrainPersonalityPreset
-	gifs?: Partial<Record<string, string>>
+	preset: BrainPersonalityPreset
 }
 
 export type BrainSettingsResponse = {
@@ -25,11 +24,11 @@ export type BrainSettingsResponse = {
 		proactivityDefault: BrainProactivityDefault[]
 		channelProactivity: BrainChannelProactivity[]
 		personalityPreset: BrainPersonalityPreset[]
-		personalityGifMoods: string[]
 	}
 }
 
-// null clears: default -> reset, channels[id] -> remove that override.
+// null clears: default -> reset, channels[id] -> remove that override,
+// personality.preset -> back to the default preset.
 export type BrainSettingsPatch = {
 	proactivity?: {
 		default?: BrainProactivityDefault | null
@@ -37,7 +36,6 @@ export type BrainSettingsPatch = {
 	} | null
 	personality?: {
 		preset?: BrainPersonalityPreset | null
-		gifs?: Record<string, string | null> | null
 	} | null
 }
 
@@ -79,7 +77,7 @@ export function useUpdateBrainSettings() {
 		},
 		onSuccess: (data) => {
 			queryClient.setQueryData(["brain", "settings", org?.id], data)
-			toast.success("Proactivity saved")
+			toast.success("Settings saved")
 		},
 		onError: (err) =>
 			toast.error(

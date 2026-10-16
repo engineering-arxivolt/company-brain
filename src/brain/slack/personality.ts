@@ -2,26 +2,32 @@
  * Fin-style personality: admin-configured tone presets with emoji/GIF rules.
  *
  * Industry model (Intercom Fin): personality is a preset, not a hardcoded
- * vibe. Emojis appear only on playful presets — professional never gets them,
- * even if source content has them. GIFs come from a curated library, never
- * generated or live-searched (no API key, brand-safe, predictable).
+ * vibe. Emojis appear only on playful/balanced presets — professional never
+ * gets them, even if source content has them.
+ *
+ * GIFs are searched live (Giphy/Tenor) for the moment's actual context — no
+ * preloaded library, because the brain lands in channels with every topic.
+ * The model proposes, the server disposes: it may only reference a candidate
+ * id returned by the search_gifs tool this turn, and delivery re-validates
+ * the outcome, preset, workspace-prompt opt-out, and the URL allowlist.
  *
  * Slack constraints (platform reality):
- * - No sticker API for bots. "Stickers" = large still-image blocks.
+ * - No sticker API for bots. "Stickers" = image blocks; this is what GIFs use.
  * - No custom-emoji upload except admin.emoji.add (Enterprise Grid only).
- * - GIFs = image Block Kit blocks with image_url (png/jpg/jpeg/gif all
- *   supported, GIFs autoplay). No chat.postGif method exists.
+ * - GIFs = image Block Kit blocks with image_url (giphy/tenor media animate).
  * - Reactions use reactions.add, already scoped in the manifest.
  */
+import type {
+	BrainPersonalityPreset,
+	BrainPersonalitySettings,
+} from "@repo/db/schema/common"
+import { type GifDelivery, isAllowedGifUrl } from "../tools/web/gifs"
 
 export const BRAIN_PERSONALITY_PRESETS = [
 	"playful",
 	"balanced",
 	"professional",
-] as const
-
-export type BrainPersonalityPreset =
-	(typeof BRAIN_PERSONALITY_PRESETS)[number]
+] as const satisfies readonly BrainPersonalityPreset[]
 
 export const DEFAULT_BRAIN_PERSONALITY: BrainPersonalityPreset = "balanced"
 
@@ -41,13 +47,20 @@ export function parseBrainPersonality(raw: unknown): BrainPersonalityPreset {
 	return DEFAULT_BRAIN_PERSONALITY
 }
 
+/** Stored settings shape: invalid keys are dropped, never thrown on. */
+export function parseBrainPersonalitySettings(
+	raw: unknown,
+): BrainPersonalitySettings {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+	const preset = (raw as Record<string, unknown>).preset
+	return isPersonalityPreset(preset) ? { preset } : {}
+}
+
 /**
  * Workspace-prompt opt-out: an admin writing "formal", "no emojis" or
  * "no gifs" in the workspace prompt always wins over the preset.
  */
-export function personalityOptOut(
-	workspacePrompt: string | null | undefined,
-): {
+export function personalityOptOut(workspacePrompt: string | null | undefined): {
 	noEmoji: boolean
 	noGif: boolean
 } {
@@ -70,7 +83,7 @@ export type PersonalityDelivery = {
 	allowEmoji: boolean
 	/** Whether a celebratory reaction may be added after delivery. */
 	allowReaction: boolean
-	/** Whether a curated GIF image block may be appended. */
+	/** Whether a searched GIF image block may ride the final reply. */
 	allowGif: boolean
 }
 
@@ -111,13 +124,13 @@ export function resolvePersonalityDelivery(args: {
 			return { allowEmoji: false, allowReaction: false, allowGif: false }
 	}
 }
+
 export const PERSONALITY_REACTION_EMOJI = [
 	"tada",
 	"fire",
 	"clap",
 	"raised_hands",
 	"rocket",
-	"eyes",
 	"heart",
 	"white_check_mark",
 ] as const
@@ -131,144 +144,47 @@ export function isPersonalityReaction(
 	return (PERSONALITY_REACTION_EMOJI as readonly unknown[]).includes(value)
 }
 
-export type PersonalityMood =
-	| "celebrate"
-	| "thanks"
-	| "welcome"
-	| "shipped"
-	| "unblocked"
+/** Image block (+ provider attribution) riding the final reply's blocks. */
+export function gifBlocks(delivery: GifDelivery): unknown[] {
+	if (!isAllowedGifUrl(delivery.url)) return []
+	const altText = delivery.altText.trim().slice(0, 300) || "GIF"
+	return [
+		{ type: "image", image_url: delivery.url, alt_text: altText },
+		{
+			type: "context",
+			elements: [
+				{
+					type: "mrkdwn",
+					text: delivery.source === "tenor" ? "via Tenor" : "via GIPHY",
+				},
+			],
+		},
+	]
+}
 
-const PERSONALITY_MOODS: readonly PersonalityMood[] = [
-	"celebrate",
-	"thanks",
-	"welcome",
-	"shipped",
-	"unblocked",
-]
-
-export function isPersonalityMood(value: unknown): value is PersonalityMood {
-	return (PERSONALITY_MOODS as readonly unknown[]).includes(value)
+export type TurnExpressiveProposal = {
+	reaction?: string
+	gifId?: string
 }
 
 /**
- * Admin-curated GIF library. v1 ships empty and delivery stays disabled
- * until an admin adds URLs via settings — brand-safe by default, zero
- * hardcoded meme URLs. Entries must be https Giphy/Tenor media URLs.
- */
-export type PersonalityGifLibrary = Partial<Record<PersonalityMood, string>>
-
-export function parsePersonalityGifLibrary(
-	raw: unknown,
-): PersonalityGifLibrary {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
-	const record = raw as Record<string, unknown>
-	const library: PersonalityGifLibrary = {}
-	for (const mood of PERSONALITY_MOODS) {
-		const url = record[mood]
-		if (typeof url === "string" && url.trim()) library[mood] = url.trim()
-	}
-	return library
-}
-
-function isAllowedGifUrl(url: string): boolean {
-	let parsed: URL
-	try {
-		parsed = new URL(url)
-	} catch {
-		return false
-	}
-	if (parsed.protocol !== "https:") return false
-	if (url.length > 3000) return false
-	const host = parsed.hostname.toLowerCase()
-	const allowed = host === "media.giphy.com" || host.endsWith(".giphy.com") ||
-		host === "media.tenor.com" || host.endsWith(".tenor.com")
-	if (!allowed) return false
-	return /\.(gif|webp|mp4)(\?|$)/i.test(parsed.pathname) ||
-		host.includes("giphy.com") ||
-		host.includes("tenor.com")
-}
-
-/** Server-side gate: the model only sends a mood; the URL comes from here. */
-export function gifUrlForMood(
-	library: PersonalityGifLibrary,
-	mood: PersonalityMood,
-): string | undefined {
-	const url = library[mood]
-	if (!url) return undefined
-	return isAllowedGifUrl(url) ? url : undefined
-}
-
-/** Image block riding on extraBlocks of the final chunk. */
-export function gifImageBlock(url: string, mood: PersonalityMood): unknown {
-	return {
-		type: "image",
-		image_url: url,
-		alt_text: `celebration: ${mood}`,
-	}
-}
-
-/**
- * Infers the most appropriate celebration mood from conversation context.
- * Heuristic, zero-latency — no model call.
- */
-export function inferCelebrationMood(args: {
-	reply: string
-	userTone?: "stressed" | "casual" | "formal" | "unknown"
-	topicTags?: string[]
-}): PersonalityMood | undefined {
-	const text = args.reply.toLowerCase()
-	const tags = args.topicTags ?? []
-	const tone = args.userTone ?? "unknown"
-
-	// Strong keyword signals
-	if (/\b(deploy|ship|release|launch|live|production)\b/.test(text) || tags.includes("deploy")) {
-		return "shipped"
-	}
-	if (/\b(unblock|unstuck|fixed|resolved|cleared)\b/.test(text) || tags.includes("blocker")) {
-		return "unblocked"
-	}
-	if (/\b(thank|thanks|appreciate|grateful)\b/.test(text)) {
-		return "thanks"
-	}
-	if (/\b(welcome|onboard|joined|new hire)\b/.test(text) || tags.includes("onboarding")) {
-		return "welcome"
-	}
-
-	// Tone-based fallbacks
-	if (tone === "stressed" && (tags.includes("blocker") || /\b(fixed|resolved|working)\b/.test(text))) {
-		return "unblocked"
-	}
-	if (tone === "casual" && /\b(done|complete|finished)\b/.test(text)) {
-		return "shipped"
-	}
-
-	// Default celebration
-	return "celebrate"
-}
-
-/**
- * Server-side expressive delivery: validates the model's proposed
- * reaction + GIF mood against the preset, outcome gate, workspace-prompt
- * opt-out, and the admin-curated library. Drops silently on any failure —
- * delivery must never block or rewrite the reply.
- *
- * If the model didn't propose a mood, we infer one from context.
+ * Server-side expressive delivery: validates the model's proposed reaction +
+ * GIF candidate against the preset, outcome gate, workspace-prompt opt-out,
+ * and the per-turn GIF registry. Drops silently on any failure — delivery
+ * must never block or rewrite the reply.
  */
 export function resolveTurnExpressiveDelivery(args: {
 	preset: BrainPersonalityPreset
 	workspacePrompt?: string | null
 	outcome?: string | null
 	scheduledRun?: boolean
-	reaction?: string | null
-	mood?: string | null
-	library?: PersonalityGifLibrary | null
-	/** Context for mood inference when model doesn't propose one */
-	inferenceContext?: {
-		reply: string
-		userTone?: "stressed" | "casual" | "formal" | "unknown"
-		topicTags?: string[]
-	}
-}): { reaction?: PersonalityReactionEmoji; extraBlocks?: unknown[] } {
+	proposal?: TurnExpressiveProposal | null
+	/** Resolves a candidate id from this turn's search_gifs results. */
+	resolveGifId?: (id: string) => GifDelivery | undefined
+}): {
+	reaction?: PersonalityReactionEmoji
+	extraBlocks?: unknown[]
+} {
 	const outcome =
 		args.outcome === "answered" ||
 		args.outcome === "blocked" ||
@@ -286,36 +202,51 @@ export function resolveTurnExpressiveDelivery(args: {
 		reaction?: PersonalityReactionEmoji
 		extraBlocks?: unknown[]
 	} = {}
-	if (delivery.allowReaction && isPersonalityReaction(args.reaction)) {
-		resolved.reaction = args.reaction
+	if (delivery.allowReaction && isPersonalityReaction(args.proposal?.reaction)) {
+		resolved.reaction = args.proposal?.reaction
 	}
-	// Determine mood: model proposal > inference > none
-	let effectiveMood: PersonalityMood | undefined
-	if (isPersonalityMood(args.mood)) {
-		effectiveMood = args.mood
-	} else if (delivery.allowGif && args.inferenceContext && args.library) {
-		effectiveMood = inferCelebrationMood(args.inferenceContext)
-	}
-	if (delivery.allowGif && effectiveMood && args.library) {
-		const url = gifUrlForMood(args.library, effectiveMood)
-		if (url) resolved.extraBlocks = [gifImageBlock(url, effectiveMood)]
+	// GIFs only ever come from candidates this turn's search returned; a
+	// hallucinated id, an expired registry, or a disallowed URL drops out.
+	const gifId = args.proposal?.gifId?.trim()
+	if (delivery.allowGif && gifId && args.resolveGifId) {
+		const hit = args.resolveGifId(gifId)
+		if (hit) {
+			const blocks = gifBlocks(hit)
+			if (blocks.length) resolved.extraBlocks = blocks
+		}
 	}
 	return resolved
 }
 
-export function personalityPromptBlock(preset: BrainPersonalityPreset): string {
+/**
+ * Tone + expression protocol for the system prompt. The GIF instructions are
+ * only included when the search_gifs tool is actually available this turn.
+ */
+export function personalityPromptBlock(
+	preset: BrainPersonalityPreset,
+	capabilities?: { gifSearch?: boolean },
+): string {
+	const gifSearch = capabilities?.gifSearch === true
+	const gifLine = (strength: "playful" | "balanced") =>
+		gifSearch
+			? `\nGIFs: ${
+					strength === "playful"
+						? "when a genuine win happens — something shipped, a blocker cleared, a real thank-you, a welcome — you may attach one GIF to your final message"
+						: "only on a clear, genuine win (shipped, unblocked, a real thank-you) you may attach one GIF to your final message"
+				}. Call search_gifs with a short, specific query, then pass the best candidate's id as gif_id in finish_turn; skip it entirely if nothing fits. Never on blocked, nothing_found, errors, incidents, serious or formal asks, or mid-investigation. At most one GIF per turn.`
+			: ""
+	const reactionLine =
+		preset === "playful"
+			? `\nReactions: on a genuine win you may also pass reaction in finish_turn with one of: ${PERSONALITY_REACTION_EMOJI.join(", ")}. It lands on the message you're responding to.`
+			: ""
 	switch (preset) {
 		case "playful":
 			return `<personality>
-Vibe: warm, witty teammate. You may use 0-2 emojis per reply when stakes are low and the other person's energy invites it — a win, a thanks, a welcome. Match their register: terse gets terse, casual gets casual. Never use emojis in errors, blocked states, formal asks, or incident talk. On a genuine win (shipped, unblocked, celebration), you may set mood to celebrate, thanks, welcome, shipped, or unblocked and pick one reaction from: tada, fire, clap, raised_hands, rocket, eyes, heart, white_check_mark. Max one reaction and one GIF per turn, only on answered outcomes.
-
-To include a GIF in your response, call the search_gifs tool with the desired mood (celebrate, thanks, welcome, shipped, unblocked). The tool will return a marker like {{GIF:https://...}} that you should include in your finish_turn.reply. The GIF will be automatically rendered as an image block in Slack.
+Vibe: warm, witty teammate. Use 0-2 emojis when the moment is light and the other person's energy invites it; match their register — terse gets terse. Never use emojis in errors, incidents, blocked states, or formal asks.${gifLine("playful")}${reactionLine}
 </personality>`
 		case "balanced":
 			return `<personality>
-Vibe: sharp, friendly teammate. Emojis sparingly (0-1) and only when the other person is casual and stakes are low. No reactions. On a clear win you may set mood (celebrate, thanks, welcome, shipped, unblocked) for one curated GIF — never on blocked, nothing_found, errors, or formal topics. A workspace prompt saying formal, no emojis, or no gifs overrides this block.
-
-To include a GIF in your response, call the search_gifs tool with the desired mood (celebrate, thanks, welcome, shipped, unblocked). The tool will return a marker like {{GIF:https://...}} that you should include in your finish_turn.reply. The GIF will be automatically rendered as an image block in Slack.
+Vibe: sharp, friendly teammate. Emojis sparingly (0-1) and only when the other person is casual; never in errors, incidents, or formal asks.${gifLine("balanced")}
 </personality>`
 		case "professional":
 			return `<personality>

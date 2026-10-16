@@ -1,161 +1,178 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { createBrainGifSearchTool } from "./gif-search"
-import { searchGifs } from "./gifs"
+import { isAllowedGifUrl, searchGifs } from "./gifs"
 
-describe("GIF search tool", () => {
-	const mockEnv = {
-		GIPHY_API_KEY: "test-key",
-		TENOR_API_KEY: "test-key",
-	} as any
+const originalFetch = global.fetch
 
-	it("creates a tool that searches for GIFs", () => {
-		const tool = createBrainGifSearchTool(mockEnv, "test-trace")
-		expect(tool).toBeDefined()
-		expect(tool.description).toContain("GIF")
-		expect(tool.execute).toBeDefined()
+afterEach(() => {
+	global.fetch = originalFetch
+	vi.restoreAllMocks()
+})
+
+const giphyPayload = (urls: string[]) => ({
+	ok: true,
+	json: async () => ({
+		data: urls.map((url, index) => ({
+			title: `GIF number ${index}`,
+			images: {
+				original: { url: url.replace("downsized", "original") },
+				downsized_medium: { url },
+			},
+		})),
+	}),
+})
+
+describe("searchGifs", () => {
+	const mockEnv = { GIPHY_API_KEY: "test-key" } as unknown as Env
+
+	it("maps Giphy hits to validated deliveries with bounded renditions", async () => {
+		global.fetch = vi.fn().mockResolvedValue(
+			giphyPayload([
+				"https://media.giphy.com/media/abc123/giphy.gif",
+				"https://evil.example.com/not-a-gif.gif",
+			]),
+		) as unknown as typeof fetch
+
+		const results = await searchGifs(mockEnv, "celebrate deploy", {
+			limit: 5,
+			timeoutMs: 1000,
+		})
+		expect(results).toEqual([
+			{
+				url: "https://media.giphy.com/media/abc123/giphy.gif",
+				altText: "GIF number 0",
+				source: "giphy",
+			},
+		])
 	})
 
-	it("returns SourcedToolOutput with GIF marker on success", async () => {
-		const tool = createBrainGifSearchTool(mockEnv, "test-trace")
-		
-		// Mock fetch to return a successful GIPHY response
-		const originalFetch = global.fetch
+	it("falls back to the query for alt text and never throws on provider failure", async () => {
 		global.fetch = vi.fn().mockResolvedValue({
 			ok: true,
 			json: async () => ({
 				data: [
 					{
 						images: {
-							original: {
-								url: "https://media.giphy.com/media/test/giphy.gif",
-								width: "200",
-								height: "200",
+							downsized_medium: {
+								url: "https://media.giphy.com/media/xyz/giphy.gif",
 							},
 						},
 					},
 				],
 			}),
-		}) as any
+		}) as unknown as typeof fetch
+		const results = await searchGifs(mockEnv, "high five", { timeoutMs: 1000 })
+		expect(results[0]?.altText).toBe("high five")
 
-		try {
-			const result = await tool.execute({ mood: "celebrate" })
-			expect(result).toHaveProperty("output")
-			expect(result).toHaveProperty("sources")
-			expect(typeof result.output).toBe("string")
-			expect(result.output).toMatch(/^{{GIF:https:\/\/media\.giphy\.com\/media\/test\/giphy\.gif}}$/)
-			expect(Array.isArray(result.sources)).toBe(true)
-			expect(result.sources[0].source).toBe("https://media.giphy.com/media/test/giphy.gif")
-		} finally {
-			global.fetch = originalFetch
-		}
+		global.fetch = vi.fn().mockRejectedValue(new Error("network")) as unknown as typeof fetch
+		await expect(
+			searchGifs(mockEnv, "high five", { timeoutMs: 1000 }),
+		).resolves.toEqual([])
 	})
 
-	it("returns error message when no GIFs found", async () => {
-		const tool = createBrainGifSearchTool(mockEnv, "test-trace")
-		
-		// Mock fetch to return empty results
-		const originalFetch = global.fetch
-		global.fetch = vi.fn().mockResolvedValue({
-			ok: true,
-			json: async () => ({ data: [] }),
-		}) as any
+	it("merges Tenor when a key is configured and dedupes by URL", async () => {
+		const shared = "https://media.tenor.com/abc/file.gif"
+		global.fetch = vi.fn().mockImplementation(async (input: RequestInfo) => {
+			const url = String(input)
+			if (url.includes("tenor.googleapis.com")) {
+				return {
+					ok: true,
+					json: async () => ({
+						results: [
+							{
+								content_description: "dumpster fire",
+								media_formats: { tinygif: { url: shared } },
+							},
+							{
+								content_description: "repeat",
+								media_formats: { tinygif: { url: shared } },
+							},
+						],
+					}),
+				}
+			}
+			return giphyPayload(["https://media.giphy.com/media/zzz/giphy.gif"])
+		}) as unknown as typeof fetch
 
-		try {
-			const result = await tool.execute({ mood: "celebrate" })
-			expect(typeof result).toBe("string")
-			expect(result).toContain("No GIFs found")
-		} finally {
-			global.fetch = originalFetch
-		}
-	})
-
-	it("returns 'No GIFs found' when API returns error status", async () => {
-		const tool = createBrainGifSearchTool(mockEnv, "test-trace")
-		
-		// Mock fetch to return error status (not network error)
-		const originalFetch = global.fetch
-		global.fetch = vi.fn().mockResolvedValue({
-			ok: false,
-			status: 500,
-			text: async () => "Internal Server Error",
-		}) as any
-
-		try {
-			const result = await tool.execute({ mood: "celebrate" })
-			expect(typeof result).toBe("string")
-			// When API returns error status, searchGifs throws GifError which is caught
-			// But Promise.allSettled catches it and returns empty array
-			// So we get "No GIFs found" instead of "GIF search failed"
-			expect(result).toContain("No GIFs found")
-		} finally {
-			global.fetch = originalFetch
-		}
-	})
-
-	it("returns 'No GIFs found' when network error occurs", async () => {
-		const tool = createBrainGifSearchTool(mockEnv, "test-trace")
-		
-		// Mock fetch to throw network error
-		const originalFetch = global.fetch
-		global.fetch = vi.fn().mockRejectedValue(new Error("Network error")) as any
-
-		try {
-			const result = await tool.execute({ mood: "celebrate" })
-			expect(typeof result).toBe("string")
-			// Network errors are caught by Promise.allSettled in searchGifs
-			// which returns empty array, leading to "No GIFs found"
-			expect(result).toContain("No GIFs found")
-		} finally {
-			global.fetch = originalFetch
-		}
+		const env = {
+			GIPHY_API_KEY: "test-key",
+			TENOR_API_KEY: "test-key",
+		} as unknown as Env
+		const results = await searchGifs(env, "ship it", { limit: 5, timeoutMs: 1000 })
+		expect(results.map((hit) => hit.url)).toEqual([
+			"https://media.giphy.com/media/zzz/giphy.gif",
+			shared,
+		])
+		expect(results[1]?.source).toBe("tenor")
 	})
 })
 
-describe("searchGifs function", () => {
-	const mockEnv = {
-		GIPHY_API_KEY: "test-key",
-		TENOR_API_KEY: "test-key",
-	} as any
+describe("isAllowedGifUrl", () => {
+	it("allows only https provider media hosts", () => {
+		expect(isAllowedGifUrl("https://media.giphy.com/media/a/giphy.gif")).toBe(true)
+		expect(isAllowedGifUrl("https://c.tenor.com/x.gif")).toBe(true)
+		expect(isAllowedGifUrl("https://media.tenor.com/x.gif")).toBe(true)
+		expect(isAllowedGifUrl("http://media.giphy.com/x.gif")).toBe(false)
+		expect(isAllowedGifUrl("https://giphy.com.evil.example/x.gif")).toBe(false)
+		expect(isAllowedGifUrl("https://example.com/x.gif")).toBe(false)
+		expect(isAllowedGifUrl("javascript:alert(1)")).toBe(false)
+		expect(isAllowedGifUrl("")).toBe(false)
+	})
+})
 
-	it("returns GIF hits from Giphy", async () => {
-		const originalFetch = global.fetch
-		global.fetch = vi.fn().mockResolvedValue({
-			ok: true,
-			json: async () => ({
-				data: [
-					{
-						images: {
-							original: {
-								url: "https://media.giphy.com/media/abc123/giphy.gif",
-								width: "300",
-								height: "200",
-							},
-						},
-					},
-				],
-			}),
-		}) as any
+describe("search_gifs tool", () => {
+	const mockEnv = { GIPHY_API_KEY: "test-key" } as unknown as Env
 
-		try {
-			const results = await searchGifs(mockEnv, "celebrate", { limit: 1, timeoutMs: 5000 })
-			expect(results.length).toBeGreaterThan(0)
-			expect(results[0]).toHaveProperty("url")
-			expect(results[0]).toHaveProperty("source", "giphy")
-			expect(results[0].url).toContain("giphy.com")
-		} finally {
-			global.fetch = originalFetch
-		}
+	const run = (
+		tool: ReturnType<typeof createBrainGifSearchTool>,
+		query: string,
+	) =>
+		tool.execute?.(
+			{ query },
+			{ toolCallId: "call-1", messages: [] } as any,
+		) as Promise<string>
+
+	it("returns candidate ids without ever leaking URLs", async () => {
+		global.fetch = vi
+			.fn()
+			.mockResolvedValue(
+				giphyPayload([
+					"https://media.giphy.com/media/one/giphy.gif",
+					"https://media.giphy.com/media/two/giphy.gif",
+				]),
+			) as unknown as typeof fetch
+
+		const registry = new Map()
+		const tool = createBrainGifSearchTool(mockEnv, "test-trace", registry)
+		const output = await run(tool, "shipped it")
+		expect(output).toContain("- g1: GIF number 0")
+		expect(output).toContain("finish_turn.gif_id")
+		expect(output).not.toContain("https://")
+		expect([...registry.keys()]).toEqual(["g1", "g2"])
+		expect(registry.get("g1")?.url).toBe(
+			"https://media.giphy.com/media/one/giphy.gif",
+		)
 	})
 
-	it("returns empty array when both APIs fail", async () => {
-		const originalFetch = global.fetch
-		global.fetch = vi.fn().mockRejectedValue(new Error("Network error")) as any
+	it("answers gracefully when nothing is found", async () => {
+		global.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ data: [] }),
+		}) as unknown as typeof fetch
+		const tool = createBrainGifSearchTool(mockEnv, undefined, new Map())
+		const output = await run(tool, "nothing matches this")
+		expect(output).toContain("No GIFs found")
+		expect(output).toContain("Continue without a GIF")
+	})
 
-		try {
-			const results = await searchGifs(mockEnv, "celebrate", { limit: 1, timeoutMs: 5000 })
-			expect(results).toEqual([])
-		} finally {
-			global.fetch = originalFetch
-		}
+	it("caps searches per turn", async () => {
+		global.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ data: [] }),
+		}) as unknown as typeof fetch
+		const tool = createBrainGifSearchTool(mockEnv, undefined, new Map())
+		for (let i = 0; i < 3; i += 1) await run(tool, `query ${i}`)
+		const fourth = await run(tool, "one too many")
+		expect(fourth).toContain("limit reached")
 	})
 })

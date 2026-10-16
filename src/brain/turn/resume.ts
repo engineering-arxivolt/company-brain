@@ -5,6 +5,7 @@ import {
 	scheduleChargeBrainLlmCost,
 } from "../billing/cost"
 import { memoryDocsFromWriteback } from "../memory/writeback"
+import { getWorkspacePrompt } from "../memory/workspace-prompt"
 import {
 	captureBrainTurnUpdateApplied,
 	createBrainTurnTelemetry,
@@ -17,6 +18,11 @@ import {
 	redactedPreview,
 } from "../observability/log-utils"
 import { mapToolDetail, mapToolLabel } from "../prompt/build"
+import {
+	parseBrainPersonality,
+	personalityPromptBlock,
+	resolveTurnExpressiveDelivery,
+} from "../slack/personality"
 import { claimThreadTurnApprovalIfInboxEmpty } from "../slack/turn-control"
 import {
 	consumePendingTurnUpdates,
@@ -269,6 +275,7 @@ export async function resumeTurnAfterApproval(
 		connectedApps,
 		connectedAppRuntime,
 		connectedAppRouting,
+		gifCandidates,
 	} = assembled
 	if (!state.apps.connected.length && connectedApps.length) {
 		state.apps.connected = connectedApps.map((app) => ({ ...app }))
@@ -282,6 +289,19 @@ export async function resumeTurnAfterApproval(
 		const canRequestAccessLease = "request_access_lease" in tools
 		const hasAppAccessTools = hasApps || canRequestAccessLease
 		const detailedAppPolicy = hasAppAccessTools
+		const personalityPreset = parseBrainPersonality(
+			assemblySnapshot.slackLookup?.brainPersonality?.preset,
+		)
+		// Personality gating needs the workspace prompt's opt-outs; a storage
+		// hiccup must never fail the resume, so fall back to none.
+		let workspacePrompt: string | null = null
+		try {
+			workspacePrompt = getWorkspacePrompt(agent)
+		} catch (error) {
+			console.warn(
+				`[company-brain][${traceId}] workspace prompt unavailable on resume: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
 		const activeSystem = deps.buildSystemPrompt({
 			toolMode: hasAppAccessTools ? "apps" : "memory_only",
 			appPolicy: detailedAppPolicy ? "detailed" : "compact",
@@ -289,6 +309,9 @@ export async function resumeTurnAfterApproval(
 			canRequestAccessLease,
 			connectedAppRouting,
 			explicitFinish: true,
+			personality: personalityPromptBlock(personalityPreset, {
+				gifSearch: "search_gifs" in tools,
+			}),
 		})
 		const buildActiveSystem = () => activeSystem
 		const buildCurrentSystemMessages = () =>
@@ -617,12 +640,17 @@ export async function resumeTurnAfterApproval(
 		}
 		async function readOutput(
 			modelResult: ReturnType<typeof runResumeModel>,
-		): Promise<{ reply: string }> {
+		): Promise<{
+			reply: string
+			reaction?: string
+			extraBlocks?: unknown[]
+		}> {
 			failurePhase = "output_read"
 			throwIfAborted(abortSignal)
+			const terminalProposal = terminalCaptures.get(modelResult)?.selected()
 			const selected = await selectTurnReply({
 				result: modelResult,
-				terminalProposal: terminalCaptures.get(modelResult)?.selected(),
+				terminalProposal,
 			})
 			throwIfAborted(abortSignal)
 			telemetry.recordReplySource(selected.source)
@@ -631,7 +659,23 @@ export async function resumeTurnAfterApproval(
 				salvaged = true
 				telemetry.recordSalvaged()
 			}
-			return { reply: selected.reply }
+			// A denied approval never celebrates; an approved one may, under the
+			// same server-side gates as a fresh turn.
+			const expressive =
+				approved && selected.reply.trim()
+					? resolveTurnExpressiveDelivery({
+							preset: personalityPreset,
+							workspacePrompt,
+							outcome: terminalProposal?.outcome,
+							proposal: terminalProposal,
+							resolveGifId: (id) => gifCandidates.get(id),
+						})
+					: {}
+			return {
+				reply: selected.reply,
+				reaction: expressive.reaction,
+				extraBlocks: expressive.extraBlocks,
+			}
 		}
 
 		const compactContinuation = (messages: ModelMessage[]): ModelMessage[] =>
@@ -805,13 +849,16 @@ export async function resumeTurnAfterApproval(
 				continue
 			}
 
-			let { reply } = settlement.candidate
+			let { reply, reaction, extraBlocks } = settlement.candidate
 
 			if (!reply.trim()) {
 				telemetry.recordCannedAnswer()
 				reply = approved
 					? "I ran the approved action, but couldn't put together a final answer."
 					: "Okay, I won't run that action."
+				// A canned reply never celebrates: drop any proposed flourish.
+				reaction = undefined
+				extraBlocks = undefined
 			}
 			try {
 				const checkpoint = buildThreadInvestigationCheckpoint({
@@ -858,6 +905,8 @@ export async function resumeTurnAfterApproval(
 				connect: capture.connect,
 				toolTrace,
 				salvaged,
+				reaction,
+				extraBlocks,
 			}
 		}
 	} catch (error) {

@@ -4,14 +4,20 @@ import { ROLE_ADMIN } from "@repo/lib/permissions"
 import { Hono } from "hono"
 import { describeRoute, validator } from "hono-openapi"
 import * as z from "zod"
+import { updateBrainPersonality } from "@/lib/brain/settings/personality"
 import { updateBrainProactivity } from "@/lib/brain/settings/proactivity"
+import { roleGate } from "@/lib/auth/role-gate"
+import {
+	BRAIN_PERSONALITY_PRESETS,
+	DEFAULT_BRAIN_PERSONALITY,
+	parseBrainPersonalitySettings,
+} from "@/lib/brain/slack/personality"
 import {
 	BRAIN_CHANNEL_PROACTIVITY,
 	BRAIN_PROACTIVITY_DEFAULTS,
 	DEFAULT_BRAIN_PROACTIVITY,
 	parseBrainProactivity,
 } from "@/lib/brain/slack/proactivity"
-import { roleGate } from "@/lib/auth/role-gate"
 import type { AppContext } from "@/types"
 
 const SlackChannelIdSchema = z.string().regex(/^[CDG][A-Z0-9]{4,30}$/)
@@ -24,8 +30,14 @@ const ProactivityPatchSchema = z.object({
 		.nullish(),
 })
 
+const PersonalityPatchSchema = z.object({
+	// null clears the preset back to the default.
+	preset: z.enum(BRAIN_PERSONALITY_PRESETS).nullish(),
+})
+
 const BrainSettingsSchema = z.object({
 	proactivity: ProactivityPatchSchema.nullish(),
+	personality: PersonalityPatchSchema.nullish(),
 })
 
 function proactivityView(raw: unknown) {
@@ -36,12 +48,23 @@ function proactivityView(raw: unknown) {
 	}
 }
 
-function settingsResponse(raw: unknown) {
+function personalityView(raw: unknown) {
 	return {
-		proactivity: proactivityView(raw),
+		preset: parseBrainPersonalitySettings(raw).preset ?? DEFAULT_BRAIN_PERSONALITY,
+	}
+}
+
+function settingsResponse(raw: {
+	brainProactivity?: unknown
+	brainPersonality?: unknown
+}) {
+	return {
+		proactivity: proactivityView(raw.brainProactivity),
+		personality: personalityView(raw.brainPersonality),
 		choices: {
 			proactivityDefault: BRAIN_PROACTIVITY_DEFAULTS,
 			channelProactivity: BRAIN_CHANNEL_PROACTIVITY,
+			personalityPreset: BRAIN_PERSONALITY_PRESETS,
 		},
 	}
 }
@@ -53,9 +76,9 @@ export const brainSettingsRoutes = new Hono<AppContext>()
 		if (!org) return c.json({ error: "unauthorized" }, 401)
 		const row = await db(c.env).query.organizationSettings.findFirst({
 			where: eq(schema.organizationSettings.orgId, org.id),
-			columns: { brainProactivity: true },
+			columns: { brainProactivity: true, brainPersonality: true },
 		})
-		return c.json(settingsResponse(row?.brainProactivity))
+		return c.json(settingsResponse(row ?? {}))
 	})
 	.patch(
 		"/",
@@ -75,22 +98,22 @@ export const brainSettingsRoutes = new Hono<AppContext>()
 			const org = c.get("org")
 			if (!org) return c.json({ error: "unauthorized" }, 401)
 			const patch = c.req.valid("json")
-			const proactivityPatch = patch.proactivity
-			if (proactivityPatch === undefined) {
-				const row = await db(c.env).query.organizationSettings.findFirst({
-					where: eq(schema.organizationSettings.orgId, org.id),
-					columns: { brainProactivity: true },
-				})
-				return c.json(settingsResponse(row?.brainProactivity))
+			if (patch.proactivity !== undefined) {
+				const result = await updateBrainProactivity(
+					c.env,
+					org.id,
+					patch.proactivity ?? null,
+				)
+				if ("error" in result) return c.json({ error: result.error }, 422)
 			}
-
-			const result = await updateBrainProactivity(
-				c.env,
-				org.id,
-				proactivityPatch ?? null,
-			)
-
-			if ("error" in result) return c.json({ error: result.error }, 422)
-			return c.json(settingsResponse(result.merged))
+			if (patch.personality !== undefined) {
+				await updateBrainPersonality(c.env, org.id, patch.personality ?? null)
+			}
+			// Re-read so a partial patch still returns the full resolved state.
+			const row = await db(c.env).query.organizationSettings.findFirst({
+				where: eq(schema.organizationSettings.orgId, org.id),
+				columns: { brainProactivity: true, brainPersonality: true },
+			})
+			return c.json(settingsResponse(row ?? {}))
 		},
 	)

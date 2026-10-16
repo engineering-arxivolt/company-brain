@@ -212,10 +212,13 @@ export function buildSystemPrompt(opts?: {
 	connectedAppRouting?: ConnectedAppRouting
 	allowMemoryWriteback?: boolean
 	explicitFinish?: boolean
+	/** Personality preset block: tone, emoji, reaction and GIF protocol. */
+	personality?: string
 }): string {
 	const usesApps = opts?.toolMode !== "memory_only"
 	const blocks = [
 		IDENTITY_AND_STYLE,
+		...(opts?.personality ? [opts.personality] : []),
 		CONVERSATION,
 		METHOD,
 		SLACK,

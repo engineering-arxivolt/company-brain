@@ -40,6 +40,11 @@ import { resolveSkillsWithJev } from "../skills/resolver"
 import { listVisibleRuntimeSkills } from "../skills/store"
 import { buildTurnUserContent } from "../slack/attachments"
 import { resolveChannel } from "../slack/channel-directory"
+import {
+	parseBrainPersonality,
+	personalityPromptBlock,
+	resolveTurnExpressiveDelivery,
+} from "../slack/personality"
 import { claimThreadTurnApprovalIfInboxEmpty } from "../slack/turn-control"
 import {
 	consumePendingTurnUpdates,
@@ -367,6 +372,7 @@ export async function computeTurn(
 		connectedApps,
 		connectedAppRuntime,
 		connectedAppRouting,
+		gifCandidates,
 	} = assembled
 
 	const runTurn = async (): Promise<ComputeTurnResult> => {
@@ -463,6 +469,9 @@ export async function computeTurn(
 		const canRequestAccessLease = "request_access_lease" in tools
 		const hasAppAccessTools = hasApps || canRequestAccessLease
 		const detailedAppPolicy = hasAppAccessTools
+		const personalityPreset = parseBrainPersonality(
+			slackLookup?.brainPersonality?.preset,
+		)
 		const activeSystem = deps.buildSystemPrompt({
 			toolMode: hasAppAccessTools ? "apps" : "memory_only",
 			appPolicy: detailedAppPolicy ? "detailed" : "compact",
@@ -471,6 +480,13 @@ export async function computeTurn(
 			connectedAppRouting,
 			allowMemoryWriteback: !options?.passiveInvestigation,
 			explicitFinish: !options?.passiveInvestigation,
+			// Passive investigations never express: no reactions/GIFs and no
+			// playful tone, matching the delivery gates below.
+			personality: options?.passiveInvestigation
+				? undefined
+				: personalityPromptBlock(personalityPreset, {
+						gifSearch: "search_gifs" in tools,
+					}),
 		})
 		const buildActiveSystem = () => activeSystem
 		const buildCurrentSystemMessages = () =>
@@ -959,12 +975,15 @@ export async function computeTurn(
 			memory: MemoryWriteback
 			connect: string[] | null
 			silentConclusion?: boolean
+			reaction?: string
+			extraBlocks?: unknown[]
 		}> {
 			failurePhase = "output_read"
 			throwIfAborted(abortSignal)
+			const terminalProposal = terminalCaptures.get(result)?.selected()
 			const selected = await selectTurnReply({
 				result,
-				terminalProposal: terminalCaptures.get(result)?.selected(),
+				terminalProposal,
 			})
 			throwIfAborted(abortSignal)
 			const { reply } = selected
@@ -982,10 +1001,26 @@ export async function computeTurn(
 					silentConclusion: true,
 				}
 			}
+			// Personality expression rides the delivered reply. The model
+			// proposes (reaction + GIF candidate id); the server validates the
+			// preset, outcome gate, workspace-prompt opt-out, and the per-turn
+			// GIF registry, dropping silently on any failure.
+			const expressive = reply.trim()
+				? resolveTurnExpressiveDelivery({
+						preset: personalityPreset,
+						workspacePrompt,
+						outcome: terminalProposal?.outcome,
+						scheduledRun,
+						proposal: terminalProposal,
+						resolveGifId: (id) => gifCandidates.get(id),
+					})
+				: {}
 			return {
 				reply,
 				memory: capture.memory,
 				connect: capture.connect,
+				reaction: expressive.reaction,
+				extraBlocks: expressive.extraBlocks,
 			}
 		}
 
@@ -1131,7 +1166,7 @@ export async function computeTurn(
 			capture.connect = null
 		}
 
-		let { reply, memory, connect } = output
+		let { reply, memory, connect, reaction, extraBlocks } = output
 		throwIfAborted(abortSignal)
 		if (output.silentConclusion) {
 			console.log(
@@ -1161,6 +1196,9 @@ export async function computeTurn(
 		if (!reply.trim()) {
 			telemetry.recordCannedAnswer()
 			reply = EMPTY_REPLY
+			// A canned reply never celebrates: drop any proposed flourish.
+			reaction = undefined
+			extraBlocks = undefined
 		}
 		if (!options?.passiveInvestigation && !ephemeral) {
 			try {
@@ -1203,6 +1241,8 @@ export async function computeTurn(
 			salvaged,
 			narrated: state.surfacedUpdates.length > 0,
 			nativeCallCount: state.nativeCalls.length,
+			reaction,
+			extraBlocks,
 		}
 	}
 

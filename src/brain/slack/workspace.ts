@@ -280,6 +280,7 @@ export type SlackWorkspaceRow = {
 	orgSlug: string | null
 	orgMetadata: Record<string, unknown> | null
 	brainProactivity: unknown
+	brainPersonality: unknown
 	botTokenEnc: string
 	botUserId: string | null
 	installedByUserId: string | null
@@ -304,6 +305,7 @@ export async function getWorkspaceByTeamId(
 			orgSlug: organization.slug,
 			orgMetadata: organization.metadata,
 			brainProactivity: organizationSettings.brainProactivity,
+			brainPersonality: organizationSettings.brainPersonality,
 		})
 		.from(slackWorkspace)
 		.innerJoin(organization, eq(slackWorkspace.orgId, organization.id))

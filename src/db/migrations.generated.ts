@@ -34,5 +34,11 @@ export const MIGRATIONS: ReadonlyArray<{
 			"CREATE INDEX `idx_slack_workspace_member_org_id` ON `slack_workspace_member` (`org_id`);",
 			"CREATE INDEX `idx_slack_workspace_member_user_id` ON `slack_workspace_member` (`user_id`);"
 		]
+	},
+	{
+		"name": "0001_giant_microchip.sql",
+		"statements": [
+			"ALTER TABLE `organization_settings` ADD `brain_personality` text;"
+		]
 	}
 ]

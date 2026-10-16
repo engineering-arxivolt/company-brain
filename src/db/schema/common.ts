@@ -8,6 +8,13 @@ export type BrainProactivitySettings = {
 	journey?: { enabled?: boolean }
 }
 
+export type BrainPersonalityPreset = "playful" | "balanced" | "professional"
+
+/** How the brain expresses itself: emoji, reactions, GIFs. Absent preset = balanced. */
+export type BrainPersonalitySettings = {
+	preset?: BrainPersonalityPreset
+}
+
 export type ProfileBucketDef = {
 	key: string
 	description: string

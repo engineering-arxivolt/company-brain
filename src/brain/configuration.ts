@@ -2,6 +2,7 @@ import { db, eq } from "@repo/db"
 import * as schema from "@repo/db/schema"
 import type {
 	BrainChannelProactivity,
+	BrainPersonalityPreset,
 	BrainProactivityDefault,
 } from "@repo/db/schema/common"
 import { MAX_WORKSPACE_PROMPT_LENGTH } from "@repo/lib/constants"
@@ -17,8 +18,14 @@ import {
 } from "./memory/workspace-prompt"
 import { setCompanyDomain } from "./settings/company-domain"
 import { type BrainModelsPatch, updateBrainModels } from "./settings/models"
+import { updateBrainPersonality } from "./settings/personality"
 import { updateBrainProactivity } from "./settings/proactivity"
 import { ensureChannelObserveTables } from "./slack/channel-observe"
+import {
+	BRAIN_PERSONALITY_PRESETS,
+	DEFAULT_BRAIN_PERSONALITY,
+	parseBrainPersonalitySettings,
+} from "./slack/personality"
 import {
 	BRAIN_CHANNEL_PROACTIVITY,
 	BRAIN_PROACTIVITY_DEFAULTS,
@@ -143,7 +150,7 @@ export async function buildBrainConfiguration(args: {
 			db(env)
 				.query.organizationSettings.findFirst({
 					where: eq(schema.organizationSettings.orgId, orgId),
-					columns: { brainProactivity: true },
+					columns: { brainProactivity: true, brainPersonality: true },
 				})
 				.catch(() => null),
 			getCompanyContext(env, orgId).catch(() => null),
@@ -162,6 +169,9 @@ export async function buildBrainConfiguration(args: {
 			})),
 		])
 	const proactivity = parseBrainProactivity(settingsRow?.brainProactivity)
+	const personality = parseBrainPersonalitySettings(
+		settingsRow?.brainPersonality,
+	)
 
 	return {
 		workspace: {
@@ -191,6 +201,9 @@ export async function buildBrainConfiguration(args: {
 			channelOverrides: proactivity.channels ?? {},
 			// The home channel is always proactive regardless of overrides.
 			homeChannelId: snapshot.homeChannel?.channelId ?? null,
+		},
+		personality: {
+			preset: personality.preset ?? DEFAULT_BRAIN_PERSONALITY,
 		},
 		prompt: {
 			workspacePrompt: snapshot.workspacePrompt,
@@ -298,17 +311,22 @@ export function createConfigurationTool(args: {
 			field: deps.z.literal("workspace_prompt"),
 			value: deps.z.string().max(MAX_WORKSPACE_PROMPT_LENGTH).nullable(),
 		}),
+		deps.z.object({
+			field: deps.z.literal("personality_preset"),
+			value: deps.z.enum(BRAIN_PERSONALITY_PRESETS),
+		}),
 	])
 
 	const update_configuration = deps.tool({
 		description:
-			"Change one piece of this workspace's Company Brain configuration: company_domain, proactivity_default, channel_proactivity, models and workspace_prompt. All are admin-only, matching the web settings pages. Setting company_domain re-runs company research and updates the saved research findings in place, so it can be changed whenever the company's domain changes. Use it when someone asks to change a setting instead of describing where to click.",
+			"Change one piece of this workspace's Company Brain configuration: company_domain, proactivity_default, channel_proactivity, personality_preset, models and workspace_prompt. All are admin-only, matching the web settings pages. Setting company_domain re-runs company research and updates the saved research findings in place, so it can be changed whenever the company's domain changes. Use it when someone asks to change a setting instead of describing where to click.",
 		inputSchema: deps.z.object({
 			field: deps.z
 				.enum([
 					"company_domain",
 					"proactivity_default",
 					"channel_proactivity",
+					"personality_preset",
 					"models",
 					"workspace_prompt",
 				])
@@ -317,7 +335,7 @@ export function createConfigurationTool(args: {
 				.string()
 				.nullish()
 				.describe(
-					`Required except for models. company_domain: the company's website or domain, like acme.com. proactivity_default: one of ${BRAIN_PROACTIVITY_DEFAULTS.join(", ")} — where the bot may reply unprompted. channel_proactivity: one of ${BRAIN_CHANNEL_PROACTIVITY.join(", ")}, or null to remove this channel's override. workspace_prompt: the standing workspace instructions, or null to clear them.`,
+					`Required except for models. company_domain: the company's website or domain, like acme.com. proactivity_default: one of ${BRAIN_PROACTIVITY_DEFAULTS.join(", ")} — where the bot may reply unprompted. channel_proactivity: one of ${BRAIN_CHANNEL_PROACTIVITY.join(", ")}, or null to remove this channel's override. personality_preset: one of ${BRAIN_PERSONALITY_PRESETS.join(", ")} — playful allows emoji, reactions and GIFs; balanced keeps it composed with an occasional GIF on a win; professional is plain. workspace_prompt: the standing workspace instructions, or null to clear them.`,
 				),
 			channelId: deps.z
 				.string()
@@ -362,6 +380,7 @@ type UpdateConfigurationInput =
 	  }
 	| ({ field: "models" } & BrainModelsPatch)
 	| { field: "workspace_prompt"; value: string | null }
+	| { field: "personality_preset"; value: BrainPersonalityPreset }
 
 type ConfigurationUpdateContext = {
 	env: Env
@@ -449,6 +468,16 @@ async function applyField(
 				updated: true,
 				field: input.field,
 				detail: { prompt, cleared: prompt === null },
+			}
+		}
+		case "personality_preset": {
+			const result = await updateBrainPersonality(ctx.env, ctx.orgId, {
+				preset: input.value,
+			})
+			return {
+				updated: true,
+				field: input.field,
+				detail: { preset: result.merged?.preset ?? input.value },
 			}
 		}
 	}

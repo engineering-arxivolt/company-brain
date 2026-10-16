@@ -70,6 +70,11 @@ interface Env {
 	CONTEXT_DEV_API_KEY?: string
 	/** Optional Firecrawl key. Without one, web tools use its free keyless tier. */
 	FIRECRAWL_API_KEY?: string
+	/** Optional Giphy key for personality GIF search. Without one, a rate-limited
+	 * Giphy public beta key is used (a few searches per hour). */
+	GIPHY_API_KEY?: string
+	/** Optional Tenor (Google) key; adds a second GIF provider when present. */
+	TENOR_API_KEY?: string
 	/** Optional PostHog key; analytics + LLM observability. Unset = silent no-op. */
 	POSTHOG_API_KEY?: string
 	POSTHOG_KEY?: string

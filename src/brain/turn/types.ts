@@ -64,6 +64,12 @@ export type ComputeTurnResult =
 			silentConclusion?: boolean
 			narrated?: boolean
 			nativeCallCount?: number
+			/**
+			 * Personality expression, validated server-side. Dropped silently
+			 * when unset, so callers that only post `reply` keep working.
+			 */
+			reaction?: string
+			extraBlocks?: unknown[]
 	  }
 	| {
 			status: "suspended"

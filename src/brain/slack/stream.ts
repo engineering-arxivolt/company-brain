@@ -26,9 +26,13 @@ type StreamSession = {
 		failed: boolean,
 		paused?: boolean,
 		settled?: boolean,
+		extraBlocks?: unknown[],
 	) => Promise<{ streamed: boolean; messageTs?: string }>
 	discard: (reply?: string) => Promise<void>
-	postFallback: (reply: string) => Promise<string | undefined>
+	postFallback: (
+		reply: string,
+		extraBlocks?: unknown[],
+	) => Promise<string | undefined>
 	rewriteLastNarration: (text: string) => Promise<boolean>
 }
 
@@ -298,6 +302,7 @@ export function createSlackStreamSession(args: {
 		text: string,
 		planBlocks: unknown[],
 		reply?: string,
+		extraBlocks?: unknown[],
 	): Promise<ReplyDelivery> => {
 		if (!reply?.trim()) {
 			const ok = await updateSlackMessage(botToken, channel, ts, text, [
@@ -320,7 +325,7 @@ export function createSlackStreamSession(args: {
 				channel,
 				reply,
 				threadTs,
-				footerBlocks(),
+				[...footerBlocks(), ...(extraBlocks ?? [])],
 			)
 			return {
 				ok: Boolean(messageTs),
@@ -331,6 +336,7 @@ export function createSlackStreamSession(args: {
 			...planBlocks,
 			...markdownReplyBlocks(replyChunks[0] ?? reply),
 			...footerBlocks(),
+			...(extraBlocks ?? []),
 		])
 		if (markdownOk) return { ok: true, messageTs: ts }
 
@@ -338,6 +344,7 @@ export function createSlackStreamSession(args: {
 			...planBlocks,
 			...mrkdwnReplyBlocks(reply),
 			...footerBlocks(),
+			...(extraBlocks ?? []),
 		])
 		if (mrkdwnOk) return { ok: true, messageTs: ts }
 
@@ -352,6 +359,7 @@ export function createSlackStreamSession(args: {
 		terminalStatus: TaskStatus,
 		reply?: string,
 		renameInProgress?: string,
+		extraBlocks?: unknown[],
 	): Promise<ReplyDelivery> => {
 		for (const slot of slots) {
 			if (slot.status === "in_progress") {
@@ -362,7 +370,13 @@ export function createSlackStreamSession(args: {
 		const blocks = publicProgressBlocks(slots, title, planBlockId, {
 			final: true,
 		})
-		return updatePublicCardWithReply(ts, reply?.trim() || title, blocks, reply)
+		return updatePublicCardWithReply(
+			ts,
+			reply?.trim() || title,
+			blocks,
+			reply,
+			extraBlocks,
+		)
 	}
 
 	let narrationCount = 0
@@ -473,7 +487,7 @@ export function createSlackStreamSession(args: {
 				() => false,
 			)
 		},
-		finalize: async (reply, failed, paused, settled) => {
+		finalize: async (reply, failed, paused, settled, extraBlocks) => {
 			if (closed) return { streamed: false }
 			closed = true
 			const outgoingReply = await prepareOutgoingReply(reply)
@@ -517,7 +531,7 @@ export function createSlackStreamSession(args: {
 							channel,
 							outgoingReply,
 							threadTs,
-							footerBlocks(),
+							[...footerBlocks(), ...(extraBlocks ?? [])],
 						)
 						if (freshAnswerTs) {
 							streamedReply = true
@@ -557,6 +571,7 @@ export function createSlackStreamSession(args: {
 								terminalStatus,
 								outgoingReply,
 								renameInProgress,
+								extraBlocks,
 							)
 							streamedReply = delivery.ok
 							if (delivery.ok) {
@@ -609,7 +624,14 @@ export function createSlackStreamSession(args: {
 						checkpointDelivery({ replyMessageTs: streamTs })
 					}
 					resetTasks()
-					await stopSlackStream(botToken, channel, streamTs)
+					await stopSlackStream(
+						botToken,
+						channel,
+						streamTs,
+						extraBlocks?.length
+							? { blocks: extraBlocks }
+							: undefined,
+					)
 				}
 			} catch (err) {
 				console.warn("[company-brain] stream finalize failed:", err)
@@ -678,7 +700,7 @@ export function createSlackStreamSession(args: {
 				await postSlackReply(botToken, channel, outgoingReply, threadTs)
 			}
 		},
-		postFallback: async (reply) => {
+		postFallback: async (reply, extraBlocks) => {
 			await narrationPosting
 			const outgoingReply = await prepareOutgoingReply(reply)
 			const ts = await postSlackReply(
@@ -686,6 +708,7 @@ export function createSlackStreamSession(args: {
 				channel,
 				outgoingReply,
 				threadTs,
+				extraBlocks?.length ? extraBlocks : undefined,
 			)
 			if (ts) checkpointDelivery({ replyMessageTs: ts })
 			if (!ts) {

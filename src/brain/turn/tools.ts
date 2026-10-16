@@ -42,6 +42,8 @@ import { createSandboxTools } from "../tools/sandbox/tools"
 import { createSchedulerTools } from "../tools/scheduler"
 import { createSendToTools } from "../tools/send-to"
 import { createBrainWebMonitorTool } from "../tools/web/monitor"
+import type { GifCandidateRegistry } from "../tools/web/gifs"
+import { parseBrainPersonality } from "../slack/personality"
 import type { TurnActor } from "./actor"
 import type { CompanyBrainAgent } from "./agent"
 import { createCaptureTools, type TurnCapture } from "./capture-tools"
@@ -159,6 +161,9 @@ export function snapshotTurnToolAssembly(
 					userNames: slackLookup.userNames
 						? [...slackLookup.userNames.entries()]
 						: undefined,
+					brainPersonality: slackLookup.brainPersonality
+						? { ...slackLookup.brainPersonality }
+						: slackLookup.brainPersonality,
 				}
 			: undefined,
 		askerSlackUserId: args.askerSlackUserId,
@@ -226,6 +231,8 @@ export type AssembleTurnToolsResult =
 			connectedAppRouting: "code" | "direct" | "none"
 			toolDiscovery: LazyToolState
 			connectedApps: RuntimeConnectedApp[]
+			/** This turn's GIF candidates: finish_turn.gif_id resolves here. */
+			gifCandidates: GifCandidateRegistry
 			mcpClose?: () => Promise<void>
 			connectedAppRuntime?: ConnectedAppRuntimeController
 	  }
@@ -360,6 +367,9 @@ export async function assembleTurnTools(
 		args.costLedger,
 	)
 	const browseWebsiteTool = deps.createBrainBrowserAgentTool(env, traceId)
+	// Per-turn GIF candidate registry: search_gifs writes, finish_turn.gif_id
+	// resolves here, and delivery only ever references entries from this map.
+	const gifCandidates: GifCandidateRegistry = new Map()
 	const tools: ToolSet = {
 		search_company_brain: brainTool,
 		resolve_entity: resolveEntityTool,
@@ -452,6 +462,20 @@ export async function assembleTurnTools(
 			traceId,
 		})
 	if (webMonitorTool) tools.create_web_monitor = webMonitorTool
+	// Live GIF search for personality expression. Interactive Slack turns on
+	// playful/balanced presets only; the query is free-form, so any channel
+	// topic works, and results stay server-side behind candidate ids.
+	const personalityPreset = parseBrainPersonality(
+		slackLookup?.brainPersonality?.preset,
+	)
+	const gifSearchTool =
+		!passiveInvestigation &&
+		!scheduledRun &&
+		slackLookup?.teamId &&
+		personalityPreset !== "professional"
+			? deps.createBrainGifSearchTool(env, traceId, gifCandidates)
+			: undefined
+	if (gifSearchTool) tools.search_gifs = gifSearchTool
 	const sandboxTools = sandboxToolsConfigured(env)
 		? createSandboxTools({
 				env,
@@ -957,6 +981,7 @@ export async function assembleTurnTools(
 		connectedAppRouting,
 		toolDiscovery,
 		connectedApps,
+		gifCandidates,
 		mcpClose,
 		connectedAppRuntime,
 	}

@@ -1,0 +1,1 @@
+ALTER TABLE `organization_settings` ADD `brain_personality` text;

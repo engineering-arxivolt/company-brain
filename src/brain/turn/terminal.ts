@@ -13,6 +13,13 @@ export type TurnTerminalOutcome = (typeof TURN_TERMINAL_OUTCOMES)[number]
 export type TurnTerminalProposal = {
 	outcome: TurnTerminalOutcome
 	reply: string
+	/**
+	 * Personality expression, validated at delivery (allowlist + outcome gate)
+	 * and dropped silently when unset or invalid.
+	 */
+	reaction?: string
+	/** Candidate id from this turn's search_gifs results; resolved server-side. */
+	gifId?: string
 }
 
 type TerminalToolCall = {
@@ -32,7 +39,12 @@ function parseTerminalProposal(
 	input: unknown,
 ): TurnTerminalProposal | undefined {
 	if (!input || typeof input !== "object") return undefined
-	const value = input as { outcome?: unknown; reply?: unknown }
+	const value = input as {
+		outcome?: unknown
+		reply?: unknown
+		reaction?: unknown
+		gif_id?: unknown
+	}
 	if (
 		typeof value.outcome !== "string" ||
 		!TURN_TERMINAL_OUTCOMES.includes(value.outcome as TurnTerminalOutcome) ||
@@ -41,10 +53,19 @@ function parseTerminalProposal(
 	) {
 		return undefined
 	}
-	return {
+	const proposal: TurnTerminalProposal = {
 		outcome: value.outcome as TurnTerminalOutcome,
 		reply: value.reply.trim(),
 	}
+	// Kept permissive here so a bad flourish never fails the answer; delivery
+	// re-validates and drops unknown values.
+	if (typeof value.reaction === "string" && value.reaction.trim()) {
+		proposal.reaction = value.reaction.trim().toLowerCase().replace(/:/g, "")
+	}
+	if (typeof value.gif_id === "string" && value.gif_id.trim()) {
+		proposal.gifId = value.gif_id.trim().slice(0, 64)
+	}
+	return proposal
 }
 
 /**
@@ -87,6 +108,18 @@ export function createFinishTurnTool(deps: TurnDeps) {
 				.min(1)
 				.describe(
 					"The complete user-facing final reply in normal Slack Markdown.",
+				),
+			reaction: deps.z
+				.string()
+				.optional()
+				.describe(
+					"Optional celebratory reaction on a genuine win (answered only): one of tada, fire, clap, raised_hands, rocket, heart, white_check_mark. It lands on the message you are responding to. Omit on blocked, nothing_found, errors, incidents, or formal topics.",
+				),
+			gif_id: deps.z
+				.string()
+				.optional()
+				.describe(
+					"Optional id of one GIF candidate returned by search_gifs this turn, attached to your final message. Only on a genuine win (answered only), at most one per turn; omit if nothing fits or the moment is not a real celebration.",
 				),
 		}),
 		execute: async ({ outcome }) => ({ accepted: true, outcome }),

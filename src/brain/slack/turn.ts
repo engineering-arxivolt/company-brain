@@ -1,3 +1,4 @@
+import type { BrainPersonalitySettings } from "@repo/db/schema/common"
 import { generateId } from "@repo/lib/generate-id"
 import { decryptToken } from "@/lib/crypto"
 import {
@@ -589,9 +590,23 @@ async function runSlackContinueTurnInner(
 			return
 		}
 		const reply = out.reply
-		const finalizeResult = await stream.finalize(reply, false)
+		const finalizeResult = await stream.finalize(
+			reply,
+			false,
+			false,
+			false,
+			out.extraBlocks,
+		)
 		if (reply.trim() && !finalizeResult.streamed) {
-			await stream.postFallback(reply)
+			await stream.postFallback(reply, out.extraBlocks)
+		}
+		if (out.reaction && reply.trim() && finalizeResult.messageTs) {
+			await addSlackReaction(
+				botToken,
+				paused.channel,
+				finalizeResult.messageTs,
+				out.reaction,
+			)
 		}
 	} catch (err) {
 		retainAbandoned(resume, (promise) => brainAgent(agent).waitUntil(promise))
@@ -1314,9 +1329,35 @@ async function runSlackApprovalDecisionInner(
 	}
 
 	if (turnStillCurrent(agent, turnControl)) {
-		const finalizeResult = await stream.finalize(reply, failed)
+		// Personality expression only rides a real answer, same gates as a
+		// fresh turn; resume.ts already dropped both on denied approvals.
+		const expressive =
+			!failed && reply.trim() && turnResult?.status === "completed"
+				? {
+						reaction: turnResult.reaction,
+						extraBlocks: turnResult.extraBlocks,
+					}
+				: { reaction: undefined, extraBlocks: undefined }
+		const finalizeResult = await stream.finalize(
+			reply,
+			failed,
+			undefined,
+			undefined,
+			expressive.extraBlocks,
+		)
+		let replyMessageTs = finalizeResult.messageTs
 		if (reply.trim() && !finalizeResult.streamed) {
-			await stream.postFallback(reply)
+			replyMessageTs =
+				(await stream.postFallback(reply, expressive.extraBlocks)) ??
+				replyMessageTs
+		}
+		if (expressive.reaction && reply.trim() && replyMessageTs) {
+			await addSlackReaction(
+				botToken,
+				approval.channel,
+				replyMessageTs,
+				expressive.reaction,
+			)
 		}
 	}
 	try {
@@ -3014,6 +3055,7 @@ async function runSlackTurnInner(
 	let failed = false
 	let paused = false
 	let connectOnlySilence = false
+	let turnResult: ComputeTurnResult | undefined
 	let passiveTerminalReason: string | undefined
 	const userNames = new Map<string, string>()
 	const botUserIds = new Set<string>()
@@ -3117,6 +3159,10 @@ async function runSlackTurnInner(
 		tzOffsetSeconds: asker?.tzOffset,
 		userNames,
 		memoryScope,
+		brainPersonality: ws.brainPersonality as
+			| BrainPersonalitySettings
+			| null
+			| undefined,
 	}
 	// Keep this org's brain-tag config current (throttled). Tagged memories are
 	// discovered lazily by the main agent instead of being preloaded by heuristics.
@@ -3361,6 +3407,7 @@ async function runSlackTurnInner(
 			)
 			return
 		}
+		turnResult = out
 		reply = out.reply
 		memory = passiveInvestigation ? null : out.memory
 		if (passiveInvestigation && out.silentConclusion) {
@@ -3608,8 +3655,31 @@ async function runSlackTurnInner(
 			if (passiveInvestigation) passiveTerminalReason = "thread_muted"
 			reply = ""
 		}
+		// Personality expression only rides a real answer: never a canned
+		// timeout/error message, never a passive chime-in.
+		const expressive =
+			turnResult?.status === "completed"
+				? {
+						reaction: turnResult.reaction,
+						extraBlocks: turnResult.extraBlocks,
+					}
+				: { reaction: undefined, extraBlocks: undefined }
+		const reaction =
+			!passiveInvestigation && !failed && !paused && reply.trim()
+				? expressive.reaction
+				: undefined
+		const extraBlocks =
+			!passiveInvestigation && !failed && !paused
+				? expressive.extraBlocks
+				: undefined
 		const finalizeResult = current
-			? await stream.finalize(reply, failed, paused, connectOnlySilence)
+			? await stream.finalize(
+					reply,
+					failed,
+					paused,
+					connectOnlySilence,
+					extraBlocks,
+				)
 			: { streamed: false as const }
 		const memoryDocs = memoryDocsFromWriteback(memory)
 		console.log(
@@ -3618,12 +3688,20 @@ async function runSlackTurnInner(
 
 		let replyMessageTs = finalizeResult.messageTs
 		if (current && reply.trim() && !finalizeResult.streamed) {
-			replyMessageTs = (await stream.postFallback(reply)) ?? replyMessageTs
+			replyMessageTs = (await stream.postFallback(reply, extraBlocks)) ?? replyMessageTs
 		}
 		if (traceId && replyMessageTs) {
 			recordMessageTrace(agent, channel, replyMessageTs, traceId, threadTs)
 		}
 		offerMuteOnMessage(replyMessageTs)
+		if (current && reaction) {
+			// Native pattern: the reaction lands on the message being
+			// celebrated, falling back to the reply when the trigger is gone.
+			const reactionTarget = ev.ts ?? replyMessageTs
+			if (reactionTarget) {
+				await addSlackReaction(botToken, channel, reactionTarget, reaction)
+			}
+		}
 		if (current && (replyMessageTs || reply.trim())) {
 			markBotThread(agent, msg.teamId, channel, threadTs)
 		}

@@ -8,6 +8,13 @@
       "when": 1789952687691,
       "tag": "0000_fluffy_sabretooth",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792143001662,
+      "tag": "0001_giant_microchip",
+      "breakpoints": true
     }
   ]
 }

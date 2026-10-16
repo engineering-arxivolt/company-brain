@@ -7,7 +7,10 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core"
-import type { BrainProactivitySettings } from "./common"
+import type {
+	BrainPersonalitySettings,
+	BrainProactivitySettings,
+} from "./common"
 
 /**
  * Single-tenant identity. A deployment serves one organization; people arrive
@@ -70,6 +73,9 @@ export const organizationSettings = sqliteTable("organization_settings", {
 	brainProactivity: text("brain_proactivity", {
 		mode: "json",
 	}).$type<BrainProactivitySettings>(),
+	brainPersonality: text("brain_personality", {
+		mode: "json",
+	}).$type<BrainPersonalitySettings>(),
 	createdAt: integer("created_at", { mode: "timestamp" })
 		.notNull()
 		.$defaultFn(() => new Date()),

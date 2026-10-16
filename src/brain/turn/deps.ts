@@ -47,6 +47,7 @@ export async function loadTurnDeps() {
 		createBrainWebSearchTool: webTools.createBrainWebSearchTool,
 		createBrainWebExtractTool: webTools.createBrainWebExtractTool,
 		createBrainBrowserAgentTool: webTools.createBrainBrowserAgentTool,
+		createBrainGifSearchTool: webTools.createBrainGifSearchTool,
 		SHARED_TEAM_BRAIN_CONTAINER_TAG,
 		makeSlackSearchContext,
 	}

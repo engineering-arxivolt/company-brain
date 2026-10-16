@@ -1,4 +1,5 @@
 import type { SlackMemoryScope } from "../memory"
+import type { BrainPersonalitySettings } from "@repo/db/schema/common"
 import { normalizeSlackMessageContent } from "./attachments"
 import {
 	checkAskerCanSearchChannel,
@@ -54,6 +55,8 @@ export type SlackLookupContext = {
 	memoryContainerTags?: string[]
 	tzOffsetSeconds?: number
 	userNames?: Map<string, string>
+	/** Org personality preset, carried so turn assembly can gate expression. */
+	brainPersonality?: BrainPersonalitySettings | null
 }
 
 export type ChannelLookupIntent =
