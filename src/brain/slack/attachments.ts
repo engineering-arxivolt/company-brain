@@ -20,6 +20,31 @@ const IMAGE_MEDIA_TYPES = new Set([
 	"image/webp",
 ])
 
+/** Plain-text formats decoded straight into the prompt, no conversion service. */
+const TEXT_MEDIA_TYPES = new Set([
+	"text/plain",
+	"text/markdown",
+	"text/x-markdown",
+	"text/csv",
+	"text/tab-separated-values",
+	"text/xml",
+	"application/xml",
+	"application/json",
+	"application/ld+json",
+	"text/yaml",
+	"text/x-yaml",
+	"application/yaml",
+	"application/x-yaml",
+])
+
+export const DOCX_MEDIA_TYPE =
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+/** Per-file cap for text extracted from one attachment. */
+export const MAX_TEXT_ATTACHMENT_CHARS = 60_000
+/** Total extracted-text budget across one turn's attachments. */
+export const MAX_TOTAL_TEXT_ATTACHMENT_CHARS = 120_000
+
 function trimmedString(value: unknown): string {
 	return typeof value === "string" ? value.trim() : ""
 }
@@ -128,10 +153,28 @@ export function collectTurnFiles(
 	return collectThreadFiles([...messages, trigger])
 }
 
+/** Slack reports bare media types, but tolerate parameters like `; charset=`. */
+function slackFileMediaType(file: SlackFileRef): string {
+	return (file.mimetype ?? "").split(";")[0]?.trim().toLowerCase() ?? ""
+}
+
+export function isTextLikeSlackFile(file: SlackFileRef): boolean {
+	return TEXT_MEDIA_TYPES.has(slackFileMediaType(file))
+}
+
+export function isDocxSlackFile(file: SlackFileRef): boolean {
+	return slackFileMediaType(file) === DOCX_MEDIA_TYPE
+}
+
 export function isModelReadableSlackFile(file: SlackFileRef): boolean {
-	const mediaType = (file.mimetype ?? "").toLowerCase()
+	const mediaType = slackFileMediaType(file)
 	if (!mediaType) return false
-	return IMAGE_MEDIA_TYPES.has(mediaType) || mediaType === "application/pdf"
+	return (
+		IMAGE_MEDIA_TYPES.has(mediaType) ||
+		mediaType === "application/pdf" ||
+		TEXT_MEDIA_TYPES.has(mediaType) ||
+		mediaType === DOCX_MEDIA_TYPE
+	)
 }
 
 export function formatMessageAttachmentHint(
@@ -217,18 +260,88 @@ export async function downloadSlackFile(
 	}
 }
 
-export type ThreadAttachmentPart = ImagePart | FilePart
+export type ThreadAttachmentPart = ImagePart | FilePart | TextPart
+
+/** Escape a value for a `<slack_attachment>` attribute. */
+function escapeAttachmentAttribute(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+}
+
+function truncateAttachmentText(
+	text: string,
+	maxChars: number,
+): { text: string; truncated: boolean } {
+	if (text.length <= maxChars) return { text, truncated: false }
+	return { text: `${text.slice(0, maxChars)}\n...[truncated]`, truncated: true }
+}
+
+function slackAttachmentTextPart(
+	file: SlackFileRef,
+	text: string,
+	opts: { truncated: boolean; convertedFromDocx: boolean },
+): TextPart {
+	const attrs = [
+		`name="${escapeAttachmentAttribute(file.name)}"`,
+		`media_type="${escapeAttachmentAttribute(slackFileMediaType(file) || "unknown")}"`,
+	]
+	if (opts.convertedFromDocx) attrs.push('converted="docx-to-markdown"')
+	if (opts.truncated) attrs.push('truncated="true"')
+	return {
+		type: "text",
+		text: `<slack_attachment ${attrs.join(" ")}>\n${text}\n</slack_attachment>`,
+	}
+}
+
+async function convertSlackDocxToMarkdown(
+	env: Env | undefined,
+	file: SlackFileRef,
+	data: Uint8Array,
+): Promise<string | null> {
+	if (!env?.AI) {
+		console.warn(
+			`[slack] docx attachment ${file.name} needs the AI binding (toMarkdown); skipping`,
+		)
+		return null
+	}
+	try {
+		const result = await env.AI.toMarkdown(
+			{
+				name: file.name,
+				blob: new Blob([data], { type: DOCX_MEDIA_TYPE }),
+			},
+			// Embedded images would be summarized by Workers AI models (extra
+			// cost/latency); the document text is what the turn needs.
+			{ conversionOptions: { docx: { images: { convert: false } } } },
+		)
+		if (result.format === "error") {
+			console.warn(
+				`[slack] docx conversion failed ${file.name}: ${result.error}`,
+			)
+			return null
+		}
+		return result.data
+	} catch (err) {
+		console.warn(`[slack] docx conversion error ${file.name}:`, err)
+		return null
+	}
+}
 
 export async function loadThreadAttachmentParts(
 	botToken: string,
 	files: ReadonlyArray<SlackFileRef>,
+	env?: Env,
 ): Promise<ThreadAttachmentPart[]> {
 	const parts: ThreadAttachmentPart[] = []
+	let textBudget = MAX_TOTAL_TEXT_ATTACHMENT_CHARS
 	for (const file of files) {
 		if (!isModelReadableSlackFile(file)) continue
+		const mediaType = slackFileMediaType(file)
 		const data = await downloadSlackFile(botToken, file)
 		if (!data) continue
-		const mediaType = (file.mimetype ?? "").toLowerCase()
 		if (IMAGE_MEDIA_TYPES.has(mediaType)) {
 			parts.push({
 				type: "image",
@@ -244,7 +357,38 @@ export async function loadThreadAttachmentParts(
 				mediaType: "application/pdf",
 				filename: file.name,
 			})
+			continue
 		}
+
+		// Text-like files decode directly; docx goes through Workers AI.
+		const convertedFromDocx = isDocxSlackFile(file)
+		let extracted: string | null = null
+		if (convertedFromDocx) {
+			extracted = await convertSlackDocxToMarkdown(env, file, data)
+		} else if (isTextLikeSlackFile(file)) {
+			extracted = new TextDecoder().decode(data)
+		} else {
+			continue
+		}
+		const trimmed = extracted?.trim()
+		if (!trimmed) continue
+		if (textBudget <= 0) {
+			console.warn(
+				`[slack] skip text attachment ${file.name}: per-turn text budget exhausted`,
+			)
+			continue
+		}
+		const truncated = truncateAttachmentText(
+			trimmed,
+			Math.min(MAX_TEXT_ATTACHMENT_CHARS, textBudget),
+		)
+		textBudget -= truncated.text.length
+		parts.push(
+			slackAttachmentTextPart(file, truncated.text, {
+				truncated: truncated.truncated,
+				convertedFromDocx,
+			}),
+		)
 	}
 	return parts
 }
@@ -254,10 +398,19 @@ export function buildTurnUserContent(
 	attachmentParts: ReadonlyArray<ThreadAttachmentPart>,
 ): UserContent {
 	if (!attachmentParts.length) return textPrompt
+	let textFiles = 0
+	let mediaFiles = 0
+	for (const part of attachmentParts) {
+		if (part.type === "text") textFiles += 1
+		else mediaFiles += 1
+	}
+	const kinds: string[] = []
+	if (textFiles > 0) kinds.push(`${textFiles} text file(s)`)
+	if (mediaFiles > 0) kinds.push(`${mediaFiles} image/PDF file(s)`)
 	const textParts: TextPart[] = [
 		{
 			type: "text",
-			text: `${textPrompt}\n\n<slack_attachments>\n${attachmentParts.length} image/PDF file(s) from this Slack thread are attached below for direct inspection. Use their content when answering — especially screenshots shared earlier in the thread.\n</slack_attachments>`,
+			text: `${textPrompt}\n\n<slack_attachments>\n${kinds.join(" and ")} from this Slack thread are attached below for direct inspection. Extracted file text appears in <slack_attachment> blocks. Use their content when answering — especially screenshots and documents shared earlier in the thread.\n</slack_attachments>`,
 		},
 	]
 	return [...textParts, ...attachmentParts]

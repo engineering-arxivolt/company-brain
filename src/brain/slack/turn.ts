@@ -3155,6 +3155,7 @@ async function runSlackTurnInner(
 				text: ev.text,
 				files: ev.files,
 			}),
+			brainAgent(agent).env,
 		),
 	])
 	const turnControl = beginThreadTurn(agent, {

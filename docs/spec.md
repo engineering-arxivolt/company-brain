@@ -724,7 +724,7 @@ Observability `source`: `slack_chime_thread` | `slack_chime_channel`. Triage eve
 - stop condition: max 24 steps,
 - output: plain Slack Markdown text; side effects are captured through tools.
 
-Current-thread prompt construction and lazy `read_current_thread` formatting use the shared `SlackThreadMessage` transport type at every boundary. Message content combines top-level text with supported legacy attachment `pretext`, title/link, body text, and footer fields before the existing Slack mention and debug-id normalization runs; uploaded Slack file hints remain additive.
+Current-thread prompt construction and lazy `read_current_thread` formatting use the shared `SlackThreadMessage` transport type at every boundary. Message content combines top-level text with supported legacy attachment `pretext`, title/link, body text, and footer fields before the existing Slack mention and debug-id normalization runs; uploaded Slack file hints remain additive. The newest five thread files also feed the turn as model content: images and PDFs attach natively, text-like files (`text/*`, JSON, XML, YAML) decode inline, and docx converts to Markdown via the Workers AI `toMarkdown` binding, capped per file and per turn. Files of other types are hinted by name only.
 
 Company Brain search is model-driven during the main tool loop. The backend does not prefetch memories or run a separate usefulness judge before answer generation; instead, the prompt and `search_company_brain` tool description tell the model when to search the brain, when to resolve vague Slack references first, and when to go directly to a live app tool.
 
