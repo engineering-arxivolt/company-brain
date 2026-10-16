@@ -92,6 +92,7 @@ export function ensureAutomationTable(agent: CompanyBrainAgent): void {
 			title TEXT NOT NULL,
 			channel_id TEXT NOT NULL,
 			deliver_to TEXT NOT NULL DEFAULT 'channel',
+			mode TEXT NOT NULL DEFAULT 'digest',
 			creator_slack_user_id TEXT,
 			prompt TEXT NOT NULL,
 			cron TEXT NOT NULL,
