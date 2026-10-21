@@ -82,7 +82,7 @@ export function createContentStudioTool(args: ContentStudioToolArgs) {
 	const { deps } = args
 	return deps.tool({
 		description:
-			"Run a Content Studio round now: collect what actually happened, draft social posts from it, and DM the drafts to the asker for review (Push / Remix / Dismiss). Nothing is published without the Push button. Use it when someone asks for posts now, for a specific topic, or for today's drafts. The request text is the brief and is passed to the data sources verbatim, so pass the asker's own words.",
+			"Draft social posts for review, through the Content Studio. Use this for ANY request to write, draft, generate or plan a social post — a launch post, today's posts, posts for a topic, a thread, a LinkedIn post. Do not write the posts yourself in your reply: this tool collects the evidence once, writes each draft from it, and DMs a review card with Push / Remix / Dismiss buttons, and only a draft the person pushes can reach Buffer. A post written straight into your reply is unreviewable and can never be scheduled. The request text is the brief and is passed to the data sources verbatim, so pass the asker's own words.",
 		inputSchema: deps.z.object({
 			instruction: deps.z
 				.string()
