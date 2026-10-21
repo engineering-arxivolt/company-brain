@@ -10,6 +10,7 @@
  * the normal skills index and override tone, never facts.
  */
 import { normalizeTextPreservingCodeFences } from "../slack/format"
+import type { ContentAngle } from "./evidence"
 import type { ContentDraftKind } from "./store"
 
 export const CONTENT_KIND_RECIPES: Record<
@@ -190,6 +191,12 @@ export type ContentFrameArgs = {
 	recentBodies?: string[]
 	/** A previous version of this same draft being replaced by a remix. */
 	previousAttempt?: string | null
+	/**
+	 * The round's evidence packet, when the evidence stage ran. The draft is
+	 * written from these facts rather than from its own research, so every
+	 * claim in it can be checked by a human against the source.
+	 */
+	evidence?: ContentAngle | null
 }
 
 /**
@@ -225,10 +232,24 @@ export function buildContentFrame(args: ContentFrameArgs): string {
 		)
 	}
 
-	sections.push(`Ground it in reality. First investigate with your tools, then write:
+	if (args.evidence?.facts.length) {
+		sections.push(
+			`Ground it in these facts. They were collected for this round and each one names where it came from. Use only these facts, and use nothing that is not in them:
+${args.evidence.facts
+	.map(
+		(fact) =>
+			`- ${fact.id}: ${fact.claim} (source: ${fact.source})${fact.quote ? `\n  exact words: "${fact.quote}"` : ""}`,
+	)
+	.join("\n")}
+Why this one is worth posting now: ${args.evidence.why}
+If these facts do not support a post worth publishing, reply exactly NOTHING_NEW. Do not fill the gap with something you remember or something that sounds right.`,
+		)
+	} else {
+		sections.push(`Ground it in reality. First investigate with your tools, then write:
 - Recent brain memories and recent Slack activity: what actually happened in the last 24 hours (stretch to the last week if the last day is quiet).
 - Connected apps: commits and PRs merged, issues closed, anything that shows real progress.
 Prefer one specific, verifiable thing over a summary of everything. The facts you cite must be real; do not dress up routine maintenance as a milestone.`)
+	}
 
 	if (args.recentBodies?.length) {
 		const list = args.recentBodies
@@ -252,7 +273,11 @@ Prefer one specific, verifiable thing over a summary of everything. The facts yo
 		`If a workspace skill for copywriting, brand voice, or social media is available in your skills index, load it and follow it. Its tone and formatting guidance overrides the default voice rules above; the confidentiality rules and the no-invention rule cannot be overridden.`,
 	)
 	sections.push(
-		`Output format: reply with the post text and nothing else. No preamble, no labels, no quotes around it, no commentary. Keep it within ${profile.limit} characters for this platform. After the post text, on its own line, write "SOURCES:" and then up to five short lines naming what the post is grounded in (which tool and what you looked at). Nothing after the sources.`,
+		`Output format: reply with the post text and nothing else. No preamble, no labels, no quotes around it, no commentary. Keep it within ${profile.limit} characters for this platform. After the post text, on its own line, write "SOURCES:" and then up to five short lines naming what the post is grounded in (which tool and what you looked at). Nothing after the sources.${
+			args.evidence?.facts.length
+				? ` After the sources, on its own line, write "FACTS:" and then the ids of the facts you actually used, comma separated (for example F1,F3). Nothing after that.`
+				: ""
+		}`,
 	)
 
 	return sections.join("\n\n")

@@ -4,6 +4,12 @@
  * Deterministic by design — rotation is a function of the weekday and what the
  * last few days already covered, so the same inputs always produce the same
  * plan and the mix across a week stays varied without the model deciding.
+ *
+ * The rotation is the floor, not the driver: when the evidence stage found
+ * something worth posting, its angles lead and the rotation only fills the
+ * gaps. A plan that ignores what actually happened produces posts about the
+ * kind of thing that happens on that weekday, which is the failure this
+ * replaces.
  */
 import { CONTENT_DRAFT_KINDS, type ContentDraftKind } from "./store"
 
@@ -11,6 +17,12 @@ export type ContentChannel = {
 	id: string
 	service: string
 	name: string
+	/**
+	 * Buffer's channel type: page, profile, group. It decides how a post can
+	 * be published — Buffer cannot auto-publish to a Facebook group or an
+	 * Instagram personal profile, so those channels need a reminder instead.
+	 */
+	type?: string | null
 }
 
 export type PlannedDraft = {
@@ -69,18 +81,35 @@ export function planDailyKinds(
  * Build the day's drafts. Channels rotate round-robin from a day-dependent
  * offset so different platforms lead across the week; with no connected
  * channels the drafts are still written (they just aren't channel-targeted).
+ *
+ * When the evidence stage ran, its angles decide what gets written: a post
+ * about something that actually happened beats a post about the kind that
+ * happens to be scheduled for today. The weekday plan is still the floor —
+ * an angle whose kind was covered recently is dropped, and if nothing
+ * survives, the plan falls back to the rotation so a quiet day is still a
+ * rotation day.
  */
 export function planDailyDrafts(args: {
 	dayOfWeek: number
 	recentKinds?: readonly string[]
 	channels?: readonly ContentChannel[]
 	count?: number
+	/** Angles from the evidence packet, in packet order. */
+	angles?: readonly { kind: ContentDraftKind }[]
 }): PlannedDraft[] {
-	const kinds = planDailyKinds(
-		args.dayOfWeek,
-		args.recentKinds ?? [],
-		args.count ?? CONTENT_DRAFTS_PER_DAY,
-	)
+	const count = args.count ?? CONTENT_DRAFTS_PER_DAY
+	const recent = new Set((args.recentKinds ?? []).slice(0, 6))
+	const evidenceKinds: ContentDraftKind[] = []
+	for (const angle of args.angles ?? []) {
+		if (evidenceKinds.length >= count) break
+		if (evidenceKinds.includes(angle.kind)) continue
+		// A kind covered in the last few days is skipped: the audience saw it.
+		if (recent.has(angle.kind)) continue
+		evidenceKinds.push(angle.kind)
+	}
+	const kinds = evidenceKinds.length
+		? evidenceKinds
+		: planDailyKinds(args.dayOfWeek, args.recentKinds ?? [], count)
 	const channels = args.channels ?? []
 	const day = ((args.dayOfWeek % 7) + 7) % 7
 	const offset = channels.length ? day % channels.length : 0

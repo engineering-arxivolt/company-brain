@@ -11,6 +11,13 @@ import {
 } from "./buffer"
 import { planDailyDrafts, planDailyKinds } from "./plan"
 import {
+	angleForKind,
+	buildEvidenceFrame,
+	normaliseEvidence,
+	parseEvidenceJson,
+	parseUsedFactIds,
+} from "./evidence"
+import {
 	claimContentDraft,
 	CONTENT_DRAFT_STALE_CLAIM_MS,
 	dismissContentDraft,
@@ -109,6 +116,33 @@ describe("planDailyDrafts", () => {
 		const plan = planDailyDrafts({ dayOfWeek: 3, channels: [] })
 		expect(plan.every((p) => p.channel === null)).toBe(true)
 	})
+
+	it("leads with the kinds the evidence found, not the weekday rotation", () => {
+		// The rotation is the floor: what actually happened decides the topic,
+		// so a post is not about the kind of thing that happens on that weekday.
+		const plan = planDailyDrafts({
+			dayOfWeek: 1,
+			channels,
+			angles: [{ kind: "hot_take" }, { kind: "lesson" }],
+		})
+		expect(plan.map((p) => p.kind)).toEqual(["hot_take", "lesson"])
+	})
+
+	it("skips an angle whose kind was covered recently", () => {
+		const plan = planDailyDrafts({
+			dayOfWeek: 1,
+			channels,
+			recentKinds: ["hot_take"],
+			angles: [{ kind: "hot_take" }, { kind: "build_log" }],
+		})
+		expect(plan.map((p) => p.kind)).toEqual(["build_log"])
+	})
+
+	it("falls back to the rotation when the evidence found nothing", () => {
+		const plan = planDailyDrafts({ dayOfWeek: 1, channels, angles: [] })
+		expect(plan.length).toBe(3)
+		expect(plan.map((p) => p.kind)).toEqual(planDailyKinds(1, [], 3))
+	})
 })
 
 describe("buildCreatePostArgs", () => {
@@ -185,6 +219,156 @@ describe("buildCreatePostArgs", () => {
 		const plan = buildCreatePostArgs(undefined, { text, channelId: "c" })
 		expect(plan.mode).toBe("standard")
 		expect(plan.args).toEqual({ text, channelId: "c" })
+	})
+
+	it("always sends the scheduling type Buffer requires", () => {
+		// Buffer's create-post lists schedulingType as required, so a request
+		// without it is rejected for a missing field — which reads as Buffer
+		// being broken rather than the request being incomplete.
+		const plan = buildCreatePostArgs(
+			{
+				type: "object",
+				properties: {
+					channelId: { type: "string" },
+					text: { type: "string" },
+					schedulingType: { enum: ["notification", "automatic"] },
+					saveToDraft: { type: "boolean" },
+				},
+			},
+			{ text, channelId: "chan_1", channelService: "linkedin", channelType: "page" },
+		)
+		expect(plan.args.schedulingType).toBe("automatic")
+		expect(plan.args.saveToDraft).toBe(true)
+	})
+
+	it("asks for a notification where Buffer cannot publish by itself", () => {
+		// Facebook groups and Instagram personal profiles only accept a
+		// reminder that a human publishes by hand.
+		for (const channel of [
+			{ service: "facebook", type: "group" },
+			{ service: "instagram", type: "profile" },
+		]) {
+			const plan = buildCreatePostArgs(
+				{
+					type: "object",
+					properties: {
+						channelId: { type: "string" },
+						text: { type: "string" },
+						schedulingType: { enum: ["notification", "automatic"] },
+					},
+				},
+				{
+					text,
+					channelId: "chan_1",
+					channelService: channel.service,
+					channelType: channel.type,
+				},
+			)
+			expect(plan.args.schedulingType).toBe("notification")
+		}
+	})
+
+	it("attaches the source as a link preview card", () => {
+		const plan = buildCreatePostArgs(
+			{
+				type: "object",
+				properties: {
+					channelId: { type: "string" },
+					text: { type: "string" },
+					metadata: {
+						type: "object",
+						properties: { linkAttachment: { type: "object" } },
+					},
+				},
+			},
+			{
+				text,
+				channelId: "chan_1",
+				linkUrl: "https://arxivolt.dev/blog/launch",
+				linkTitle: "We shipped the thing",
+			},
+		)
+		expect(plan.args.metadata).toEqual({
+			linkAttachment: {
+				url: "https://arxivolt.dev/blog/launch",
+				title: "We shipped the thing",
+			},
+		})
+	})
+})
+
+describe("content evidence", () => {
+	it("reads a packet out of a reply that wrapped it in prose", () => {
+		const reply = `Here is what I found.\n{"angles":[{"kind":"build_log","why":"We shipped it","facts":[{"claim":"Merged the billing fix","source":"github.com/arxivolt/runtime PR 42","quote":"fix: billing"}]}]}\nHope that helps.`
+		const parsed = parseEvidenceJson(reply)
+		expect(parsed).not.toBeNull()
+		const evidence = normaliseEvidence(parsed)
+		expect(evidence.angles).toHaveLength(1)
+		expect(evidence.angles[0]?.kind).toBe("build_log")
+		expect(evidence.facts[0]?.claim).toBe("Merged the billing fix")
+		expect(evidence.facts[0]?.quote).toBe("fix: billing")
+	})
+
+	it("repairs a packet a model wrote with trailing commas", () => {
+		const parsed = parseEvidenceJson(
+			'{"angles":[{"kind":"lesson","why":"x","facts":[]},],}',
+		)
+		expect(parsed).not.toBeNull()
+		expect(normaliseEvidence(parsed).angles[0]?.kind).toBe("lesson")
+	})
+
+	it("drops angles whose kind is not a real draft kind", () => {
+		const evidence = normaliseEvidence({
+			angles: [
+				{ kind: "viral_thread", why: "x", facts: [] },
+				{ kind: "lesson", why: "y", facts: [] },
+			],
+		})
+		expect(evidence.angles.map((a) => a.kind)).toEqual(["lesson"])
+	})
+
+	it("drops facts with no source, because they cannot be checked", () => {
+		const evidence = normaliseEvidence({
+			angles: [
+				{
+					kind: "lesson",
+					why: "y",
+					facts: [
+						{ claim: "Something happened", source: "" },
+						{ claim: "Something else happened", source: "slack #seo" },
+					],
+				},
+			],
+		})
+		expect(evidence.facts).toHaveLength(1)
+		expect(evidence.facts[0]?.source).toBe("slack #seo")
+	})
+
+	it("matches an angle to a kind and leaves the rest alone", () => {
+		const evidence = normaliseEvidence({
+			angles: [{ kind: "build_log", why: "y", facts: [] }],
+		})
+		expect(angleForKind(evidence, "build_log")?.kind).toBe("build_log")
+		expect(angleForKind(evidence, "hot_take")).toBeNull()
+	})
+
+	it("reads which facts a draft used", () => {
+		expect(parseUsedFactIds("The post\nSOURCES:\n- github\nFACTS: F1, F3")).toEqual([
+			"F1",
+			"F3",
+		])
+		expect(parseUsedFactIds("The post\nSOURCES:\n- github")).toEqual([])
+	})
+
+	it("asks the evidence turn for JSON and tells it to look at what happened", () => {
+		const frame = buildEvidenceFrame({
+			instruction: "post about the pricing change",
+			recentKinds: ["lesson"],
+			channels: [{ id: "c1", service: "linkedin", name: "Arxivolt" }],
+		})
+		expect(frame).toContain("post about the pricing change")
+		expect(frame).toContain("Reply with JSON only")
+		expect(frame).toContain("linkedin")
 	})
 })
 

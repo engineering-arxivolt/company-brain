@@ -16,6 +16,7 @@
  * (interactions.ts) and land in Buffer as drafts or queue entries.
  */
 import { generateId } from "@repo/lib/generate-id"
+import { captureContentEvent } from "@/lib/posthog"
 import { splitCitedSources, stripScaffolding } from "../auto-research/draft"
 import { toolProducesEvidence } from "../observability"
 import { postSlackMessage } from "../slack/client"
@@ -23,6 +24,12 @@ import { recordMessageTrace } from "../slack/message-trace"
 import type { SlackOrg } from "../slack/workspace"
 import { computeTurn, EMPTY_REPLY } from "../turn/compute"
 import type { CompanyBrainAgent } from "../turn/agent"
+import {
+	angleForKind,
+	collectContentEvidence,
+	parseUsedFactIds,
+	type ContentAngle,
+} from "./evidence"
 import type { ContentChannel } from "./plan"
 import { planDailyDrafts } from "./plan"
 import { buildContentRoundBlocks } from "./cards"
@@ -64,6 +71,8 @@ export type ContentStudioArgs = {
 	instruction: string
 	/** One id shared by every draft of this round. */
 	runTraceId: string
+	/** Scheduled rounds and on-demand rounds are told apart in telemetry. */
+	runTrigger?: "scheduled" | "run_now"
 	env: Env
 }
 
@@ -80,6 +89,12 @@ export type ContentDraftTurnArgs = {
 	focus?: string | null
 	recentBodies?: string[]
 	previousAttempt?: string | null
+	/**
+	 * The evidence for this draft: what happened, and where it came from.
+	 * Without it the writing turn investigates on its own, which costs one
+	 * lookup per draft and leaves the operator with nothing to check.
+	 */
+	evidence?: ContentAngle | null
 	traceId: string
 	runTrigger: "scheduled" | "run_now"
 	env: Env
@@ -103,6 +118,7 @@ export async function writeContentDraftTurn(
 		focus: args.focus,
 		recentBodies: args.recentBodies,
 		previousAttempt: args.previousAttempt,
+		evidence: args.evidence ?? null,
 	})
 	const startedAt = Date.now()
 	let out: Awaited<ReturnType<typeof computeTurn>> | null = null
@@ -174,15 +190,36 @@ export async function writeContentDraftTurn(
 	const trace = out.toolTrace ?? []
 	if (!trace.some((entry) => toolProducesEvidence(entry.tool)))
 		flags.push("no tool evidence behind this one, read it extra carefully")
+	// The facts the post actually leaned on. A draft written from the
+	// evidence packet must name the facts it used, so the card can show the
+	// operator exactly what backs it instead of a vague "grounded in GitHub".
+	const usedFactIds = parseUsedFactIds(out.reply)
+	const angle = args.evidence ?? null
+	const facts = angle
+		? angle.facts.filter((fact) => usedFactIds.includes(fact.id))
+		: []
+	if (angle && angle.facts.length > 0 && facts.length === 0)
+		flags.push("named no facts from the evidence packet")
 	const sourcesJson = JSON.stringify({
 		cited: cited.slice(0, 8),
 		tools: [...new Set(trace.map((entry) => entry.tool))].slice(0, 10),
+		...(facts.length
+			? {
+					facts: facts.map((fact) => ({
+						id: fact.id,
+						claim: fact.claim,
+						source: fact.source,
+						...(fact.quote ? { quote: fact.quote } : {}),
+					})),
+				}
+			: {}),
 	})
 	return { ok: true, body, sourcesJson, flagsJson: JSON.stringify(flags.slice(0, 4)) }
 }
 
 export async function runContentStudio(args: ContentStudioArgs): Promise<void> {
 	const { agent, org } = args
+	const runTrigger = args.runTrigger ?? "scheduled"
 	ensureContentDraftTable(agent)
 	const swept = sweepStaleContentDrafts(agent)
 	if (swept)
@@ -216,11 +253,31 @@ export async function runContentStudio(args: ContentStudioArgs): Promise<void> {
 				"Couldn't read your Buffer channels today, so these drafts aren't channel-targeted — Remix will re-target them once Buffer is reachable."
 	}
 
+	// The evidence stage: one read-only turn per round that works out what
+	// actually happened and hands every draft the same packet. One lookup per
+	// round instead of one per draft, and every claim in a post traceable to
+	// something the operator can check.
+	const evidence = await collectContentEvidence({
+		agent,
+		org,
+		teamId: args.teamId,
+		botToken: args.botToken,
+		dmChannelId: args.dmChannelId,
+		ownerUserId: args.ownerUserId,
+		ownerSlackUserId: args.ownerSlackUserId,
+		instruction: args.instruction,
+		recentKinds,
+		channels,
+		traceId: args.runTraceId,
+		env: args.env,
+	})
+
 	const plan = planDailyDrafts({
 		dayOfWeek: new Date().getUTCDay(),
 		recentKinds,
 		channels,
 		count: MAX_CONTENT_DRAFTS_PER_RUN,
+		angles: evidence.angles,
 	})
 
 	const drafts: NewContentDraft[] = []
@@ -239,8 +296,9 @@ export async function runContentStudio(args: ContentStudioArgs): Promise<void> {
 			channel: planned.channel,
 			focus: args.instruction,
 			recentBodies,
+			evidence: angleForKind(evidence, planned.kind),
 			traceId: draftTraceId,
-			runTrigger: "scheduled",
+			runTrigger,
 			env: args.env,
 		})
 		if (!result.ok) {
@@ -289,6 +347,7 @@ export async function runContentStudio(args: ContentStudioArgs): Promise<void> {
 			const { text, blocks } = buildContentRoundBlocks(round, {
 				bufferConnected: Boolean(connection),
 				note: bufferNote,
+				evidenceFacts: evidence.facts.length,
 			})
 			const ts = await postSlackMessage(
 				args.botToken,
@@ -303,6 +362,17 @@ export async function runContentStudio(args: ContentStudioArgs): Promise<void> {
 					`[company-brain] content-studio posted org=${org.id} drafts=${drafts.length} dropped=${dropped} ts=${ts}`,
 				)
 			}
+			captureContentEvent({
+				event: "content_round",
+				orgId: org.id,
+				userId: args.ownerUserId,
+				roundId: args.runTraceId,
+				drafts: drafts.length,
+				dropped,
+				angles: evidence.angles.length,
+				facts: evidence.facts.length,
+				bufferConnected: Boolean(connection),
+			})
 			return
 		}
 
@@ -311,7 +381,9 @@ export async function runContentStudio(args: ContentStudioArgs): Promise<void> {
 		const reason =
 			dropped > 0
 				? "today's passes didn't clear the bar"
-				: "nothing concrete turned up in the last 24 hours"
+				: evidence.facts.length > 0
+					? "the evidence didn't support a post worth publishing"
+					: "nothing concrete turned up in the last 24 hours"
 		const text = `🧵 Daily content — no drafts today: ${reason}. I'll take another pass tomorrow.`
 		const ts = await postSlackMessage(args.botToken, args.dmChannelId, text)
 		if (ts) recordMessageTrace(agent, args.dmChannelId, ts, args.runTraceId)

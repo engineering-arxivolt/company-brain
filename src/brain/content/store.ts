@@ -37,6 +37,74 @@ export type ContentDraftStatus =
 	| "dismissed"
 	| "superseded"
 
+/**
+ * What a draft was grounded in.
+ *
+ * `cited` and `tools` are the older shape (what the writing turn named).
+ * `facts` is the evidence packet's contribution: each fact carries the claim,
+ * where it came from and, when the source gave one, the quote behind it. The
+ * review card shows these, so the operator checks a fact rather than
+ * trusting the prose around it.
+ */
+export type ContentDraftFact = {
+	id?: string
+	claim?: string
+	source?: string
+	quote?: string
+}
+
+export type ContentDraftSources = {
+	cited?: string[]
+	tools?: string[]
+	facts?: ContentDraftFact[]
+}
+
+/** The stored provenance of a draft, read back defensively. */
+export function draftSources(draft: ContentDraft): ContentDraftSources {
+	try {
+		const parsed = JSON.parse(draft.sourcesJson) as unknown
+		if (!parsed || typeof parsed !== "object") return {}
+		const record = parsed as ContentDraftSources
+		return {
+			...(Array.isArray(record.cited) ? { cited: record.cited } : {}),
+			...(Array.isArray(record.tools) ? { tools: record.tools } : {}),
+			...(Array.isArray(record.facts) ? { facts: record.facts } : {}),
+		}
+	} catch {
+		return {}
+	}
+}
+
+/** The facts a draft used, in packet order. */
+export function draftFacts(draft: ContentDraft): ContentDraftFact[] {
+	return draftSources(draft).facts ?? []
+}
+
+const URL_RE = /https?:\/\/\S+/i
+
+/**
+ * The first source that is a link, with the claim as its title.
+ *
+ * This is what becomes the post's link preview card: a post that shows what
+ * it links to reads as a post with a source, and the reader can open the
+ * thing it is about.
+ */
+export function draftLink(
+	draft: ContentDraft,
+): { url: string; title: string | null } | null {
+	for (const fact of draftFacts(draft)) {
+		const source = fact.source?.trim()
+		if (!source) continue
+		const match = source.match(URL_RE)
+		if (!match) continue
+		return {
+			url: match[0].replace(/[),.;]+$/, ""),
+			title: fact.claim?.trim() || null,
+		}
+	}
+	return null
+}
+
 /** How long a push/remix claim may sit before another attempt may reclaim it. */
 export const CONTENT_DRAFT_STALE_CLAIM_MS = 15 * 60 * 1000
 

@@ -12,6 +12,7 @@
  */
 import { generateId } from "@repo/lib/generate-id"
 import { decryptToken } from "@/lib/crypto"
+import { captureContentEvent } from "@/lib/posthog"
 import { getAutomation } from "../tools/automations"
 import {
 	lookupSlackUserInfo,
@@ -33,6 +34,8 @@ import { writeContentDraftTurn } from "./generate"
 import {
 	claimContentDraft,
 	dismissContentDraft,
+	draftFacts,
+	draftLink,
 	failContentRemix,
 	finishContentPush,
 	finishContentRemix,
@@ -150,6 +153,14 @@ export async function runContentDraftInteraction(
 
 	if (interaction.action === "dismiss") {
 		const dismissed = dismissContentDraft(agent, draft.id)
+		captureContentEvent({
+			event: "content_draft_dismissed",
+			orgId: verified.org.id,
+			userId: ownerUserId,
+			draftId: draft.id,
+			kind: draft.kind,
+			channel: draft.channelService,
+		})
 		const { blocks } = await rebuild()
 		await respond(
 			interaction.responseUrl,
@@ -198,9 +209,22 @@ export async function runContentDraftInteraction(
 			return
 		}
 		// The click is the approval: this is the one intentional Buffer write.
+		//
+		// The channel's type decides how Buffer can publish it (a Facebook group
+		// or an Instagram personal profile needs a human), and the draft's
+		// source becomes the link preview card when it has one.
+		const [channels, link] = await Promise.all([
+			listBufferChannels(env, connection).catch(() => []),
+			Promise.resolve(draftLink(draft)),
+		])
+		const channel = channels.find((c) => c.id === draft.channelId)
 		const result = await pushDraftToBuffer(env, connection, {
 			text: draft.body,
 			channelId: draft.channelId,
+			channelType: channel?.type ?? null,
+			channelService: channel?.service ?? draft.channelService ?? null,
+			linkUrl: link?.url ?? null,
+			linkTitle: link?.title ?? null,
 		})
 		finishContentPush(
 			agent,
@@ -213,6 +237,17 @@ export async function runContentDraftInteraction(
 					}
 				: { ok: false, error: result.error },
 		)
+		captureContentEvent({
+			event: "content_draft_pushed",
+			orgId: verified.org.id,
+			userId: ownerUserId,
+			draftId: draft.id,
+			kind: draft.kind,
+			channel: draft.channelService,
+			ok: result.ok,
+			mode: result.ok ? result.mode : undefined,
+			error: result.ok ? undefined : result.error,
+		})
 		const { blocks } = await rebuild()
 		const message = result.ok
 			? result.mode === "draft"
@@ -295,6 +330,22 @@ export async function runContentDraftInteraction(
 		.map((d) => d.body)
 	const automation = getAutomation(agent, draft.automationId)
 	const remixTraceId = generateId()
+	// A remix is a different take on the same post, so it runs against the
+	// same facts: the evidence was what made the first version checkable, and
+	// a fresh investigation would move the ground under it.
+	const storedFacts = draftFacts(draft)
+	const evidence = storedFacts.length
+		? {
+				kind: draft.kind,
+				why: "the same facts, a genuinely different take",
+				facts: storedFacts.map((fact, index) => ({
+					id: fact.id ?? `F${index + 1}`,
+					claim: fact.claim ?? "",
+					source: fact.source ?? "",
+					...(fact.quote ? { quote: fact.quote } : {}),
+				})),
+			}
+		: null
 	const result = await writeContentDraftTurn({
 		agent,
 		org: verified.org,
@@ -309,6 +360,7 @@ export async function runContentDraftInteraction(
 		focus: automation?.prompt ?? null,
 		recentBodies,
 		previousAttempt: draft.body,
+		evidence,
 		traceId: remixTraceId,
 		runTrigger: "run_now",
 		env,

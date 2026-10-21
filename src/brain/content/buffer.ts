@@ -17,6 +17,27 @@ import type { ContentChannel } from "./plan"
 
 export type BufferChannel = ContentChannel
 
+const CHANNEL_TYPE_KEYS = ["type", "channelType", "channel_type"]
+
+/**
+ * Buffer cannot publish automatically to a Facebook group or an Instagram
+ * personal profile: those channels only accept a reminder that a human
+ * publishes by hand. Buffer's own schema says as much ("Required for Facebook
+ * Groups (type group) and Instagram personal profiles (type profile)"), so
+ * the push asks for a notification there instead of failing validation or
+ * posting into the void.
+ */
+export function bufferNeedsHumanPublish(channel: {
+	service?: string | null
+	type?: string | null
+}): boolean {
+	const service = (channel.service ?? "").toLowerCase()
+	const type = (channel.type ?? "").toLowerCase()
+	if (service.includes("facebook") && type === "group") return true
+	if (service.includes("instagram") && type === "profile") return true
+	return false
+}
+
 // The MCP runtime pulls in workerd-only modules ("agents", the SDK client);
 // importing it lazily keeps this module (and its pure helpers) loadable
 // outside the worker — provider.ts uses the same pattern for its client.
@@ -45,6 +66,9 @@ const MODE_KEYS = [
 	"status",
 	"type",
 ]
+// Buffer's create-post requires a scheduling type; it is a different field
+// from the mode, and leaving it out fails the call for a missing field.
+const SCHEDULING_TYPE_KEYS = ["schedulingType", "scheduling_type"]
 const FIELD_KEYS = ["id", "channelId", "channel_id"]
 const NAME_KEYS = ["name", "displayName", "display_name", "username", "handle"]
 const SERVICE_KEYS = [
@@ -139,10 +163,31 @@ export type BufferPushPlan = {
 /**
  * Map our intent (text, channel) onto Buffer's create-post tool. Pure and
  * schema-driven so it can't guess wrong key names silently.
+ *
+ * `schedulingType` is sent whenever the schema declares it, because Buffer's
+ * create-post requires it: without it the call is rejected for a missing
+ * field, which reads as "Buffer is broken" rather than "the request was
+ * incomplete". The value follows the channel: a human-published channel gets
+ * a notification, everything else gets the automatic queue.
+ *
+ * A source URL becomes a link preview card when the schema accepts one. That
+ * is the difference between a post that shows what it links to and a bare
+ * line of text, and it costs nothing to attach.
  */
 export function buildCreatePostArgs(
 	inputSchema: unknown,
-	input: { text: string; channelId: string | null },
+	input: {
+		text: string
+		channelId: string | null
+		/** Buffer channel type: page, profile, group. */
+		channelType?: string | null
+		/** Buffer channel service: linkedin, facebook, substack, ... */
+		channelService?: string | null
+		/** The source the post is grounded in, when there is one. */
+		linkUrl?: string | null
+		/** Title for the link preview card. */
+		linkTitle?: string | null
+	},
 ): BufferPushPlan {
 	const props = schemaProps(inputSchema)
 	if (!props) {
@@ -163,6 +208,40 @@ export function buildCreatePostArgs(
 	}
 	const textKey = pickKey(props, TEXT_KEYS) ?? "text"
 	args[textKey] = input.text
+
+	// Buffer's scheduling type: automatic where the platform publishes itself,
+	// notification where a human has to (Facebook groups, Instagram personal).
+	const schedulingKey = pickKey(props, SCHEDULING_TYPE_KEYS)
+	const schedulingValues = schedulingKey
+		? collectEnumValues(props[schedulingKey])
+		: []
+	if (schedulingKey && schedulingValues.length) {
+		const needsHuman = bufferNeedsHumanPublish({
+			service: input.channelService ?? null,
+			type: input.channelType ?? null,
+		})
+		const notification = schedulingValues.find((v) =>
+			/notification|reminder|manual/i.test(v),
+		)
+		const automatic = schedulingValues.find((v) =>
+			/automatic|publish|auto/i.test(v),
+		)
+		const chosen =
+			needsHuman && notification ? notification : (automatic ?? notification)
+		if (chosen) args[schedulingKey] = chosen
+	}
+
+	// A link preview card, when the schema has a place for one.
+	const metadataKey = "metadata"
+	if (input.linkUrl && metadataKey in props) {
+		const metadataProps = schemaProps(props[metadataKey])
+		const attachmentKey = metadataProps ? "linkAttachment" : null
+		if (attachmentKey && metadataProps && attachmentKey in metadataProps) {
+			const attachment: Record<string, unknown> = { url: input.linkUrl }
+			if (input.linkTitle?.trim()) attachment.title = input.linkTitle.trim()
+			args[metadataKey] = { [attachmentKey]: attachment }
+		}
+	}
 
 	// A boolean like saveToDraft is the clearest "don't publish yet" signal.
 	const draftToggleKey = Object.keys(props).find(
@@ -328,8 +407,18 @@ export function normalizeBufferChannels(payload: unknown): BufferChannel[] {
 				...NAME_KEYS.map((k) => c[k]),
 				...(nested ? NAME_KEYS.map((k) => nested[k]) : []),
 			) ?? service.toLowerCase()
+		const type =
+			firstString(
+				...CHANNEL_TYPE_KEYS.map((k) => c[k]),
+				...(nested ? CHANNEL_TYPE_KEYS.map((k) => nested[k]) : []),
+			) ?? null
 		seen.add(id)
-		out.push({ id, service: service.toLowerCase(), name })
+		out.push({
+			id,
+			service: service.toLowerCase(),
+			name,
+			...(type ? { type } : {}),
+		})
 	}
 	return out
 }
@@ -408,7 +497,18 @@ export type BufferPushResult =
 export async function pushDraftToBuffer(
 	env: Env,
 	connection: McpConnectionRow,
-	input: { text: string; channelId: string | null },
+	input: {
+		text: string
+		channelId: string | null
+		/** Buffer channel type: page, profile, group. */
+		channelType?: string | null
+		/** Buffer channel service: linkedin, facebook, substack, ... */
+		channelService?: string | null
+		/** The source the post is grounded in, when there is one. */
+		linkUrl?: string | null
+		/** Title for the link preview card. */
+		linkTitle?: string | null
+	},
 ): Promise<BufferPushResult> {
 	if (!input.channelId)
 		return {

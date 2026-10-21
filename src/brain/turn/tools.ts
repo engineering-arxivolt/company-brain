@@ -1,6 +1,7 @@
 import type { ToolSet } from "ai"
 import type { BrainCostLedger } from "../billing/cost"
 import { createConfigurationTool } from "../configuration"
+import { createContentStudioTool } from "./content-studio-tool"
 import { buildLeaseRuntimeContext } from "../lease/store"
 import { createLeaseTools } from "../lease/tools"
 import type { LeaseRuntimeContext } from "../lease/types"
@@ -412,6 +413,24 @@ export async function assembleTurnTools(
 			// Config writes need a human asking for them, like every other write.
 			allowWrites: !passiveInvestigation && !scheduledRun && !actor.readOnly,
 		}),
+		// Content Studio on demand: interactive turns only. A scheduled run
+		// would call it recursively, and a passive investigation has nobody to
+		// review the drafts.
+		...(passiveInvestigation || scheduledRun || actor.readOnly
+			? {}
+			: {
+					content_studio: createContentStudioTool({
+						deps,
+						agent,
+						org,
+						env,
+						userId: actor.userId ?? userId,
+						askerSlackUserId,
+						slackLookup,
+						isAdmin: Boolean(actor.isAdmin),
+						traceId,
+					}),
+				}),
 	}
 	Object.assign(
 		tools,

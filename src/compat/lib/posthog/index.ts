@@ -457,6 +457,19 @@ export function captureBeatSuppressed(...args: unknown[]): void {
 	productEvent("brain_journey_beat_suppressed", args[0])
 }
 
+/**
+ * Content Studio outcomes.
+ *
+ * The draft rows already record what happened to every draft, but nothing
+ * exported it, so the one number that matters — how many drafts the operator
+ * actually pushed rather than dismissed — was only readable by querying the
+ * Durable Object by hand. This puts it next to the rest of the brain's
+ * telemetry, where the other dashboards can see it.
+ */
+export function captureContentEvent(...args: unknown[]): void {
+	productEvent("brain_content_event", args[0])
+}
+
 export function captureJourneyExited(...args: unknown[]): void {
 	productEvent("brain_journey_exited", args[0])
 }

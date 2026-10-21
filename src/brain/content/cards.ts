@@ -7,6 +7,7 @@
  * always reflects real state (never an optimistic one).
  */
 import type { ContentDraft } from "./store"
+import { draftFacts } from "./store"
 import { contentKindLabel } from "./voice"
 
 export const CONTENT_PUSH_ACTION = "brain_content_push"
@@ -56,6 +57,29 @@ function draftChannelText(draft: ContentDraft): string {
 	return draft.channelLabel
 }
 
+/**
+ * The facts a post leans on, shown under it.
+ *
+ * The point of the evidence packet is that a human can check the post
+ * instead of trusting it, so the facts are on the card: what was claimed,
+ * where it came from, and the quote behind it. A post with no facts says so
+ * rather than leaving a gap that reads as "nothing to check".
+ */
+function draftEvidenceLines(draft: ContentDraft): string[] {
+	const facts = draftFacts(draft)
+	if (!facts.length) return []
+	const lines: string[] = []
+	for (const fact of facts.slice(0, 3)) {
+		const claim = fact.claim?.trim()
+		const source = fact.source?.trim()
+		if (!claim || !source) continue
+		lines.push(`• ${claim} _(${source})_`)
+	}
+	if (!lines.length) return []
+	if (facts.length > 3) lines.push(`• +${facts.length - 3} more`)
+	return lines
+}
+
 function draftBlocks(
 	index: number,
 	draft: ContentDraft,
@@ -64,11 +88,14 @@ function draftBlocks(
 	const statusLine = draftStatusLine(draft)
 	const heading = `*${index}. ${contentKindLabel(draft.kind)}* · ${draftChannelText(draft)}`
 	const body = quoteBody(draft.body)
+	const evidence = draftEvidenceLines(draft)
 	const section: SlackBlock = {
 		type: "section",
 		text: {
 			type: "mrkdwn",
-			text: `${heading}\n${body}${statusLine ? `\n${statusLine}` : ""}`,
+			text: `${heading}\n${body}${
+				evidence.length ? `\n_${evidence.join("\n")}_` : ""
+			}${statusLine ? `\n${statusLine}` : ""}`,
 		},
 	}
 	const blocks: SlackBlock[] = [section]
@@ -104,7 +131,7 @@ function draftBlocks(
 
 export function buildContentRoundBlocks(
 	drafts: ContentDraft[],
-	opts: { bufferConnected: boolean; note?: string },
+	opts: { bufferConnected: boolean; note?: string; evidenceFacts?: number },
 ): ContentRoundBlocks {
 	const open = drafts.filter((d) => d.status === "pending").length
 	const label =
@@ -125,6 +152,11 @@ export function buildContentRoundBlocks(
 	})
 	const footnotes: string[] = []
 	if (opts.note) footnotes.push(opts.note)
+	if (opts.evidenceFacts) {
+		footnotes.push(
+			`Grounded in ${opts.evidenceFacts} fact${opts.evidenceFacts === 1 ? "" : "s"} collected for this round — the source is under each post.`,
+		)
+	}
 	if (!opts.bufferConnected) {
 		footnotes.push(
 			"No Buffer connection found — connect Buffer under Settings → Connectors to push drafts straight to it.",
