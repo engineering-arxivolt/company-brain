@@ -27,6 +27,11 @@ export const SUPPORTED_MODELS = [
 	"qwen3.8-27b-free",
 	"gemma-4-31b-free",
 	"dots-3-note-free",
+	// Free models whose OpenRouter endpoint was healthy on 2026-10-21, when
+	// the pinned nemotron/gemma free hops started answering 404 (no endpoint
+	// available) and left the brain with a single working provider.
+	"minimax-m3.1-flash-free",
+	"xing4-29b-free",
 	// Paid OpenRouter model. Z.AI caches automatically, so the brain's long
 	// system prefix bills at the cache-read rate with no prompt changes, and
 	// cache writes are currently free on Z.AI. Chosen over the cheaper
@@ -127,6 +132,16 @@ const MODEL_INFO = {
 	},
 	"dots-3-note-free": {
 		modelId: "dots-studio/dots-3-note-preview:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"minimax-m3.1-flash-free": {
+		modelId: "minimax/minimax-m3.1-flash:free",
+		provider: "openai",
+		api: "chat",
+	},
+	"xing4-29b-free": {
+		modelId: "xingchen-agi/xing4.0-29b-a4b:free",
 		provider: "openai",
 		api: "chat",
 	},
@@ -307,6 +322,8 @@ export function getModelReasoningProviderOptions(
 		case "qwen3.8-27b-free":
 		case "gemma-4-31b-free":
 		case "dots-3-note-free":
+		case "minimax-m3.1-flash-free":
+		case "xing4-29b-free":
 		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
 		case "claude-sonnet-5-openrouter":
@@ -365,6 +382,8 @@ export function getModelInstantProviderOptions(
 		case "qwen3.8-27b-free":
 		case "gemma-4-31b-free":
 		case "dots-3-note-free":
+		case "minimax-m3.1-flash-free":
+		case "xing4-29b-free":
 		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
 		case "claude-sonnet-5-openrouter":

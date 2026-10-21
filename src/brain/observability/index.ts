@@ -931,8 +931,13 @@ export function degradedAsError(
 ): { isError?: boolean; error?: string } {
 	const marker = isDegradedProviderMetadata(providerMetadata)
 	if (!marker.degraded) return {}
+	const hops = [marker.exhausted, marker.unavailable]
+		.filter(Boolean)
+		.join(", ")
 	return {
 		isError: true,
-		error: `all model candidates out of quota (${marker.exhausted || "unknown"})`,
+		error: marker.exhausted
+			? `all model candidates out of quota (${hops || "unknown"})`
+			: `all model candidates unavailable (${hops || "unknown"})`,
 	}
 }

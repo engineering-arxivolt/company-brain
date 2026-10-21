@@ -20,6 +20,8 @@ import {
 	setCatalogMainTurnModels,
 	clearCatalogMainTurnModels,
 	isFreeModel,
+	OPENAI_COMPATIBLE_FREE_MODELS,
+	UNAVAILABLE_NOTICE,
 } from "./brain-model"
 import { BRAIN_MAIN_MODEL_CHOICES, TRIAGE_MODEL } from "./model-profile"
 import {
@@ -62,13 +64,13 @@ describe("free OpenAI-compatible models", () => {
 	it("falls back to a free model when the endpoint is the only provider", () => {
 		const model = inspect(getBrainModel("grok-4.5", openRouterEnv))
 
-		expect(model.modelId).toBe("nvidia/nemotron-3-super-120b-a12b:free")
+		expect(model.modelId).toBe("minimax/minimax-m3.1-flash:free")
 	})
 
 	it("keeps triage on the light free model", () => {
 		const model = inspect(getBrainModel(TRIAGE_MODEL, openRouterEnv))
 
-		expect(model.modelId).toBe("google/gemma-4-31b-it:free")
+		expect(model.modelId).toBe("dots-studio/dots-3-note-preview:free")
 	})
 
 	it("leaves OpenAI's own models on the Responses API", () => {
@@ -169,6 +171,21 @@ describe("quota fallback chain", () => {
 		expect(classifyPoolFailure(rateLimitError)).toBe("rate_limited")
 		expect(classifyPoolFailure(quotaError)).toBe("exhausted")
 		expect(classifyPoolFailure(brokenError)).toBeNull()
+	})
+
+	it("calls a dead endpoint unavailable rather than out of quota", () => {
+		// OpenRouter answers 404 when a `:free` id has no healthy provider
+		// endpoint, and 5xx when the provider is overloaded. Neither is a
+		// credits problem, so neither may produce the "add credits" notice.
+		expect(classifyPoolFailure(Object.assign(new Error("No endpoints found"), { statusCode: 404 }))).toBe(
+			"unavailable",
+		)
+		expect(classifyPoolFailure(Object.assign(new Error("overloaded"), { statusCode: 503 }))).toBe(
+			"unavailable",
+		)
+		expect(classifyPoolFailure(Object.assign(new Error("bad key"), { statusCode: 401 }))).toBe(
+			"unavailable",
+		)
 	})
 
 	/**
@@ -275,6 +292,24 @@ describe("quota fallback chain", () => {
 	it("propagates non-quota failures so real bugs stay visible", async () => {
 		const chain = withFallbackChain([fakeModel("a", brokenError), fakeModel("b")])
 		await expect(generate(chain)).rejects.toThrow("tool schema invalid")
+	})
+
+	it("hops past a dead endpoint to the next candidate", async () => {
+		// The 404 that killed the brain: one free id with no healthy provider
+		// endpoint, and the turn answered on the next hop instead of failing.
+		const notFound = Object.assign(new Error("No endpoints found"), { statusCode: 404 })
+		const chain = withFallbackChain([fakeModel("a", notFound), fakeModel("b")])
+		expect(text(await generate(chain))).toBe("answered by b")
+	})
+
+	it("asks for no credits when every hop merely failed", async () => {
+		// "Add credits" is wrong advice for an overloaded endpoint: there is
+		// nothing to pay for, and the next attempt likely works.
+		const notFound = Object.assign(new Error("No endpoints found"), { statusCode: 404 })
+		const chain = withFallbackChain([fakeModel("a", notFound), fakeModel("b", notFound)])
+		const result = await generate(chain)
+		expect(text(result)).toBe(UNAVAILABLE_NOTICE)
+		expect(text(result)).not.toMatch(/credits/i)
 	})
 
 	it("rejects an empty chain instead of silently degrading", () => {
@@ -384,8 +419,8 @@ describe("quota fallback chain", () => {
 
 	it("keeps the free hop on the answering chain when the operator opts in", () => {
 		// Paid hops out of credits (e.g. GLM exhausted): BRAIN_ALLOW_FREE_MAIN_TURN=1
-		// puts nemotron-3-super-free FIRST so the turn answers without burning
-		// two failed paid calls, falling through to paid only if free is limited.
+		// puts the free hops FIRST so the turn answers without burning two failed
+		// paid calls, falling through to paid only if free is limited.
 		const freeEnv = asEnv({
 			OPENAI_API_KEY: "sk-or-v1-test",
 			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
@@ -394,7 +429,26 @@ describe("quota fallback chain", () => {
 		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
 			mainTurn: true,
 		})
-		expect(chain[0]).toBe("nemotron-3-super-free")
+		expect(chain[0]).toBe("minimax-m3.1-flash-free")
+	})
+
+	it("offers several free hops so one dead endpoint cannot end the turn", () => {
+		// A `:free` id can sit in the OpenRouter catalog and still have no healthy
+		// provider endpoint, which OpenRouter answers with a 404. The chain used to
+		// pin a single free id, so that 404 took the whole turn down with it.
+		const freeEnv = asEnv({
+			OPENAI_API_KEY: "sk-or-v1-test",
+			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+			BRAIN_ALLOW_FREE_MAIN_TURN: "1",
+		})
+		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
+			mainTurn: true,
+		})
+		const freeHops = chain.filter((name) => isFreeModel(name))
+		expect(freeHops.length).toBeGreaterThan(1)
+		for (const hop of freeHops) {
+			expect(OPENAI_COMPATIBLE_FREE_MODELS).toContain(hop)
+		}
 	})
 
 	it("leads the answering chain with the paid models, cheapest first", () => {

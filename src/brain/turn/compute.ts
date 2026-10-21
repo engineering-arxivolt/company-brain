@@ -796,6 +796,16 @@ export async function computeTurn(
 						`[company-brain][${traceId}] streamText ${attempt} error:`,
 						error,
 					)
+					try {
+						console.warn(
+							`[company-brain][${traceId}] streamText ${attempt} error details: name=${(error as { name?: unknown })?.name} message=${(error as { message?: unknown })?.message} statusCode=${(error as { statusCode?: unknown })?.statusCode} responseBody=${JSON.stringify((error as { responseBody?: unknown })?.responseBody)} url=${(error as { url?: unknown })?.url} cause=${JSON.stringify((error as { cause?: unknown })?.cause)}`,
+						)
+					} catch (logErr) {
+						console.warn(
+							`[company-brain][${traceId}] streamText ${attempt} error detail log failed:`,
+							logErr,
+						)
+					}
 				},
 				onToolCallStart: async (event: BrainToolCallEvent) => {
 					const terminalProposal = terminalCapture.record(event.toolCall)

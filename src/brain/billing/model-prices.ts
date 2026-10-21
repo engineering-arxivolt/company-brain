@@ -138,6 +138,14 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		inputPerMTok: 0,
 		outputPerMTok: 0,
 	},
+	"minimax-m3.1-flash-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
+	"xing4-29b-free": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
 
 	// OpenRouter paid, cached automatically by Z.AI. Head of the brain chain
 	// on a one-key OpenRouter deployment. Cache writes are free on Z.AI today,
