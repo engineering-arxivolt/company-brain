@@ -384,7 +384,10 @@ export async function assembleTurnTools(
 			? {}
 			: createProgressTools(deps, args.progress, traceId, args.turnState)),
 		...createCaptureTools(deps, capture, traceId, {
-			allowWrites: !passiveInvestigation,
+			// A read-only turn must not write to memory either: the content
+			// rounds gather evidence that way, and their findings belong in the
+			// draft's sources, not in the brain's long-term store.
+			allowWrites: !passiveInvestigation && !actor.readOnly,
 			env,
 		}),
 		// Destructive bulk forget: interactive turns only, apply gated by approval.
