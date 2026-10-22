@@ -17,6 +17,8 @@ import {
 } from "../../turn/state"
 import { captureAiToolCall } from "../../observability"
 import type { McpApprovalClassifier } from "./approval-classifier"
+import { operationIsRead } from "./approval-classifier"
+import { callWithTransientRetry } from "./transient-retry"
 import {
 	type CatalogMethod,
 	catalogMethods,
@@ -183,6 +185,20 @@ function extractServerError(error: unknown): string {
 	}
 	return boundedDetail(error)
 }
+
+/**
+ * True when a failure looks like the upstream blinked rather than the call
+ * being wrong: a gateway timeout, a 5xx, a dropped connection.
+ *
+ * These are the failures that make a run feel random. The upstream returns
+ * 500 once, the call is recorded as failed, the duplicate-call guard then
+ * refuses the obvious retry, and the whole approach dies on a blip that a
+ * second attempt would have cleared.
+ */
+export {
+	callWithTransientRetry,
+	isTransientUpstreamError,
+} from "./transient-retry"
 
 function resultTooLargeSuggestion(method: CatalogMethod): string {
 	const schema =
@@ -557,9 +573,11 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 								traceId: this.target.traceId,
 							})
 						}
-						const result = await args.connectorTool.execute(
-							remoteInput,
-							context,
+						const result = await callWithTransientRetry(
+							async () => await args.connectorTool.execute(remoteInput, context),
+							{
+								readOnly: operationIsRead(evaluated.decision.effect),
+							},
 						)
 						captureAiToolCall({
 							traceId: this.target.traceId,

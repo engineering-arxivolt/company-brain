@@ -111,7 +111,11 @@
 			"class_name": "Sandbox",
 			"image": "./sandbox/Dockerfile",
 			"instance_type": "basic",
-			"max_instances": 10
+			// The brain runs one sandbox per session, and a session is one
+			// thread: ten instances was a ceiling the work never needed and a
+			// warm pool the account paid for. Three is enough for concurrent
+			// sessions and keeps the idle cost proportional to real use.
+			"max_instances": 3
 		}
 	],
 	"unsafe": {

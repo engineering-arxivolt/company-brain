@@ -2,7 +2,16 @@ import type { ToolErrorKind } from "./errors"
 import { CONTINUATION_MAX_STEPS, MAX_STEPS } from "./model-profile"
 
 export const TURN_STATE_CHAR_LIMIT = 2_500
-export const NATIVE_CALL_LIMIT = 100
+/**
+ * Connected-app calls one turn may make.
+ *
+ * A turn that researches one topic across GitHub, Linear, the database and a
+ * couple of APIs burns this quickly: each program used to cost a call per
+ * method, and a program that hit the per-program ceiling was split into more
+ * programs rather than fewer calls. The limit was raised once the
+ * per-program ceiling was, so the two no longer fight each other.
+ */
+export const NATIVE_CALL_LIMIT = 200
 
 export type DiscoveredMethod = {
 	name: string

@@ -73,12 +73,16 @@ export const RUN_APP_CODE_TOOL_NAME = "run_app_code"
 export const DISCOVER_APP_METHODS_TOOL_NAME = "discover_app_methods"
 
 const CODE_MODE_LIMITS = {
-	appsPerProgram: 4,
-	sourceChars: 64_000,
-	resultChars: 24_000,
+	// A program may touch more apps and make more calls than it used to: the
+	// old ceilings (4 apps, 8 calls) made ordinary research hit
+	// "program_too_large" and split into three programs, which cost more
+	// turns than one bigger program would have.
+	appsPerProgram: 6,
+	sourceChars: 96_000,
+	resultChars: 32_000,
 	logChars: 2_000,
-	nativeCallsPerProgram: 8,
-	timeoutMs: 60_000,
+	nativeCallsPerProgram: 20,
+	timeoutMs: 90_000,
 	retainedExecutions: 50,
 } as const
 

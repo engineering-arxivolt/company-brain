@@ -18,11 +18,25 @@ import {
 
 // Sandboxes sleep after this long idle. A sleeping container loses its
 // filesystem, which the marker file below detects.
-const SLEEP_AFTER = "30m"
+//
+// The sleep window is a billing decision as much as a lifecycle one: a
+// container that stays hot is billed the whole time, and a turn that used the
+// sandbox once in the morning was still paying for it half an hour later.
+// Five minutes is long enough to finish the work in one session and short
+// enough that an abandoned container goes cold quickly.
+const SLEEP_AFTER = "5m"
 
 // Written when a sandbox is set up. A container that woke from sleep starts
 // from the image again and won't have it, so the session gets recreated.
 const READY_MARKER = "/workspace/.company-brain-ready"
+
+// What a caller sees when the container restarted underneath it. The old
+// failure was a bare "No such file or directory" for a file the model had
+// just created, which reads as a bug in the command rather than a container
+// that had gone to sleep.
+const WORKSPACE_RESET_MESSAGE =
+	"The sandbox restarted while it was idle, so its workspace is empty again. " +
+	"Call sandbox_start to set it up once more, then redo the work that was lost."
 
 // Tool paths are relative to the sandbox root, as they were on Daytona, where
 // the default working directory is "workspace".
@@ -33,6 +47,28 @@ function absolute(path: string): string {
 function sandboxFor(env: Env, sandboxId: string) {
 	if (!env.Sandbox) throw new Error("The Sandbox binding is not configured.")
 	return getSandbox(env.Sandbox, sandboxId, { sleepAfter: SLEEP_AFTER })
+}
+
+/**
+ * True when the container still holds the workspace it was set up with.
+ *
+ * A container that slept came back from the image without the marker file,
+ * which means the clone, the generated files and everything else in the
+ * workspace is gone. Detecting that before running a command turns a baffling
+ * "file not found" into the truth.
+ */
+async function workspaceIsIntact(
+	env: Env,
+	sandboxId: string,
+): Promise<boolean> {
+	try {
+		const result = await sandboxFor(env, sandboxId).exists(READY_MARKER)
+		return result.exists
+	} catch {
+		// The container could not be reached at all; that is a different
+		// failure and the caller's own error handling reports it better.
+		return true
+	}
 }
 
 export function createCloudflareSandboxClient(env: Env): SandboxClient {
@@ -85,6 +121,15 @@ export function createCloudflareSandboxClient(env: Env): SandboxClient {
 					timeoutSec,
 				}
 			}
+			if (!(await workspaceIsIntact(env, args.sandboxId))) {
+				return {
+					exitCode: 125,
+					output: WORKSPACE_RESET_MESSAGE,
+					truncated: false,
+					cwd: args.cwd,
+					timeoutSec,
+				}
+			}
 			const cwd = normalizeCwd(args.cwd, "workspace")
 			// cd inside the command so a missing directory is an ordinary error.
 			const result = await sandboxFor(env, args.sandboxId).exec(
@@ -106,6 +151,9 @@ export function createCloudflareSandboxClient(env: Env): SandboxClient {
 
 		async listFiles(args) {
 			const sandbox = sandboxFor(env, args.sandboxId)
+			if (!(await workspaceIsIntact(env, args.sandboxId))) {
+				return { files: [], path: args.path, workspaceReset: true }
+			}
 			const path = normalizePath(args.path, "workspace")
 			const glob = args.glob?.trim()
 			if (glob) {
@@ -132,6 +180,9 @@ export function createCloudflareSandboxClient(env: Env): SandboxClient {
 
 		async readTextFile(args) {
 			const path = normalizePath(args.path, "workspace")
+			if (!(await workspaceIsIntact(env, args.sandboxId))) {
+				throw new Error(WORKSPACE_RESET_MESSAGE)
+			}
 			const file = await sandboxFor(env, args.sandboxId).readFile(
 				absolute(path),
 			)
@@ -159,6 +210,9 @@ export function createCloudflareSandboxClient(env: Env): SandboxClient {
 		async getArtifactStream(args) {
 			args.signal?.throwIfAborted()
 			const path = normalizePath(args.path, "workspace")
+			if (!(await workspaceIsIntact(env, args.sandboxId))) {
+				throw new Error(WORKSPACE_RESET_MESSAGE)
+			}
 			const file = await sandboxFor(env, args.sandboxId).readFile(
 				absolute(path),
 				{ encoding: "none" },
