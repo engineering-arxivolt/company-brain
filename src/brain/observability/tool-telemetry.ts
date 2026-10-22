@@ -272,7 +272,9 @@ export function toolTextPreviews(
 	input: unknown,
 	output: unknown,
 ): { input?: string; output?: string } {
-	if (toolName === "sandbox_write_file" || toolName === "run_app_code") {
+	// Every sandbox tool: inputs carry commands and file bodies, outputs carry
+	// repository source. The structured properties already say what happened.
+	if (toolName.startsWith("sandbox_") || toolName === "run_app_code") {
 		return {}
 	}
 	return {

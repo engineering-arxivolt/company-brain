@@ -126,9 +126,12 @@ describe("sandboxToolProperties", () => {
 })
 
 describe("toolTextPreviews", () => {
-	it("does not echo a written file or a code-mode program", () => {
+	it("does not echo sandbox payloads or a code-mode program", () => {
 		expect(
 			toolTextPreviews("sandbox_write_file", { content: "secret" }, { ok: true }),
+		).toEqual({})
+		expect(
+			toolTextPreviews("sandbox_run", { command: "npm test -- --token x" }, { output: "source" }),
 		).toEqual({})
 		expect(toolTextPreviews("run_app_code", { code: "secret" }, {})).toEqual({})
 	})
