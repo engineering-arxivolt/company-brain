@@ -82,6 +82,16 @@ export type SandboxClient = {
 		changedFiles: string[]
 		truncated: boolean
 	}>
+	/**
+	 * True when a path exists in the workspace.
+	 *
+	 * A container that was set up but whose clone failed has a marker file and
+	 * no repository, so "the container is alive" is not the same as "the
+	 * workspace is ready". Reusing a workspace that lost its repository is how
+	 * a turn ends up grepping an empty directory and concluding the code does
+	 * not exist.
+	 */
+	workspaceHasPath(args: { sandboxId: string; path: string }): Promise<boolean>
 	getArtifact(args: { sandboxId: string; path: string }): Promise<{
 		path: string
 		sizeBytes: number

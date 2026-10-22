@@ -117,9 +117,20 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 					existing != null &&
 					requestedRepo !== undefined &&
 					existing.repoUrl === requestedRepo
+				// A live container is not the same as a ready workspace: a clone
+				// that failed leaves the container running and the repository
+				// missing, and reusing it means grepping an empty directory and
+				// concluding the code does not exist.
+				const workspaceReady = existing
+					? await client.workspaceHasPath({
+							sandboxId: existing.sandboxId,
+							path: existing.defaultCwd,
+						})
+					: false
 				if (
 					existing &&
 					scopeMatches &&
+					workspaceReady &&
 					(await client.isSandboxRunning(existing.sandboxId))
 				) {
 					const touched = touchSandboxSession(agent, existing)

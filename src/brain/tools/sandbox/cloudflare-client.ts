@@ -180,6 +180,24 @@ export function createCloudflareSandboxClient(
 				}
 			}
 			const cwd = normalizeCwd(args.cwd, "workspace")
+			// The working directory is the clone. When it is missing, the clone
+			// never completed, and the command's own "no such directory" error
+			// reads like a broken path rather than a workspace that needs
+			// setting up again.
+			if (
+				!(await client.workspaceHasPath({
+					sandboxId: args.sandboxId,
+					path: cwd,
+				}))
+			) {
+				return {
+					exitCode: 125,
+					output: `The working directory ${cwd} does not exist in this sandbox — the repository was never cloned. Call sandbox_start with the repo URL to set the workspace up.`,
+					truncated: false,
+					cwd,
+					timeoutSec,
+				}
+			}
 			// cd inside the command so a missing directory is an ordinary error.
 			const result = await sandboxFor(env, args.sandboxId).exec(
 				`cd ${shellQuote(absolute(cwd))} && ${command.command}`,
@@ -310,6 +328,17 @@ export function createCloudflareSandboxClient(
 				diff: diff.stdout,
 				changedFiles,
 				truncated,
+			}
+		},
+
+		async workspaceHasPath(args) {
+			try {
+				const result = await sandboxFor(env, args.sandboxId).exists(
+					absolute(args.path),
+				)
+				return result.exists
+			} catch {
+				return false
 			}
 		},
 

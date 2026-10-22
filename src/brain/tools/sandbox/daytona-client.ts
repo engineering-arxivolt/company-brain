@@ -404,6 +404,20 @@ export function createDaytonaSandboxClient(env: Env): SandboxClient {
 			}
 		},
 
+		async workspaceHasPath(args) {
+			try {
+				const sandbox = await getSandbox(config, args.sandboxId)
+				const info = await toolboxRequest<FileInfo>(
+					config,
+					sandbox,
+					`/files/info${encodeQuery({ path: normalizePath(args.path, "workspace") })}`,
+				)
+				return Boolean(info)
+			} catch {
+				return false
+			}
+		},
+
 		async getArtifact(args) {
 			const sandbox = await getSandbox(config, args.sandboxId)
 			const path = normalizePath(args.path, "workspace")
