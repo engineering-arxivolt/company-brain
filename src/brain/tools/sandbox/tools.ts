@@ -77,7 +77,7 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 	// need it. The worker holds it; the container only ever sees it for the
 	// length of one clone.
 	const client = createSandboxClient(env, {
-		githubToken: () => operatorGitHubToken(env, scope.orgId),
+		githubToken: () => operatorGitHubToken(env, scope.orgId, scope.userId),
 	})
 	// Models sometimes inspect the same artifact twice while drafting their
 	// answer. Reusing a successful upload keeps that from creating duplicates.
@@ -503,7 +503,11 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 			try {
 				const session = loadSandboxSession(agent, sessionKey)
 				if (!session) return missingSession()
-				const connection = await findGitHubConnection(env, scope.orgId)
+				const connection = await findGitHubConnection(
+					env,
+					scope.orgId,
+					scope.userId,
+				)
 				if (!connection) {
 					return {
 						isError: true,
@@ -567,9 +571,18 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 async function findGitHubConnection(
 	env: Env,
 	orgId: string,
+	userId?: string,
 ): Promise<McpConnectionRow | null> {
 	const { listActiveConnectionsForActor } = await import("../mcp/store")
-	const connections = await listActiveConnectionsForActor(env, orgId, undefined, false)
+	// The connection list is scoped to who is asking: GitHub is usually
+	// connected personally, so looking without a user id finds only
+	// org-shared connections and misses the one that has the credential.
+	const connections = await listActiveConnectionsForActor(
+		env,
+		orgId,
+		userId,
+		false,
+	)
 	const github = connections.filter((connection) => {
 		const slug = (connection.serverSlug ?? "").toLowerCase()
 		const url = (connection.serverUrl ?? "").toLowerCase()
@@ -589,8 +602,11 @@ async function findGitHubConnection(
 async function operatorGitHubToken(
 	env: Env,
 	orgId: string,
+	userId?: string,
 ): Promise<string | null> {
-	const connection = await findGitHubConnection(env, orgId).catch(() => null)
+	const connection = await findGitHubConnection(env, orgId, userId).catch(
+		() => null,
+	)
 	if (!connection?.accessToken) return null
 	const { decryptToken } = await import("@/lib/crypto")
 	return decryptToken(connection.accessToken, env.ENCRYPTION_SECRET).catch(
