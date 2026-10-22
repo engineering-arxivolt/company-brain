@@ -8,6 +8,7 @@ import type {
 import {
 	normalizeCwd,
 	normalizePath,
+	normalizeSearchLimit,
 	normalizeTimeout,
 	safeRepoDir,
 	sandboxLimits,
@@ -315,6 +316,92 @@ export function createDaytonaSandboxClient(env: Env): SandboxClient {
 			const text = new TextDecoder().decode(content)
 			const truncated = truncateText(text, sandboxLimits.maxTextFileChars)
 			return { path, content: truncated.text, truncated: truncated.truncated }
+		},
+
+		async writeFile(args) {
+			const sandbox = await getSandbox(config, args.sandboxId)
+			const path = normalizePath(args.path, "workspace")
+			const uploaded = await toolboxRequest<{ success?: boolean }>(
+				config,
+				sandbox,
+				`/files/upload${encodeQuery({ path })}`,
+				{ method: "POST", body: args.content },
+			)
+			if (uploaded.success === false) {
+				throw new Error("The sandbox rejected the file upload.")
+			}
+			return { path, bytes: args.content.length }
+		},
+
+		async search(args) {
+			const sandbox = await getSandbox(config, args.sandboxId)
+			const root = normalizePath(args.path, "workspace")
+			const limit = normalizeSearchLimit(args.limit)
+			const glob = args.glob?.trim()
+			const globArg = glob ? `--include=${shellQuote(glob)}` : ""
+			const out = await execToolboxCommand(
+				config,
+				sandbox,
+				{
+					command: `grep -rInI ${globArg} -e ${shellQuote(args.query.trim())} ${shellQuote(root)} 2>/dev/null | head -n ${limit + 1}`,
+					timeout: 30,
+				},
+				30,
+			)
+			const lines = (out.result ?? "").split("\n").filter(Boolean)
+			const truncated = lines.length > limit
+			const matches = lines.slice(0, limit).map((line) => {
+				const match = line.match(/^(.*?):(\d+):(.*)$/)
+				return {
+					file: match?.[1] ?? line,
+					line: match?.[2] ? Number(match[2]) : 0,
+					text: (match?.[3] ?? "").slice(0, 400),
+				}
+			})
+			return { matches, truncated }
+		},
+
+		async diff(args) {
+			const sandbox = await getSandbox(config, args.sandboxId)
+			const cwd = normalizeCwd(args.cwd, "workspace")
+			const status = await execToolboxCommand(
+				config,
+				sandbox,
+				{
+					command: `cd ${shellQuote(cwd)} && git status --porcelain 2>/dev/null | head -n 200`,
+					timeout: 20,
+				},
+				20,
+			)
+			const changedFiles = (status.result ?? "")
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => line.slice(3).trim())
+				.filter(Boolean)
+			if (!changedFiles.length) {
+				return {
+					status: (status.result ?? "").trim(),
+					diff: "",
+					changedFiles,
+					truncated: false,
+				}
+			}
+			const diff = await execToolboxCommand(
+				config,
+				sandbox,
+				{
+					command: `cd ${shellQuote(cwd)} && git diff --no-color 2>/dev/null | head -c ${sandboxLimits.maxDiffChars}`,
+					timeout: 30,
+				},
+				30,
+			)
+			const text = diff.result ?? ""
+			return {
+				status: (status.result ?? "").trim(),
+				diff: text,
+				changedFiles,
+				truncated: text.length >= sandboxLimits.maxDiffChars,
+			}
 		},
 
 		async getArtifact(args) {

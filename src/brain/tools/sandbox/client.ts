@@ -40,6 +40,48 @@ export type SandboxClient = {
 		sandboxId: string
 		path: string
 	}): Promise<{ path: string; content: string; truncated: boolean }>
+	/**
+	 * Write a file into the workspace.
+	 *
+	 * Editing code in the sandbox is what makes it worth having: without it a
+	 * model can only read a repository and describe what it would change.
+	 */
+	writeFile(args: {
+		sandboxId: string
+		path: string
+		content: string
+	}): Promise<{ path: string; bytes: number }>
+	/**
+	 * Search the workspace for a pattern.
+	 *
+	 * Reading a codebase one file at a time does not scale: the model needs
+	 * to find where something lives before it can read it. A grep over the
+	 * clone is the difference between "go through the codebase" and "read the
+	 * three files you already know about".
+	 */
+	search(args: {
+		sandboxId: string
+		query: string
+		path?: string
+		glob?: string
+		limit?: number
+	}): Promise<{
+		matches: Array<{ file: string; line: number; text: string }>
+		truncated: boolean
+	}>
+	/**
+	 * What changed in the workspace.
+	 *
+	 * A change nobody has seen is a change nobody can approve, so the diff is
+	 * a first-class result rather than something the model has to ask for
+	 * through a shell.
+	 */
+	diff(args: { sandboxId: string; cwd?: string }): Promise<{
+		status: string
+		diff: string
+		changedFiles: string[]
+		truncated: boolean
+	}>
 	getArtifact(args: { sandboxId: string; path: string }): Promise<{
 		path: string
 		sizeBytes: number

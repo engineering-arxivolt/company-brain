@@ -3,6 +3,9 @@ const MAX_TIMEOUT_SEC = 120
 const MAX_OUTPUT_CHARS = 50_000
 const MAX_TEXT_FILE_CHARS = 80_000
 const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
+const DEFAULT_SEARCH_LIMIT = 40
+const MAX_SEARCH_LIMIT = 200
+const MAX_DIFF_CHARS = 30_000
 
 const PRIVATE_172_REGEX = /^172\.(1[6-9]|2\d|3[01])\./
 
@@ -169,6 +172,39 @@ export function validateCommand(
 	return { ok: true, command: trimmed }
 }
 
+/**
+ * A search pattern, checked before it reaches the shell.
+ *
+ * The pattern is passed to grep as an argument, so the shell never sees it
+ * unquoted — but a pattern that is a shell metacharacter storm is a mistake
+ * worth catching, and a pattern long enough to be a script is not a search.
+ */
+export function validateSearchPattern(
+	query: string,
+): { ok: true; query: string } | { ok: false; error: string } {
+	const trimmed = query.trim()
+	if (!trimmed) return { ok: false, error: "Search pattern is required." }
+	if (trimmed.length > 300) {
+		return { ok: false, error: "Search pattern is too long." }
+	}
+	if (trimmed.includes("\0") || trimmed.includes("\n")) {
+		return { ok: false, error: "Search pattern contains control characters." }
+	}
+	return { ok: true, query: trimmed }
+}
+
+/**
+ * How many matches a search returns.
+ *
+ * A search over a large clone can match thousands of lines; the point of the
+ * tool is to find where something is, so a bounded list is more useful than a
+ * truncated wall of text.
+ */
+export function normalizeSearchLimit(limit?: number): number {
+	if (!Number.isFinite(limit)) return DEFAULT_SEARCH_LIMIT
+	return Math.max(1, Math.min(MAX_SEARCH_LIMIT, Math.floor(limit as number)))
+}
+
 export function truncateText(
 	value: string,
 	max = MAX_OUTPUT_CHARS,
@@ -186,4 +222,6 @@ export const sandboxLimits = {
 	maxArtifactBytes: MAX_ARTIFACT_BYTES,
 	defaultTimeoutSec: DEFAULT_TIMEOUT_SEC,
 	maxTimeoutSec: MAX_TIMEOUT_SEC,
+	maxSearchMatches: MAX_SEARCH_LIMIT,
+	maxDiffChars: MAX_DIFF_CHARS,
 }

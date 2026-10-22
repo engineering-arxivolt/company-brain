@@ -7,6 +7,7 @@ import {
 import {
 	normalizeCwd,
 	normalizePath,
+	normalizeSearchLimit,
 	normalizeTimeout,
 	safeRepoDir,
 	sandboxLimits,
@@ -194,6 +195,74 @@ export function createCloudflareSandboxClient(env: Env): SandboxClient {
 					: file.content
 			const truncated = truncateText(text, sandboxLimits.maxTextFileChars)
 			return { path, content: truncated.text, truncated: truncated.truncated }
+		},
+
+		async writeFile(args) {
+			const path = normalizePath(args.path, "workspace")
+			if (!(await workspaceIsIntact(env, args.sandboxId))) {
+				throw new Error(WORKSPACE_RESET_MESSAGE)
+			}
+			const sandbox = sandboxFor(env, args.sandboxId)
+			const parent = absolute(path).split("/").slice(0, -1).join("/")
+			if (parent && parent !== "") {
+				await sandbox.mkdir(parent, { recursive: true }).catch(() => {})
+			}
+			await sandbox.writeFile(absolute(path), args.content)
+			return { path, bytes: args.content.length }
+		},
+
+		async search(args) {
+			const query = args.query.trim()
+			const root = absolute(normalizePath(args.path, "workspace"))
+			const limit = normalizeSearchLimit(args.limit)
+			// grep is given the pattern as an argument, quoted, so nothing in it
+			// is read as shell syntax. -n prints line numbers, -I skips binaries.
+			const glob = args.glob?.trim()
+			const globArg = glob ? `--include=${shellQuote(glob)}` : ""
+			const result = await sandboxFor(env, args.sandboxId).exec(
+				`grep -rInI ${globArg} -e ${shellQuote(query)} ${shellQuote(root)} 2>/dev/null | head -n ${limit + 1}`,
+				{ timeout: 30_000 },
+			)
+			const lines = result.stdout.split("\n").filter(Boolean)
+			const truncated = lines.length > limit
+			const matches = lines.slice(0, limit).map((line) => {
+				// grep prints path:line:text, and the path may contain colons.
+				const match = line.match(/^(.*?):(\d+):(.*)$/)
+				return {
+					file: match?.[1] ?? line,
+					line: match?.[2] ? Number(match[2]) : 0,
+					text: (match?.[3] ?? "").slice(0, 400),
+				}
+			})
+			return { matches, truncated }
+		},
+
+		async diff(args) {
+			const cwd = absolute(normalizeCwd(args.cwd, "workspace"))
+			const sandbox = sandboxFor(env, args.sandboxId)
+			const status = await sandbox.exec(
+				`cd ${shellQuote(cwd)} && git status --porcelain 2>/dev/null | head -n 200`,
+				{ timeout: 20_000 },
+			)
+			const changedFiles = status.stdout
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => line.slice(3).trim())
+				.filter(Boolean)
+			if (!changedFiles.length) {
+				return { status: status.stdout.trim(), diff: "", changedFiles, truncated: false }
+			}
+			const diff = await sandbox.exec(
+				`cd ${shellQuote(cwd)} && git diff --no-color 2>/dev/null | head -c ${sandboxLimits.maxDiffChars}`,
+				{ timeout: 30_000 },
+			)
+			const truncated = diff.stdout.length >= sandboxLimits.maxDiffChars
+			return {
+				status: status.stdout.trim(),
+				diff: diff.stdout,
+				changedFiles,
+				truncated,
+			}
 		},
 
 		async getArtifact(args) {

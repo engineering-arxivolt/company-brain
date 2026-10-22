@@ -13,6 +13,7 @@ import {
 	normalizePath,
 	sandboxLimits,
 	validateRepoUrl,
+	validateSearchPattern,
 } from "./guards"
 import {
 	deleteSandboxSession,
@@ -22,6 +23,8 @@ import {
 	saveSandboxSession,
 	touchSandboxSession,
 } from "./sessions"
+import { openPullRequestFromSandbox } from "./pull-request"
+import type { McpConnectionRow } from "../mcp/store"
 
 export type CreateSandboxToolsArgs = {
 	env: Env
@@ -357,11 +360,216 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		},
 	})
 
+	const sandbox_write_file = deps.tool({
+		description:
+			"Write or replace a file in the active sandbox workspace. Use it to make a real edit to code you have read — a fix, a new file, a config change — and then use sandbox_diff to review what changed. The write stays inside the sandbox until you open a pull request from it.",
+		inputSchema: deps.z.object({
+			path: deps.z
+				.string()
+				.min(1)
+				.describe("Path to the file, relative to the workspace root."),
+			content: deps.z
+				.string()
+				.describe("The full new contents of the file."),
+			reason: deps.z
+				.string()
+				.min(1)
+				.describe("Why this edit is needed for the user's request."),
+		}),
+		execute: async ({ path, content, reason }) => {
+			try {
+				const session = loadSandboxSession(agent, sessionKey)
+				if (!session) return missingSession()
+				const target = normalizePath(path, session.defaultCwd)
+				console.log(
+					`[company-brain][${traceId}] sandbox_write_file path=${target} chars=${content.length} reason="${logPreview(reason)}"`,
+				)
+				const out = await client.writeFile({
+					sandboxId: session.sandboxId,
+					path: target,
+					content,
+				})
+				touchSandboxSession(agent, session)
+				return { ...out, written: true }
+			} catch (error) {
+				return toolError(error)
+			}
+		},
+	})
+
+	const sandbox_search = deps.tool({
+		description:
+			"Search the active sandbox workspace for a pattern (a regular expression, or a plain word). Use it to find where something lives in a cloned repository before reading files — reading a codebase one file at a time does not scale. Returns file, line number and the matching line.",
+		inputSchema: deps.z.object({
+			query: deps.z
+				.string()
+				.min(1)
+				.describe("The pattern to search for, e.g. 'DEGRADED_NOTICE' or 'createAutomation\\('."),
+			path: deps.z
+				.string()
+				.optional()
+				.describe("Directory to search in. Defaults to the workspace root."),
+			glob: deps.z
+				.string()
+				.optional()
+				.describe("Only search files matching this glob, e.g. '*.ts'."),
+			limit: deps.z
+				.number()
+				.int()
+				.min(1)
+				.max(200)
+				.optional()
+				.describe("Maximum matches to return. Defaults to 40."),
+		}),
+		execute: async ({ query, path, glob, limit }) => {
+			try {
+				const session = loadSandboxSession(agent, sessionKey)
+				if (!session) return missingSession()
+				const pattern = validateSearchPattern(query)
+				if (!pattern.ok) return { error: pattern.error }
+				const out = await client.search({
+					sandboxId: session.sandboxId,
+					query: pattern.query,
+					path: normalizePath(path, session.defaultCwd),
+					glob,
+					limit,
+				})
+				touchSandboxSession(agent, session)
+				return out
+			} catch (error) {
+				return toolError(error)
+			}
+		},
+	})
+
+	const sandbox_diff = deps.tool({
+		description:
+			"Show what changed in the active sandbox workspace: the changed files and the diff. Run it after editing files, before proposing the change to anyone — a change nobody has seen is a change nobody can approve.",
+		inputSchema: deps.z.object({}),
+		execute: async () => {
+			try {
+				const session = loadSandboxSession(agent, sessionKey)
+				if (!session) return missingSession()
+				const out = await client.diff({
+					sandboxId: session.sandboxId,
+					cwd: session.defaultCwd,
+				})
+				touchSandboxSession(agent, session)
+				return out
+			} catch (error) {
+				return toolError(error)
+			}
+		},
+	})
+
+	const sandbox_open_pull_request = deps.tool({
+		description:
+			"Open a DRAFT pull request from the changes in the active sandbox. Use it after sandbox_write_file and sandbox_diff, once the change is ready for a human to review. The pull request always targets a new branch and is always a draft: it is never merged and never deployed. The diff is included in the pull request body so the reviewer sees exactly what changed.",
+		inputSchema: deps.z.object({
+			owner: deps.z.string().min(1).describe("Repository owner, e.g. Arxivolt."),
+			repo: deps.z.string().min(1).describe("Repository name, e.g. arxivolt-engine."),
+			base_branch: deps.z
+				.string()
+				.min(1)
+				.describe("Branch the pull request merges into, e.g. main."),
+			branch: deps.z
+				.string()
+				.min(1)
+				.describe("New branch to push the change to. Never use main or master."),
+			title: deps.z.string().min(1).describe("Pull request title."),
+			body: deps.z
+				.string()
+				.optional()
+				.describe("What the change does and why."),
+			paths: deps.z
+				.array(deps.z.string())
+				.optional()
+				.describe("Files to include. Defaults to every changed file."),
+		}),
+		execute: async ({
+			owner,
+			repo,
+			base_branch,
+			branch,
+			title,
+			body,
+			paths,
+		}) => {
+			try {
+				const session = loadSandboxSession(agent, sessionKey)
+				if (!session) return missingSession()
+				const connection = await findGitHubConnection(env, scope.orgId)
+				if (!connection) {
+					return {
+						isError: true,
+						error:
+							"No GitHub connection is available. Connect GitHub under Settings → Connectors first.",
+					}
+				}
+				const { connectToolProvider } = await import("../mcp/provider")
+				const handle = await connectToolProvider(
+					env,
+					connection,
+					`${env.PUBLIC_URL}/brain/mcp-connections/callback`,
+				)
+				try {
+					const result = await openPullRequestFromSandbox({
+						env,
+						connection,
+						handle,
+						client,
+						sandboxId: session.sandboxId,
+						cwd: session.defaultCwd,
+						owner,
+						repo,
+						baseBranch: base_branch,
+						branch,
+						title,
+						body,
+						paths,
+					})
+					if (!result.ok) return { isError: true, error: result.error }
+					console.log(
+						`[company-brain][${traceId}] sandbox_open_pull_request repo=${owner}/${repo} branch=${result.branch} files=${result.files.length} url=${result.url}`,
+					)
+					return {
+						...result,
+						note: "This is a draft pull request. Nothing is merged and nothing is deployed until a human reviews it.",
+					}
+				} finally {
+					await handle.close().catch(() => {})
+				}
+			} catch (error) {
+				return toolError(error)
+			}
+		},
+	})
+
 	return {
 		sandbox_start,
 		sandbox_run,
 		sandbox_list_files,
 		sandbox_read_file,
 		sandbox_get_artifact,
+		sandbox_write_file,
+		sandbox_search,
+		sandbox_diff,
+		sandbox_open_pull_request,
 	}
+}
+
+/** The operator's GitHub connection, for the pull-request handoff. */
+async function findGitHubConnection(
+	env: Env,
+	orgId: string,
+): Promise<McpConnectionRow | null> {
+	const { listActiveConnectionsForActor } = await import("../mcp/store")
+	const connections = await listActiveConnectionsForActor(env, orgId, undefined, false)
+	const github = connections.filter((connection) => {
+		const slug = (connection.serverSlug ?? "").toLowerCase()
+		const url = (connection.serverUrl ?? "").toLowerCase()
+		return slug === "github" || url.includes("githubcopilot.com")
+	})
+	if (!github.length) return null
+	return github.find((c) => c.userId !== null) ?? github[0] ?? null
 }
