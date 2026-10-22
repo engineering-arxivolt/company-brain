@@ -72,6 +72,59 @@ export function ensureSandboxSessionTables(agent: CompanyBrainAgent): void {
 	try {
 		agent.sql`ALTER TABLE brain_sandbox_session ADD COLUMN repo_url TEXT`
 	} catch {}
+	// The edits a session made, kept here so a container that went to sleep
+	// does not take the work with it. A cold container comes back from the
+	// image, so the clone has to happen again — and the changes on top of it
+	// have to be replayed.
+	agent.sql`
+		CREATE TABLE IF NOT EXISTS brain_sandbox_edit (
+			session_key TEXT NOT NULL,
+			path TEXT NOT NULL,
+			content TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (session_key, path)
+		)
+	`
+}
+
+/** Record a file a session wrote, so it can be replayed after a cold start. */
+export function saveSandboxEdit(
+	agent: CompanyBrainAgent,
+	sessionKey: string,
+	path: string,
+	content: string,
+): void {
+	ensureSandboxSessionTables(agent)
+	agent.sql`
+		INSERT INTO brain_sandbox_edit (session_key, path, content, updated_at)
+		VALUES (${sessionKey}, ${path}, ${content}, ${Date.now()})
+		ON CONFLICT (session_key, path) DO UPDATE SET
+			content = excluded.content,
+			updated_at = excluded.updated_at
+	`
+}
+
+/** The edits a session made, oldest first. */
+export function listSandboxEdits(
+	agent: CompanyBrainAgent,
+	sessionKey: string,
+): Array<{ path: string; content: string }> {
+	ensureSandboxSessionTables(agent)
+	const rows = agent.sql<{ path: string; content: string }>`
+		SELECT path, content FROM brain_sandbox_edit
+		WHERE session_key = ${sessionKey}
+		ORDER BY updated_at ASC
+	`
+	return rows.map((row) => ({ path: row.path, content: row.content }))
+}
+
+/** Forget a session's edits: they are in GitHub now, or the session is over. */
+export function clearSandboxEdits(
+	agent: CompanyBrainAgent,
+	sessionKey: string,
+): void {
+	ensureSandboxSessionTables(agent)
+	agent.sql`DELETE FROM brain_sandbox_edit WHERE session_key = ${sessionKey}`
 }
 
 function fromRow(row: SandboxSessionRow): SandboxSession {

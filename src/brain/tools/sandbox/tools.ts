@@ -16,8 +16,11 @@ import {
 	validateSearchPattern,
 } from "./guards"
 import {
+	clearSandboxEdits,
 	deleteSandboxSession,
+	listSandboxEdits,
 	loadSandboxSession,
+	saveSandboxEdit,
 	type SandboxSessionScope,
 	sandboxSessionKey,
 	saveSandboxSession,
@@ -86,9 +89,37 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		Promise<{ fileId: string; sizeBytes: number; path: string }>
 	>()
 
+	/**
+	 * The session, opened on demand.
+	 *
+	 * A model that reaches for a sandbox tool without setting one up first
+	 * used to get "call sandbox_start first" and lose a round trip to it. A
+	 * workspace opens itself instead, so the work starts where the model is.
+	 */
+	const ensureSession = async (goal: string) => {
+		const existing = loadSandboxSession(agent, sessionKey)
+		if (existing) return existing
+		const created = await client.createSandbox({ goal })
+		const session = saveSandboxSession(agent, {
+			sessionKey,
+			sandboxId: created.sandboxId,
+			orgId: scope.orgId,
+			userId: scope.userId ?? null,
+			channel: scope.channel ?? null,
+			threadTs: scope.threadTs ?? null,
+			defaultCwd: created.defaultCwd,
+			repoUrl: created.repoUrl ?? null,
+			goal,
+		})
+		console.log(
+			`[company-brain][${traceId}] sandbox opened on demand id=${session.sandboxId} cwd=${session.defaultCwd}`,
+		)
+		return session
+	}
+
 	const sandbox_start = deps.tool({
 		description:
-			"Create or reuse an isolated workspace for code/repo/file/PDF work. Use this before sandbox_run, sandbox_read_file, sandbox_list_files, or sandbox_get_artifact. Only public https repo URLs are supported in V1.",
+			"Create or reuse an isolated workspace for code/repo/file/PDF work, cloning a repository into it when you give one. Private repositories work too: the workspace is set up with the operator's own GitHub access. Call this before a long piece of work; a one-off sandbox tool call opens a workspace on its own.",
 		inputSchema: deps.z.object({
 			goal: deps.z
 				.string()
@@ -169,6 +200,27 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 					repoUrl: created.repoUrl ?? null,
 					goal,
 				})
+				// A cold container comes back from the image, so the edits this
+				// session made have to be replayed on top of the fresh clone.
+				// Without this, a container that slept halfway through a task
+				// took the work with it.
+				const edits = listSandboxEdits(agent, sessionKey)
+				let replayed = 0
+				for (const edit of edits) {
+					const written = await client
+						.writeFile({
+							sandboxId: session.sandboxId,
+							path: edit.path,
+							content: edit.content,
+						})
+						.catch(() => null)
+					if (written) replayed++
+				}
+				if (edits.length) {
+					console.log(
+						`[company-brain][${traceId}] sandbox_start replayed ${replayed}/${edits.length} edit(s) onto the fresh workspace`,
+					)
+				}
 				console.log(
 					`[company-brain][${traceId}] sandbox_start created id=${session.sandboxId} cwd=${session.defaultCwd} repo=${created.repoUrl ?? "-"}`,
 				)
@@ -179,6 +231,7 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 					repoUrl: created.repoUrl,
 					cloneOutput: created.cloneOutput,
 					expiresAt: session.expiresAt,
+					...(replayed > 0 ? { replayedEdits: replayed } : {}),
 				}
 			} catch (error) {
 				return toolError(error)
@@ -208,8 +261,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		}),
 		execute: async ({ command, reason, cwd, timeoutSec }) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				// A command can replace an artifact at the same path, so cached Slack
 				// file IDs are no longer safe once execution resumes.
 				artifactUploads.clear()
@@ -242,8 +296,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		}),
 		execute: async ({ path, glob }) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const out = await client.listFiles({
 					sandboxId: session.sandboxId,
 					path: normalizePath(path, session.defaultCwd),
@@ -265,8 +320,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		}),
 		execute: async ({ path }) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const out = await client.readTextFile({
 					sandboxId: session.sandboxId,
 					path: normalizePath(path, session.defaultCwd),
@@ -287,8 +343,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		}),
 		execute: async ({ path }) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const slackDestination = args.slackArtifactDestination
 				if (!slackDestination) {
 					const out = await client.getArtifact({
@@ -394,8 +451,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		}),
 		execute: async ({ path, content, reason }) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const target = normalizePath(path, session.defaultCwd)
 				console.log(
 					`[company-brain][${traceId}] sandbox_write_file path=${target} chars=${content.length} reason="${logPreview(reason)}"`,
@@ -405,6 +463,10 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 					path: target,
 					content,
 				})
+				// Keep the edit outside the container: a container that goes to
+				// sleep loses its filesystem, and the work should not die with
+				// it.
+				saveSandboxEdit(agent, sessionKey, target, content)
 				touchSandboxSession(agent, session)
 				return { ...out, written: true }
 			} catch (error) {
@@ -439,8 +501,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		}),
 		execute: async ({ query, path, glob, limit }) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const pattern = validateSearchPattern(query)
 				if (!pattern.ok) return { error: pattern.error }
 				const out = await client.search({
@@ -464,8 +527,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		inputSchema: deps.z.object({}),
 		execute: async () => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const out = await client.diff({
 					sandboxId: session.sandboxId,
 					cwd: session.defaultCwd,
@@ -512,8 +576,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 			paths,
 		}) => {
 			try {
-				const session = loadSandboxSession(agent, sessionKey)
-				if (!session) return missingSession()
+				const session = await ensureSession(
+					"workspace opened on demand for a sandbox tool call",
+				)
 				const connection = await findGitHubConnection(
 					env,
 					scope.orgId,
@@ -549,6 +614,9 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 						paths,
 					})
 					if (!result.ok) return { isError: true, error: result.error }
+					// The change is in GitHub now, so the working copy of it does
+					// not need to survive the next cold start.
+					clearSandboxEdits(agent, sessionKey)
 					console.log(
 						`[company-brain][${traceId}] sandbox_open_pull_request repo=${owner}/${repo} branch=${result.branch} files=${result.files.length} url=${result.url}`,
 					)
