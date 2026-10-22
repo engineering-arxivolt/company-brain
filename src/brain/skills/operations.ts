@@ -1,4 +1,4 @@
-import { captureBrainSkillEvent } from "@/lib/posthog"
+import { captureBrainSkillEvent, flushTelemetry } from "@/lib/posthog"
 import type { SlackOrg } from "../slack/workspace"
 import type { CompanyBrainAgent } from "../turn/agent"
 import { type RunSkillImportResult, runSkillImport } from "./import"
@@ -107,5 +107,9 @@ export async function importSkillsWithSideEffects(
 		updated: result.updated.length,
 		skipped: result.skipped.length,
 	})
+	// This runs outside a turn on the HTTP route, where nothing else flushes
+	// the queue: without this the import's event is captured and then lost
+	// when the isolate is evicted.
+	await flushTelemetry()
 	return result
 }
