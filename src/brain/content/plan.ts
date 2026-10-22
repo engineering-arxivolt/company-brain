@@ -12,6 +12,12 @@
  * replaces.
  */
 import { CONTENT_DRAFT_KINDS, type ContentDraftKind } from "./store"
+import {
+	defaultFunnelForKind,
+	defaultVehicleForKind,
+	type ContentFunnel,
+	type ContentVehicle,
+} from "./taxonomy"
 
 export type ContentChannel = {
 	id: string
@@ -27,6 +33,8 @@ export type ContentChannel = {
 
 export type PlannedDraft = {
 	kind: ContentDraftKind
+	funnel: ContentFunnel
+	vehicle: ContentVehicle
 	channel: ContentChannel | null
 }
 
@@ -115,6 +123,8 @@ export function planDailyDrafts(args: {
 	const offset = channels.length ? day % channels.length : 0
 	return kinds.map((kind, i) => ({
 		kind,
+		funnel: defaultFunnelForKind(kind),
+		vehicle: defaultVehicleForKind(kind),
 		channel: channels.length
 			? (channels[(offset + i) % channels.length] ?? null)
 			: null,

@@ -37,7 +37,7 @@ export type ScheduledTaskPayload = {
 	memoryScope?: SlackMemoryScope
 	relatedSlackUserIds?: string[]
 	scheduledWhen?: ScheduleWhen
-	kind?: "reminder" | "digest" | "content"
+	kind?: "reminder" | "digest" | "content" | "news"
 	personalConnectionsOnly?: boolean
 	// Cadence, derived from the cron; drives the heading + lookback window.
 	cadence?: "daily" | "weekly"
@@ -403,6 +403,30 @@ async function runScheduledTaskInner(
 		console.log(
 			`[company-brain] scheduled task ${schedule.id} blocked: entitlement org=${org.id}`,
 		)
+		return
+	}
+
+	// The alert watch reads machine-readable feeds and raises only what is
+	// new, straight into the owner's DM. It is deterministic: no model, no
+	// guessing, and it never posts anything on its own.
+	if (
+		payload.kind === "news" &&
+		payload.automationId &&
+		payload.deliverTo === "dm"
+	) {
+		const { runAlertWatch } = await import("../content/alerts")
+		await runAlertWatch({
+			agent,
+			env: brainAgent(agent).env,
+			org,
+			teamId: payload.teamId,
+			botToken,
+			dmChannelId: target,
+			ownerUserId:
+				payload.creatorUserId ?? ws.installedByUserId ?? ws.orgId,
+			ownerSlackUserId: payload.creatorSlackUserId,
+			traceId,
+		})
 		return
 	}
 

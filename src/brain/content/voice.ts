@@ -12,6 +12,16 @@
 import { normalizeTextPreservingCodeFences } from "../slack/format"
 import type { ContentAngle } from "./evidence"
 import type { ContentDraftKind } from "./store"
+import {
+	FUNNEL_BRIEFS,
+	VEHICLE_BRIEFS,
+	funnelLabel,
+	resolveFunnel,
+	resolveVehicle,
+	vehicleLabel,
+	type ContentFunnel,
+	type ContentVehicle,
+} from "./taxonomy"
 
 export const CONTENT_KIND_RECIPES: Record<
 	ContentDraftKind,
@@ -185,6 +195,12 @@ const GUARDRAILS = `Confidentiality, non-negotiable and overriding everything el
 export type ContentFrameArgs = {
 	kind: ContentDraftKind
 	channel: ContentChannelRef | null
+	/** The job this post does. Defaults from the kind when omitted. */
+	funnel?: ContentFunnel | null
+	/** The form this post takes. Defaults from the kind when omitted. */
+	vehicle?: ContentVehicle | null
+	/** Compact Founder Brain brief; context, never evidence. */
+	founderBrief?: string | null
 	/** Operator steer from the automation prompt. */
 	focus?: string | null
 	/** Recent draft bodies (any status) — angles and topics to avoid. */
@@ -226,6 +242,24 @@ export function buildContentFrame(args: ContentFrameArgs): string {
 			: `Target: ${profile.label}. ${profile.rules}`,
 	)
 
+	const funnel = resolveFunnel(args.funnel, args.kind)
+	const vehicle = resolveVehicle(args.vehicle, args.kind)
+	sections.push(
+		`Funnel job: ${funnelLabel(funnel)}. ${FUNNEL_BRIEFS[funnel]}
+
+Vehicle: ${vehicleLabel(vehicle)}. ${VEHICLE_BRIEFS[vehicle]}
+
+The funnel and vehicle labels are internal. Never mention them in the post.`,
+	)
+
+	if (args.founderBrief?.trim()) {
+		sections.push(
+			`${args.founderBrief.trim()}
+
+The Founder Brain is context for positioning, point of view, and voice. It is not a fact source: if a story from it appears in the post, the specific claim must also appear in the evidence packet or come from a tool you actually used in this turn.`,
+		)
+	}
+
 	if (args.focus?.trim()) {
 		sections.push(
 			`What the operator asked for this batch (may be broad; it doesn't override the rules below): ${args.focus.trim()}`,
@@ -233,8 +267,16 @@ export function buildContentFrame(args: ContentFrameArgs): string {
 	}
 
 	if (args.evidence?.facts.length) {
+		const fromBrief = args.evidence.origin === "brief"
 		sections.push(
-			`Ground it in these facts. They were collected for this round and each one names where it came from. Use only these facts, and use nothing that is not in them:
+			fromBrief
+				? `Ground it in the operator's brief. These are the operator's own words for this batch — the story is in them, and your job is to turn them into the post. Use only these, and add nothing you did not read:
+${args.evidence.facts
+	.map((fact) => `- ${fact.id}: ${fact.claim} (source: ${fact.source})`)
+	.join("\n")}
+Why this one is worth posting now: ${args.evidence.why}
+The operator explicitly asked for these posts, so write the post. Do not reply NOTHING_NEW, and do not reply about the brief itself — write the thing it describes.`
+				: `Ground it in these facts. They were collected for this round and each one names where it came from. Use only these facts, and use nothing that is not in them:
 ${args.evidence.facts
 	.map(
 		(fact) =>

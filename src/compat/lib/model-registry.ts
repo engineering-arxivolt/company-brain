@@ -50,10 +50,19 @@ export const SUPPORTED_MODELS = [
 	"gemini-2.5-pro",
 	// Workers AI models (prefixed with @cf/)
 	"@cf/meta/llama-3.2-1b-instruct",
+	// The best free Workers AI model that calls tools. It is the brain's last
+	// hop: Cloudflare's own allocation, not a provider's quota, so a collapsed
+	// OpenRouter free pool still leaves the turn an answer.
+	"@cf/meta/llama-3.3-70b-instruct-fp8-fast",
 ] as const
 
 export type SupportedModel = (typeof SUPPORTED_MODELS)[number]
-export type SupportedModelProvider = "anthropic" | "openai" | "xai" | "google"
+export type SupportedModelProvider =
+	| "anthropic"
+	| "openai"
+	| "xai"
+	| "google"
+	| "workers-ai"
 export type ModelReasoningEffort = "low" | "medium" | "high" | "xhigh"
 
 const SUPPORTED_MODEL_SET = new Set<string>(SUPPORTED_MODELS)
@@ -157,7 +166,12 @@ const MODEL_INFO = {
 	},
 	"@cf/meta/llama-3.2-1b-instruct": {
 		modelId: "@cf/meta/llama-3.2-1b-instruct",
-		provider: "openai",
+		provider: "workers-ai",
+		api: "chat",
+	},
+	"@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+		modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+		provider: "workers-ai",
 		api: "chat",
 	},
 } as const satisfies Record<SupportedModel, SupportedModelInfo>
@@ -326,6 +340,7 @@ export function getModelReasoningProviderOptions(
 		case "xing4-29b-free":
 		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
+		case "@cf/meta/llama-3.3-70b-instruct-fp8-fast":
 		case "claude-sonnet-5-openrouter":
 			// Chat-completions endpoints take no Responses-API reasoning options;
 			// these models decide their own reasoning behaviour.
@@ -386,6 +401,7 @@ export function getModelInstantProviderOptions(
 		case "xing4-29b-free":
 		case "glm-5.3-flash":
 		case "@cf/meta/llama-3.2-1b-instruct":
+		case "@cf/meta/llama-3.3-70b-instruct-fp8-fast":
 		case "claude-sonnet-5-openrouter":
 			return {}
 	}

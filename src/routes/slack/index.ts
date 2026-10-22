@@ -635,6 +635,68 @@ function parseContentDraftInteractionPayload(rawBody: Uint8Array): {
 	}
 }
 
+function parseContentNewsInteractionPayload(rawBody: Uint8Array): {
+	teamId: string
+	slackUserId: string
+	briefId: string
+	signalId: string
+	action: "tof" | "mof" | "skip"
+	responseUrl?: string
+	cardChannel?: string
+	cardTs?: string
+} | null {
+	const body = new TextDecoder().decode(rawBody)
+	const payload = new URLSearchParams(body).get("payload")
+	if (!payload) return null
+	let parsed: unknown
+	try {
+		parsed = JSON.parse(payload)
+	} catch {
+		return null
+	}
+	if (!parsed || typeof parsed !== "object") return null
+	const p = parsed as {
+		type?: unknown
+		team?: { id?: unknown }
+		user?: { id?: unknown }
+		channel?: { id?: unknown }
+		message?: { ts?: unknown }
+		response_url?: unknown
+		actions?: Array<{ action_id?: unknown; value?: unknown }>
+	}
+	if (p.type !== "block_actions") return null
+	const action = p.actions?.[0]
+	const actionId =
+		typeof action?.action_id === "string" ? action.action_id : undefined
+	const value = typeof action?.value === "string" ? action.value : undefined
+	const teamId = typeof p.team?.id === "string" ? p.team.id : undefined
+	const slackUserId = typeof p.user?.id === "string" ? p.user.id : undefined
+	if (!actionId || !value || !teamId || !slackUserId) return null
+	const draftAction =
+		actionId === "brain_news_draft_tof"
+			? ("tof" as const)
+			: actionId === "brain_news_draft_mof"
+				? ("mof" as const)
+				: actionId === "brain_news_skip"
+					? ("skip" as const)
+					: undefined
+	if (!draftAction) return null
+	const [briefId, signalId] = value.split("|")
+	if (!briefId || !signalId) return null
+	return {
+		teamId,
+		slackUserId,
+		briefId,
+		signalId,
+		action: draftAction,
+		responseUrl:
+			typeof p.response_url === "string" ? p.response_url : undefined,
+		cardChannel:
+			typeof p.channel?.id === "string" ? p.channel.id : undefined,
+		cardTs: typeof p.message?.ts === "string" ? p.message.ts : undefined,
+	}
+}
+
 export const slackRoutes = new Hono<AppContext>()
 	.post("/events", async (c) => {
 		const rawBody = new Uint8Array(await c.req.raw.clone().arrayBuffer())
@@ -1001,6 +1063,21 @@ export const slackRoutes = new Hono<AppContext>()
 			)) as unknown as CompanyBrainAgent
 			c.executionCtx.waitUntil(
 				agent.onContentDraftInteraction(contentInteraction),
+			)
+			return c.json({ ok: true })
+		}
+
+		// The News Desk: a signal is drafted, or skipped.
+		const newsInteraction = parseContentNewsInteractionPayload(rawBody)
+		if (newsInteraction) {
+			const ws = await getWorkspaceByTeamId(c.env, newsInteraction.teamId)
+			if (!ws) return c.json({ ok: true })
+			const agent = (await getAgentByName(
+				c.env.COMPANY_BRAIN_AGENT,
+				ws.orgId,
+			)) as unknown as CompanyBrainAgent
+			c.executionCtx.waitUntil(
+				agent.onContentNewsInteraction(newsInteraction),
 			)
 			return c.json({ ok: true })
 		}

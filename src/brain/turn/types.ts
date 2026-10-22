@@ -91,6 +91,18 @@ export type ComputeTurnOptions = {
 	onTerminalProposal?: (proposal: TurnTerminalProposal | null) => void
 	/** Internal passive triage escalation. Read-only and allowed to conclude silently. */
 	passiveInvestigation?: { reason: string }
+	/**
+	 * "none" gives the turn no tools at all.
+	 *
+	 * Every tool schema is prompt the model re-reads on every step, and on
+	 * the free models that is the difference between a thirty-second write
+	 * and a four-minute one. A turn that already holds the facts it needs
+	 * does not need tools, and its speed is the whole point.
+	 *
+	 * "lean" keeps only what a research turn actually uses: web search, page
+	 * extraction, the connected apps, and the terminal tool.
+	 */
+	toolPolicy?: "full" | "none" | "lean"
 }
 
 export type TurnThreadHistory = SlackThreadHistory & {

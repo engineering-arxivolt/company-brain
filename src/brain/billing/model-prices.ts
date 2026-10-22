@@ -160,6 +160,13 @@ const MODEL_USD_PRICES: Record<SupportedModel, ModelTokenPrices> = {
 		inputPerMTok: 0,
 		outputPerMTok: 0,
 	},
+
+	// Workers AI: covered by Cloudflare's own allocation, so no provider
+	// bill. Priced at zero so isFreeModel keeps it off the write path.
+	"@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+		inputPerMTok: 0,
+		outputPerMTok: 0,
+	},
 }
 
 /** Not user-selectable, so absent from SUPPORTED_MODELS. Groq list rates, verified 2026-08-26: https://groq.com/pricing */

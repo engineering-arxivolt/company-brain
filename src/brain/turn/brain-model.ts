@@ -10,6 +10,7 @@ import type {
 	LanguageModelV3Usage,
 } from "@ai-sdk/provider"
 import { createAiGateway } from "ai-gateway-provider"
+import { createWorkersAI } from "workers-ai-provider"
 import { captureException } from "@/lib/capture"
 import { getModelTokenPrices } from "../billing/model-prices"
 import {
@@ -23,12 +24,26 @@ import { brainFallbackModelFor, TRIAGE_MODEL } from "./model-profile"
 // Sentinel the gateway swaps for its stored provider key (BYOK).
 const GATEWAY_INJECTED_KEY = "CF_TEMP_TOKEN"
 
+/**
+ * The last hop of the answering chain: a Workers AI model reached through the
+ * deployment's own binding.
+ *
+ * It is last on purpose. Every provider above can be out of quota at the
+ * same moment — on one afternoon in October 2026 all of them were — and the
+ * right answer to that is a model the workspace already has a binding for,
+ * not a degraded notice. It is free by Cloudflare's allocation, so it never
+ * runs out of anyone's credits.
+ */
+export const WORKERS_AI_LAST_RESORT_MODEL: SupportedModel =
+	"@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
 /** Best model this deployment can reach, per provider. */
 const PROVIDER_DEFAULT_MODEL: Record<SupportedModelProvider, SupportedModel> = {
 	anthropic: "claude-sonnet-5",
 	openai: "gpt-5.6",
 	google: "gemini-3.8-flash",
 	xai: "grok-4.5",
+	"workers-ai": WORKERS_AI_LAST_RESORT_MODEL,
 }
 
 /** "1"/"true"/"yes"/"on" (case- and whitespace-insensitive) to let a free
@@ -75,20 +90,34 @@ export function allowFreeMainTurn(env: Env): boolean {
  * were healthy. So the chain carries several free hops and lets the 404 skip
  * from one to the next instead of pinning a single id that can die overnight.
  */
+/**
+ * The stand-in for a model whose own provider has no key, when the
+ * deployment speaks an OpenAI-compatible protocol.
+ *
+ * It was `minimax-m3.1-flash-free`, which OpenRouter retired within a day:
+ * the id answers 404 and the turn loses its only hop. The free pool moves,
+ * so this points at the catalog's first free tool-capable model when one is
+ * known, and at a stable free id otherwise.
+ */
 export const OPENAI_COMPATIBLE_FALLBACK_MODEL: SupportedModel =
-	"minimax-m3.1-flash-free"
+	"dots-3-note-free"
 export const OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL: SupportedModel =
 	"dots-3-note-free"
 
 /**
  * Free hops for the OpenAI-compatible endpoint, in the order the chain tries
  * them. Every entry has tools + response_format (the brain's decision paths
- * need typed JSON) and was healthy on the last live check. A hop that answers
- * 404 (no endpoint available) is skipped, so a dead id costs one cheap
- * request instead of the whole turn.
+ * need typed JSON).
+ *
+ * This is the FLOOR, not the list. OpenRouter renames and retires free ids
+ * without warning — the minimax free id was gone within a day of being added,
+ * and a retired id answers 404, which costs a request and then skips. The
+ * live catalog is the list: `catalogFreeToolModels()` holds the free models
+ * OpenRouter currently offers with tools and typed JSON, ordered by context,
+ * and the chain uses that. These ids are only the floor for a deployment
+ * that could not reach the catalog.
  */
 export const OPENAI_COMPATIBLE_FREE_MODELS: readonly SupportedModel[] = [
-	"minimax-m3.1-flash-free",
 	"dots-3-note-free",
 	"xing4-29b-free",
 	"nemotron-3-super-free",
@@ -186,6 +215,34 @@ export function catalogMainTurnModels(): readonly SupportedModel[] | null {
 	return catalogMainTurnModelsState
 }
 
+/**
+ * The free models the live catalog currently offers with tools and typed
+ * JSON, ordered by context length.
+ *
+ * This is what makes the free tier self-updating. OpenRouter renames,
+ * retires and adds free ids constantly; a hardcoded list of them goes stale
+ * within days, and a stale id is a 404 that costs a request on every turn.
+ * The catalog is the list, so the chain always starts from the free models
+ * that actually exist today.
+ */
+let catalogFreeToolModelsState: readonly SupportedModel[] | null = null
+
+export function setCatalogFreeToolModels(
+	models: readonly SupportedModel[],
+): void {
+	catalogFreeToolModelsState = [...models]
+}
+
+export function catalogFreeToolModels(): readonly SupportedModel[] | null {
+	return catalogFreeToolModelsState
+}
+
+/** The free hops the chain should try, live catalog first, floor second. */
+export function freeToolModelHops(): readonly SupportedModel[] {
+	const live = catalogFreeToolModels()
+	return live && live.length ? live : OPENAI_COMPATIBLE_FREE_MODELS
+}
+
 /** Test seam: forget the catalog's picks, restoring the pinned pair. */
 export function clearCatalogMainTurnModels(): void {
 	catalogMainTurnModelsState = null
@@ -245,6 +302,9 @@ export function providerKey(
 			return env.GOOGLE_GENERATIVE_AI_API_KEY
 		case "xai":
 			return env.XAI_API_KEY
+		case "workers-ai":
+			// A binding, not a key: Cloudflare's own allocation.
+			return env.AI ? "workers-ai" : undefined
 	}
 }
 
@@ -289,9 +349,10 @@ function fallbackModelFor(
 	env: Env,
 ): SupportedModel {
 	if (provider === "openai" && openAiCompatibleBaseUrl(env)) {
-		return requested === TRIAGE_MODEL
-			? OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
-			: OPENAI_COMPATIBLE_FALLBACK_MODEL
+		if (requested === TRIAGE_MODEL) return OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL
+		// The best free tool-capable model the catalog currently offers, so a
+		// renamed or retired free id cannot leave the turn with no hop.
+		return freeToolModelHops()[0] ?? OPENAI_COMPATIBLE_FALLBACK_MODEL
 	}
 	return PROVIDER_DEFAULT_MODEL[provider]
 }
@@ -338,6 +399,18 @@ export function brainProviderModel(
 			return createAnthropic({ apiKey })(modelId)
 		case "google":
 			return createGoogleGenerativeAI({ apiKey })(modelId)
+		case "workers-ai": {
+			// Cloudflare's own models, reached through the binding. No key, no
+			// provider quota: this is the hop that survives everything else
+			// being out of credits.
+			const binding = env.AI
+			if (!binding) {
+				throw new Error(
+					"[company-brain] the Workers AI binding is not available on this deployment.",
+				)
+			}
+			return createWorkersAI({ binding })(modelId)
+		}
 	}
 }
 
@@ -433,7 +506,37 @@ export function classifyPoolFailure(error: unknown): PoolFailure | null {
 	if (status === 401 || status === 403) return "unavailable"
 	if (typeof status === "number" && status >= 500) return "unavailable"
 	if (status === 429) return isQuotaMessage(error) ? "exhausted" : "rate_limited"
+	// A model whose window is too small for the prompt is a dead hop, not a
+	// dead turn. OpenRouter reports this as error 5021 with no HTTP status,
+	// and the brain's prompt is around 24k tokens — larger than the window
+	// some free providers serve. The chain hops to the next candidate, which
+	// is the whole point of having several.
+	if (isContextWindowError(error)) return "unavailable"
 	return isQuotaMessage(error) ? "exhausted" : null
+}
+
+/**
+ * True for "the prompt does not fit in this model" errors.
+ *
+ * OpenRouter answers with code 5021 and a message naming the window limit.
+ * The AI SDK wraps it as an APICallError with no status code, so the message
+ * is what identifies it.
+ */
+function isContextWindowError(error: unknown): boolean {
+	const message = errorMessage(error)
+	if (!message) return false
+	return (
+		/\b5021\b/.test(message) ||
+		/exceeded this model context window limit/i.test(message) ||
+		/context_length_exceeded/i.test(message)
+	)
+}
+
+function errorMessage(error: unknown): string {
+	if (!error || typeof error !== "object") return ""
+	const record = error as { message?: unknown; data?: unknown }
+	if (typeof record.message === "string") return record.message
+	return ""
 }
 
 /**
@@ -782,7 +885,9 @@ export function brainChainModelNames(
 		// answers with a 404. Several hops turn that dead id into one skipped
 		// request instead of a dead turn.
 		if (allowFreeMainTurn(env)) {
-			candidates.push(...OPENAI_COMPATIBLE_FREE_MODELS)
+			// The live catalog's free models, not a list written down months
+			// ago: OpenRouter renames and retires free ids constantly.
+			candidates.push(...freeToolModelHops())
 		}
 		candidates.push(...autoAddedMainTurnModels())
 	}
@@ -792,6 +897,11 @@ export function brainChainModelNames(
 	if (fallback !== resolved && (gateway || providerHasKey(fallback, env))) {
 		candidates.push(fallback)
 	}
+	// The last hop: Cloudflare's own Workers AI. Every provider above can be
+	// out of quota at the same time — they did, in one afternoon — and the
+	// answer to that is a model the workspace already has a binding for, not
+	// a degraded notice.
+	if (env.AI) candidates.push(WORKERS_AI_LAST_RESORT_MODEL)
 
 	const deduped = [...new Set(candidates)]
 	// The answering turn writes to memory, so it never runs on a free model —
@@ -806,7 +916,12 @@ export function brainChainModelNames(
 	// the flag-on path returned before it.
 	let survivors = deduped
 	if (!allowFreeMainTurn(env)) {
-		const paid = deduped.filter((name) => !isFreeModel(name))
+		// The last resort is exempt: it exists precisely so a collapsed
+		// provider pool still leaves the turn an answer, and dropping it here
+		// would restore the degraded notice it was added to prevent.
+		const paid = deduped.filter(
+			(name) => !isFreeModel(name) || name === WORKERS_AI_LAST_RESORT_MODEL,
+		)
 		if (paid.length > 0) {
 			// Picking a free model in Settings is consent, not accident: the pick
 			// is kept as the chain's LAST hop, so an exhausted paid tier falls

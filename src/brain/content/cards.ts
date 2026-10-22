@@ -9,6 +9,7 @@
 import type { ContentDraft } from "./store"
 import { draftFacts } from "./store"
 import { contentKindLabel } from "./voice"
+import { funnelBalance, funnelLabel, vehicleLabel } from "./taxonomy"
 
 export const CONTENT_PUSH_ACTION = "brain_content_push"
 export const CONTENT_REMIX_ACTION = "brain_content_remix"
@@ -86,7 +87,7 @@ function draftBlocks(
 	opts: { bufferConnected: boolean },
 ): SlackBlock[] {
 	const statusLine = draftStatusLine(draft)
-	const heading = `*${index}. ${contentKindLabel(draft.kind)}* · ${draftChannelText(draft)}`
+	const heading = `*${index}. ${contentKindLabel(draft.kind)}* · ${funnelLabel(draft.funnel)} · ${vehicleLabel(draft.vehicle)} · ${draftChannelText(draft)}`
 	const body = quoteBody(draft.body)
 	const evidence = draftEvidenceLines(draft)
 	const section: SlackBlock = {
@@ -102,7 +103,7 @@ function draftBlocks(
 	const open = draft.status === "pending"
 	if (open) {
 		const elements: SlackBlock[] = []
-		if (opts.bufferConnected && draft.channelId) {
+		if (opts.bufferConnected) {
 			elements.push({
 				type: "button",
 				action_id: CONTENT_PUSH_ACTION,
@@ -152,6 +153,8 @@ export function buildContentRoundBlocks(
 	})
 	const footnotes: string[] = []
 	if (opts.note) footnotes.push(opts.note)
+	const mix = funnelBalance(drafts).note
+	if (mix) footnotes.push(mix)
 	if (opts.evidenceFacts) {
 		footnotes.push(
 			`Grounded in ${opts.evidenceFacts} fact${opts.evidenceFacts === 1 ? "" : "s"} collected for this round — the source is under each post.`,

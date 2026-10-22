@@ -22,6 +22,7 @@
 import { jsonrepair } from "jsonrepair"
 import type { CompanyBrainAgent } from "../turn/agent"
 import type { SlackOrg } from "../slack/workspace"
+import { loadFounderBrief } from "./founder-brain"
 import { CONTENT_DRAFT_KINDS, type ContentDraftKind } from "./store"
 
 /** One verifiable thing, with where it came from. */
@@ -34,6 +35,12 @@ export type ContentFact = {
 	source: string
 	/** The excerpt that supports the claim, when the tool returned one. */
 	quote?: string
+	/**
+	 * A link for the claim, when there is one. Kept apart from the source
+	 * label so the card can say where the claim came from and still show
+	 * what it links to.
+	 */
+	url?: string
 }
 
 /** A candidate post: what kind it is, why it is worth posting now, and why. */
@@ -41,6 +48,11 @@ export type ContentAngle = {
 	kind: ContentDraftKind
 	why: string
 	facts: ContentFact[]
+	/**
+	 * Where the packet came from. "packet" is a researched evidence turn;
+	 * "brief" is the operator's own request standing in for it.
+	 */
+	origin?: "packet" | "brief"
 }
 
 export type ContentEvidence = {
@@ -53,6 +65,69 @@ export const EMPTY_EVIDENCE: ContentEvidence = { angles: [], facts: [] }
 
 const MAX_FACTS_PER_ANGLE = 6
 const MAX_ANGLES = 6
+
+/**
+ * How long the evidence turn may spend before the round falls back to the
+ * operator's brief. Internal turns are ephemeral, so they do not get the
+ * normal soft-pause/deadline treatment; without this they can run for as
+ * long as the free model keeps calling tools.
+ */
+export const CONTENT_EVIDENCE_TIMEOUT_MS = 240_000
+
+/**
+ * The operator's brief, split into claims.
+ *
+ * One giant fact is awkward in two ways: the writing turn reads it as an
+ * instruction rather than as material, and a card that shows the whole brief
+ * as a single "fact" tells the operator nothing. Split on sentence
+ * boundaries so each fact is one readable claim.
+ */
+function briefFacts(instruction: string): ContentFact[] {
+	const raw = instruction.replace(/\s+/g, " ").trim()
+	if (!raw) return []
+	const parts = raw
+		.split(/(?<=[.!?;:])\s+/)
+		.map((part) => part.trim())
+		.filter((part) => part.length >= 30)
+	const picked = parts.length ? parts : [raw]
+	return picked.slice(0, 4).map((claim, i) => {
+		const url = claim.match(/https?:\/\/\S+/i)?.[0]?.replace(/[),.;]+$/, "")
+		return {
+			id: `F${i + 1}`,
+			claim: claim.slice(0, 400),
+			source: "operator brief",
+			...(url ? { url } : {}),
+		}
+	})
+}
+
+/**
+ * A packet built from the operator's brief.
+ *
+ * The evidence turn is the preferred source, but it is not the only honest
+ * one: when it times out, the words the operator typed are still a source.
+ * Treating the brief as labelled facts keeps the writing turn from doing its
+ * own slow investigation and gives the review card a source line that does
+ * not pretend the brief was verified externally.
+ */
+export function buildBriefEvidence(
+	instruction: string | null | undefined,
+	kinds: readonly ContentDraftKind[] = [],
+): ContentEvidence {
+	const facts = briefFacts(instruction ?? "")
+	if (!facts.length) return EMPTY_EVIDENCE
+	const why = "The operator asked for this batch; the brief is the source."
+	const uniqueKinds = [...new Set(kinds)]
+	return {
+		angles: uniqueKinds.map((kind) => ({
+			kind,
+			why,
+			facts,
+			origin: "brief" as const,
+		})),
+		facts,
+	}
+}
 
 function isDraftKind(value: unknown): value is ContentDraftKind {
 	return (
@@ -137,6 +212,7 @@ export function normaliseEvidence(raw: unknown): ContentEvidence {
 				claim,
 				source,
 				...(quote ? { quote } : {}),
+				...(source.match(/^https?:\/\//i) ? { url: source } : {}),
 			}
 			angleFacts.push(fact)
 			facts.push(fact)
@@ -146,6 +222,7 @@ export function normaliseEvidence(raw: unknown): ContentEvidence {
 			kind: angle.kind,
 			why: cleanLine(angle.why, 300) || "Something concrete happened.",
 			facts: angleFacts,
+			origin: "packet",
 		})
 		if (angles.length >= MAX_ANGLES) break
 	}
@@ -155,16 +232,23 @@ export function normaliseEvidence(raw: unknown): ContentEvidence {
 	for (const fact of looseFacts) {
 		if (!fact || typeof fact !== "object") continue
 		if (facts.length >= MAX_ANGLES * MAX_FACTS_PER_ANGLE) break
-		const value = fact as { claim?: unknown; source?: unknown; quote?: unknown }
+		const value = fact as {
+			claim?: unknown
+			source?: unknown
+			quote?: unknown
+			url?: unknown
+		}
 		const claim = cleanLine(value.claim)
 		const source = cleanLine(value.source, 200)
 		if (!claim || !source) continue
 		const quote = cleanLine(value.quote, 400)
+		const url = cleanLine(value.url, 300) || null
 		const entry: ContentFact = {
 			id: `F${facts.length + 1}`,
 			claim,
 			source,
 			...(quote ? { quote } : {}),
+			...(url ? { url } : {}),
 		}
 		facts.push(entry)
 	}
@@ -189,11 +273,20 @@ export function buildEvidenceFrame(args: {
 	instruction?: string | null
 	recentKinds?: readonly string[]
 	channels?: readonly { id: string; service: string; name: string }[]
+	/** Compact Founder Brain brief; context, never evidence. */
+	founderBrief?: string | null
 }): string {
 	const sections: string[] = []
 	sections.push(
 		`You are gathering the raw material for today's social posts. Find out what actually happened in the last 24 hours (stretch to the last week if today is quiet) and report it as facts.`,
 	)
+	if (args.founderBrief?.trim()) {
+		sections.push(
+			`${args.founderBrief.trim()}
+
+Use the Founder Brain to decide what to look for and which facts matter. A story or opinion in it is a lead, not a verified fact: find the primary source before you put anything in the packet.`,
+		)
+	}
 	sections.push(
 		`Where to look, in this order: recent company brain memories and Slack activity; merged pull requests, releases and closed tickets in the connected apps; anything else you can verify with your tools. Prefer one specific, verifiable thing over a summary of everything.`,
 	)
@@ -239,6 +332,8 @@ export type ContentEvidenceArgs = {
 	instruction?: string | null
 	recentKinds?: readonly string[]
 	channels?: readonly { id: string; service: string; name: string }[]
+	/** Preloaded by the round; falls back to a read when omitted. */
+	founderBrief?: string | null
 	traceId: string
 	env: Env
 }
@@ -252,10 +347,13 @@ export type ContentEvidenceArgs = {
 export async function collectContentEvidence(
 	args: ContentEvidenceArgs,
 ): Promise<ContentEvidence> {
+	const founderBrief =
+		args.founderBrief ?? loadFounderBrief(args.agent, args.ownerUserId)
 	const frame = buildEvidenceFrame({
 		instruction: args.instruction,
 		recentKinds: args.recentKinds,
 		channels: args.channels,
+		founderBrief,
 	})
 	const startedAt = Date.now()
 	let reply = ""
@@ -295,15 +393,27 @@ export async function collectContentEvidence(
 			skipBilling: true,
 			effortOverride: "medium",
 			ephemeral: true,
+			// An internal turn has no thread to pause into, so the normal soft
+			// pause never applies. Bound both the number of tool steps and the
+			// wall clock here; the round can then fall back to the operator's
+			// brief instead of waiting on a free model forever.
+			stepLimit: 6,
+			options: {
+				abortSignal: AbortSignal.timeout(CONTENT_EVIDENCE_TIMEOUT_MS),
+			},
 			obs: { traceId: args.traceId, source: "content_studio" },
 			env: args.env,
 		})
 		// The canned apology means the turn failed, not that it found nothing.
 		if (out.status === "completed" && out.reply.trim() !== EMPTY_REPLY)
 			reply = out.reply
+		else if (out.status !== "completed")
+			console.warn(
+				`[company-brain] content-studio evidence turn ended status=${out.status} org=${args.org.id} ms=${Date.now() - startedAt}`,
+			)
 	} catch (err) {
 		console.warn(
-			`[company-brain] content-studio evidence turn failed org=${args.org.id}: ${err instanceof Error ? err.message : String(err)}`,
+			`[company-brain] content-studio evidence turn failed org=${args.org.id} ms=${Date.now() - startedAt}: ${err instanceof Error ? err.message : String(err)}`,
 		)
 	}
 	if (!reply.trim()) {

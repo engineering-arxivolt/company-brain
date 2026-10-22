@@ -9,9 +9,12 @@ import {
 	normalizeBufferChannels,
 	toolError,
 } from "./buffer"
+import { buildContentRoundBlocks } from "./cards"
 import { planDailyDrafts, planDailyKinds } from "./plan"
+import { funnelBalance } from "./taxonomy"
 import {
 	angleForKind,
+	buildBriefEvidence,
 	buildEvidenceFrame,
 	normaliseEvidence,
 	parseEvidenceJson,
@@ -26,11 +29,15 @@ import {
 	finishContentPush,
 	finishContentRemix,
 	getContentDraft,
+	getContentDraftByBufferPostId,
 	insertContentDraft,
 	listDraftsForRound,
+	listRecentContentRounds,
 	listRecentDrafts,
+	startContentRound,
 	supersedePendingDrafts,
 	sweepStaleContentDrafts,
+	updateContentRound,
 	type NewContentDraft,
 } from "./store"
 import {
@@ -39,6 +46,7 @@ import {
 	serviceProfile,
 	socialStyle,
 } from "./voice"
+import { mapWithConcurrency } from "./concurrency"
 
 /** Runs the module's real SQL against a real SQLite engine, as the DO does. */
 function sqliteAgent() {
@@ -142,6 +150,34 @@ describe("planDailyDrafts", () => {
 		const plan = planDailyDrafts({ dayOfWeek: 1, channels, angles: [] })
 		expect(plan.length).toBe(3)
 		expect(plan.map((p) => p.kind)).toEqual(planDailyKinds(1, [], 3))
+	})
+
+	it("labels every draft with its funnel job and vehicle", () => {
+		const plan = planDailyDrafts({ dayOfWeek: 1, channels })
+		expect(plan.map((p) => [p.kind, p.funnel, p.vehicle])).toEqual([
+			["build_log", "MOF", "build_log"],
+			["lesson", "MOF", "story"],
+			["spotlight", "BOF", "proof"],
+		])
+	})
+})
+
+describe("funnelBalance", () => {
+	it("counts the round and names a missing stage", () => {
+		const balance = funnelBalance([
+			{ funnel: "TOF" },
+			{ funnel: "TOF" },
+			{ funnel: "MOF" },
+		])
+		expect(balance.counts).toEqual({ TOF: 2, MOF: 1, BOF: 0 })
+		expect(balance.missing).toEqual(["BOF"])
+		expect(balance.note).toContain("2 TOF")
+		expect(balance.note).toContain("no BOF")
+	})
+
+	it("falls back to the kind before the funnel is stored", () => {
+		const balance = funnelBalance([{ kind: "spotlight" }])
+		expect(balance.counts.BOF).toBe(1)
 	})
 })
 
@@ -370,6 +406,60 @@ describe("content evidence", () => {
 		expect(frame).toContain("Reply with JSON only")
 		expect(frame).toContain("linkedin")
 	})
+
+	it("uses the Founder Brain to steer the search without treating it as a source", () => {
+		const frame = buildEvidenceFrame({
+			founderBrief:
+				"FOUNDER BRAIN — durable context from the founder. This is not evidence.",
+		})
+		expect(frame).toContain("FOUNDER BRAIN")
+		expect(frame).toContain("find the primary source")
+	})
+
+	it("turns the operator's brief into labelled fallback evidence", () => {
+		const evidence = buildBriefEvidence(
+			"Build-log round: the 8-hex slug fix and the repair patch.",
+			["build_log", "lesson", "build_log"],
+		)
+		expect(evidence.facts).toHaveLength(1)
+		expect(evidence.facts[0]?.source).toBe("operator brief")
+		expect(evidence.facts[0]?.claim).toContain("8-hex slug")
+		expect(evidence.angles.map((angle) => angle.kind)).toEqual([
+			"build_log",
+			"lesson",
+		])
+		expect(angleForKind(evidence, "lesson")?.facts[0]?.source).toBe(
+			"operator brief",
+		)
+	})
+
+	it("does not invent fallback evidence from an empty brief", () => {
+		expect(buildBriefEvidence("   ", ["lesson"]).facts).toEqual([])
+		expect(buildBriefEvidence(undefined, ["lesson"]).angles).toEqual([])
+	})
+
+	it("splits a long brief into separate claims", () => {
+		const evidence = buildBriefEvidence(
+			"Post about the 8-hex slug fix; it stops cross-customer name collisions. Then post about the repair patch; it can no longer poison the deploy payload.",
+			["build_log"],
+		)
+		expect(evidence.facts.length).toBeGreaterThan(1)
+		expect(evidence.facts[0]?.id).toBe("F1")
+		expect(evidence.angles[0]?.origin).toBe("brief")
+		expect(
+			evidence.facts.every((fact) => fact.source === "operator brief"),
+		).toBe(true)
+	})
+
+	it("keeps a link from the brief so the card can show it", () => {
+		const evidence = buildBriefEvidence(
+			"Post the slug fix; the commit is at https://github.com/Arxivolt/Runtime/commit/79f40d7 and it stops cross-customer name collisions.",
+			["build_log"],
+		)
+		expect(evidence.facts[0]?.url).toBe(
+			"https://github.com/Arxivolt/Runtime/commit/79f40d7",
+		)
+	})
 })
 
 describe("normalizeBufferChannels", () => {
@@ -456,10 +546,34 @@ describe("content draft store", () => {
 			automationId: "auto_1",
 			roundId: "round_1",
 			kind: "build_log",
+			funnel: "MOF",
+			vehicle: "build_log",
 			status: "pending",
 			channelService: "twitter",
 		})
 		expect(listDraftsForRound(agent, "round_1")).toHaveLength(1)
+	})
+
+	it("stores explicit funnel/vehicle labels and finds a pushed draft by post id", () => {
+		const { agent } = sqliteAgent()
+		const saved = insertContentDraft(
+			agent,
+			draftInput({ funnel: "BOF", vehicle: "proof" }),
+		)
+		claimContentDraft(agent, saved.id, "pushing")
+		finishContentPush(agent, saved.id, {
+			ok: true,
+			bufferPostId: "buffer_1",
+			bufferMode: "draft",
+		})
+		const byPost = getContentDraftByBufferPostId(agent, "buffer_1")
+		expect(byPost).toMatchObject({
+			id: saved.id,
+			funnel: "BOF",
+			vehicle: "proof",
+			status: "pushed",
+		})
+		expect(getContentDraftByBufferPostId(agent, "missing")).toBeNull()
 	})
 
 	it("claim is single-owner and stale claims are reclaimable", () => {
@@ -606,6 +720,28 @@ describe("voice", () => {
 		expect(frame).toContain("Never publish customer")
 	})
 
+	it("gives the draft a funnel job and vehicle", () => {
+		const frame = buildContentFrame({
+			kind: "spotlight",
+			channel: { id: "c1", service: "linkedin", name: "Arxivolt" },
+		})
+		expect(frame).toContain("Funnel job: BOF · action")
+		expect(frame).toContain("Give someone who is already interested a reason to act")
+		expect(frame).toContain("Vehicle: Proof")
+		expect(frame).toContain("Never mention them in the post")
+	})
+
+	it("injects the Founder Brain as context, not evidence", () => {
+		const frame = buildContentFrame({
+			kind: "build_log",
+			channel: null,
+			founderBrief:
+				"FOUNDER BRAIN — durable context from the founder. This is not evidence.",
+		})
+		expect(frame).toContain("FOUNDER BRAIN")
+		expect(frame).toContain("It is not a fact source")
+	})
+
 	it("frame without a channel or focus stays valid", () => {
 		const frame = buildContentFrame({ kind: "question", channel: null })
 		expect(frame).toContain("general social")
@@ -637,5 +773,97 @@ describe("voice", () => {
 			"X (Twitter)",
 		)
 		expect(channelLabelFor(null)).toBeNull()
+	})
+})
+
+describe("review cards", () => {
+	it("shows the funnel/vehicle labels and the round mix", () => {
+		const { agent } = sqliteAgent()
+		const a = insertContentDraft(
+			agent,
+			draftInput({
+				kind: "behind_the_scenes",
+				funnel: "TOF",
+				vehicle: "story",
+				body: "A small detail from the work.",
+			}),
+		)
+		const b = insertContentDraft(
+			agent,
+			draftInput({
+				kind: "spotlight",
+				funnel: "BOF",
+				vehicle: "proof",
+				body: "What someone can do now.",
+			}),
+		)
+		const { blocks } = buildContentRoundBlocks(listDraftsForRound(agent, "round_1"), {
+			bufferConnected: true,
+			evidenceFacts: 2,
+		})
+		const json = JSON.stringify(blocks)
+		expect(json).toContain("TOF · reach")
+		expect(json).toContain("BOF · action")
+		expect(json).toContain("Story")
+		expect(json).toContain("Proof")
+		expect(json).toContain("Round mix: 1 TOF")
+		expect(json).toContain("no MOF")
+		expect(a.id).toBeTruthy()
+		expect(b.id).toBeTruthy()
+	})
+})
+
+describe("content rounds", () => {
+	it("records and updates a round's status", () => {
+		const { agent } = sqliteAgent()
+		const round = startContentRound(agent, {
+			id: "round_1",
+			automationId: "auto_1",
+			teamId: "T1",
+			ownerUserId: "user_1",
+			trigger: "run_now",
+			brief: "Build-log round about the slug fix",
+		})
+		expect(round.status).toBe("running")
+		expect(round.brief).toContain("slug fix")
+
+		updateContentRound(agent, "round_1", { status: "writing" })
+		updateContentRound(agent, "round_1", { status: "posted", drafts: 3 })
+		const latest = listRecentContentRounds(agent, 5)
+		expect(latest[0]?.id).toBe("round_1")
+		expect(latest[0]?.status).toBe("posted")
+		expect(latest[0]?.drafts).toBe(3)
+	})
+
+	it("records a failed round with its error", () => {
+		const { agent } = sqliteAgent()
+		startContentRound(agent, {
+			id: "round_2",
+			automationId: "auto_1",
+			brief: "anything",
+		})
+		updateContentRound(agent, "round_2", {
+			status: "failed",
+			error: "evidence turn timed out",
+		})
+		const latest = listRecentContentRounds(agent, 1)
+		expect(latest[0]?.status).toBe("failed")
+		expect(latest[0]?.error).toContain("timed out")
+	})
+})
+
+describe("mapWithConcurrency", () => {
+	it("keeps the input order and never runs more than the limit at once", async () => {
+		let running = 0
+		let peak = 0
+		const results = await mapWithConcurrency([1, 2, 3, 4, 5], 2, async (n) => {
+			running++
+			peak = Math.max(peak, running)
+			await new Promise((resolve) => setTimeout(resolve, 5))
+			running--
+			return n * 2
+		})
+		expect(results).toEqual([2, 4, 6, 8, 10])
+		expect(peak).toBeLessThanOrEqual(2)
 	})
 })

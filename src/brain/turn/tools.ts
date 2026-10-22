@@ -2,6 +2,13 @@ import type { ToolSet } from "ai"
 import type { BrainCostLedger } from "../billing/cost"
 import { createConfigurationTool } from "../configuration"
 import { createContentStudioTool } from "./content-studio-tool"
+import {
+	createContentMarketTool,
+	createContentNewsTool,
+	createContentPerformanceTool,
+	createContentPlaybooksTool,
+} from "./content-ops-tools"
+import { createFounderBrainTool } from "./founder-brain-tool"
 import { buildLeaseRuntimeContext } from "../lease/store"
 import { createLeaseTools } from "../lease/tools"
 import type { LeaseRuntimeContext } from "../lease/types"
@@ -315,9 +322,11 @@ export async function assembleTurnTools(
 				traceId,
 				focus_tags,
 				slackLookup?.memoryContainerTags,
+				{ threshold: 0.15 },
 			)
 			const formatted = formatBrainResults(brain.results, {
 				filterByScore: true,
+				minScore: 0.15,
 				limit: 40,
 			})
 			console.log(
@@ -371,7 +380,62 @@ export async function assembleTurnTools(
 	// Per-turn GIF candidate registry: search_gifs writes, finish_turn.gif_id
 	// resolves here, and delivery only ever references entries from this map.
 	const gifCandidates: GifCandidateRegistry = new Map()
-	const tools: ToolSet = {
+	// A turn that already holds everything it needs gets no tools at all. The
+	// schemas are prompt the model re-reads on every step, and on the free
+	// models that cost is what turned a one-paragraph post into a four-minute
+	// wait (and then a timeout). Nothing is lost: the turn was told to write
+	// from the facts it was handed, not to go and find them.
+	if (args.options?.toolPolicy === "none") {
+		console.log(
+			`[company-brain][${traceId}] assembleTurnTools finish toolPolicy=none ms=${Date.now() - assembleStartedAt}`,
+		)
+		// The playbooks stay reachable. JEV pre-selects one and puts it in
+		// the prompt, but a writer that needs the founder-voice rules or the
+		// platform rules should be able to load a second playbook instead of
+		// going without it. One small schema is a fair price for that; the
+		// thirty heavy schemas are not.
+		const skillTools = createSkillTools(
+			agent,
+			deps,
+			{
+				org,
+				userId: actor.userId,
+				isAdmin: Boolean(actor.isAdmin),
+				channelId: slackLookup?.channel,
+				teamId: slackLookup?.teamId,
+				threadTs: slackLookup?.threadTs,
+				botToken: slackLookup?.botToken,
+				creatorSlackUserId: askerSlackUserId,
+				allowSave: false,
+				turnState: args.turnState,
+				env,
+			},
+			traceId,
+		)
+		return {
+			ready: true,
+			// The terminal tool stays: it is how a turn hands over its answer,
+			// and it is one small schema. Everything else is dropped.
+			tools: {
+				[FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps),
+				...(skillTools.load_skill ? { load_skill: skillTools.load_skill } : {}),
+			},
+			hasApps: false,
+			connectedAppRouting: "none",
+			toolDiscovery: createLazyToolState({}, args.initialEnabledFamilies),
+			connectedApps: [],
+			gifCandidates: new Map(),
+		}
+	}
+	// "lean" keeps the tools a research turn actually needs and drops the
+	// rest: the schemas the model re-reads on every step are what turned a
+	// five-minute news sweep into a timeout.
+	const lean = args.options?.toolPolicy === "lean"
+	const tools: ToolSet = lean
+		? {
+				[FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps),
+			}
+		: {
 		search_company_brain: brainTool,
 		resolve_entity: resolveEntityTool,
 		// Passive investigations use their private no-reply sentinel. Interactive
@@ -434,28 +498,96 @@ export async function assembleTurnTools(
 						traceId,
 					}),
 				}),
+		// The Founder Brain is durable context, not a scheduled side effect.
+		// Interactive turns can read and edit it; scheduled content rounds read
+		// the compact brief directly from SQLite and never need this tool.
+		...(passiveInvestigation || scheduledRun
+			? {}
+			: {
+					founder_brain: createFounderBrainTool({
+						deps,
+						agent,
+						org,
+						userId: actor.userId ?? userId,
+						memoryScope: slackLookup?.memoryScope,
+						memoryContainerTags: slackLookup?.memoryContainerTags,
+						allowWrites: !actor.readOnly,
+						traceId,
+					}),
+				}),
+		// Live reads the operator can ask for between rounds. Both are safe in
+		// read-only conversations and both go through typed adapters rather than
+		// asking the model to interpret a raw provider payload.
+		...(passiveInvestigation || scheduledRun
+			? {}
+			: {
+					content_performance: createContentPerformanceTool({
+						deps,
+						agent,
+						env,
+						orgId: org.id,
+						userId: actor.userId ?? userId,
+						traceId,
+					}),
+					content_market_scan: createContentMarketTool({
+						deps,
+						agent,
+						env,
+						orgId: org.id,
+						userId: actor.userId ?? userId,
+						traceId,
+					}),
+					// The News Desk: stories worth posting about, filtered hard,
+					// with a decision per signal.
+					content_news: createContentNewsTool({
+						deps,
+						agent,
+						env,
+						org,
+						userId: actor.userId ?? userId,
+						askerSlackUserId,
+						slackLookup,
+						traceId,
+					}),
+					// The house rules, pulled from the repository they live in,
+					// so JEV can route to them like any other playbook.
+					content_playbooks: createContentPlaybooksTool({
+						deps,
+						agent,
+						env,
+						org,
+						userId: actor.userId ?? userId,
+						isAdmin: Boolean(actor.isAdmin),
+						traceId,
+					}),
+				}),
 	}
+	const skillTools = createSkillTools(
+		agent,
+		deps,
+		{
+			org,
+			userId: actor.userId,
+			isAdmin: Boolean(actor.isAdmin),
+			channelId: slackLookup?.channel,
+			teamId: slackLookup?.teamId,
+			threadTs: slackLookup?.threadTs,
+			botToken: slackLookup?.botToken,
+			creatorSlackUserId: askerSlackUserId,
+			allowSave:
+				Boolean(actor.userId) && !passiveInvestigation && !actor.readOnly,
+			turnState: args.turnState,
+			env,
+		},
+		traceId,
+	)
 	Object.assign(
 		tools,
-		createSkillTools(
-			agent,
-			deps,
-			{
-				org,
-				userId: actor.userId,
-				isAdmin: Boolean(actor.isAdmin),
-				channelId: slackLookup?.channel,
-				teamId: slackLookup?.teamId,
-				threadTs: slackLookup?.threadTs,
-				botToken: slackLookup?.botToken,
-				creatorSlackUserId: askerSlackUserId,
-				allowSave:
-					Boolean(actor.userId) && !passiveInvestigation && !actor.readOnly,
-				turnState: args.turnState,
-				env,
-			},
-			traceId,
-		),
+		lean
+			? skillTools.load_skill
+				? { load_skill: skillTools.load_skill }
+				: {}
+			: skillTools,
 	)
 	const ownAppRuntimeStatus = new Map<
 		string,
@@ -466,7 +598,7 @@ export async function assembleTurnTools(
 	if (webExtractTool) tools.web_extract = webExtractTool
 	// Self-hosted browser-use sidecar on the owner's VPS. Null when
 	// BROWSER_SERVICE_URL/TOKEN are unset, so Docker-less devs lose nothing.
-	if (browseWebsiteTool) tools.browse_website = browseWebsiteTool
+	if (browseWebsiteTool && !lean) tools.browse_website = browseWebsiteTool
 	// A monitor outlives the turn and posts back on its own schedule, so it is
 	// only offered where the request came from a real Slack conversation we can
 	// route the finding back into. It returns null without an API key or a
@@ -528,7 +660,7 @@ export async function assembleTurnTools(
 				traceId,
 			})
 		: {}
-	Object.assign(tools, sandboxTools)
+	if (!lean) Object.assign(tools, sandboxTools)
 	console.log(
 		`[company-brain][${traceId}] core tools ready sandboxAvailable=${Object.keys(sandboxTools).length ? "yes" : "no"} names=${Object.keys(tools).join(",")}`,
 	)
@@ -644,7 +776,7 @@ export async function assembleTurnTools(
 			),
 		)
 	}
-	if (slackLookup) {
+	if (slackLookup && !lean) {
 		tools.search_slack_channel = deps.tool({
 			description:
 				"Search messages in one Slack channel, defaulting to the current channel, up to ~90 days back. Supports time-window summaries, related-message searches, likely open-action extraction, and finding previously shared links or files. The bot must be a member of the channel. Do not return content from another private channel in a channel response; private-channel answers must stay in that same private channel or a DM. Slack has no task system, so action status is inferred from message wording.",
@@ -829,6 +961,7 @@ export async function assembleTurnTools(
 	const callbackUrl = `${env.PUBLIC_URL}/brain/mcp-connections/callback`
 	let connectedAppRuntime: ConnectedAppRuntimeController | undefined
 	if (
+		!lean &&
 		args.turnState &&
 		(persistedConnections.some(
 			(connection) => connection.status === "active",
@@ -877,6 +1010,10 @@ export async function assembleTurnTools(
 	}
 
 	if (!hasApps) {
+		// In lean mode this is the only path to the connected apps: the Code
+		// Mode runtime carries a catalogue of every method it can reach, and
+		// that catalogue is prompt the model re-reads on every step. The
+		// direct MCP tools are typed and small.
 		const mcpStartedAt = Date.now()
 		try {
 			console.log(

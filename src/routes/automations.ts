@@ -69,7 +69,12 @@ function parseInput(body: Partial<AutomationInput>): AutomationInput {
 		cron: body.cron ?? "",
 		timezone: body.timezone ?? null,
 		enabled: body.enabled,
-		mode: body.mode === "content" ? "content" : "digest",
+		mode:
+			body.mode === "content"
+				? "content"
+				: body.mode === "news"
+					? "news"
+					: "digest",
 	}
 }
 

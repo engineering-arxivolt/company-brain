@@ -465,6 +465,30 @@ function createPostTool(
 	)
 }
 
+/** Resolve the Buffer organization id from get_account, for list_channels. */
+function bufferOrganizationId(payload: unknown): string | null {
+	const candidates: unknown[] = []
+	if (Array.isArray(payload)) candidates.push(...payload)
+	else if (payload && typeof payload === "object") {
+		const obj = payload as Record<string, unknown>
+		if (Array.isArray(obj.organizations)) candidates.push(...obj.organizations)
+		if (obj.organization && typeof obj.organization === "object")
+			candidates.push(obj.organization)
+		if (obj.data && typeof obj.data === "object") {
+			const d = obj.data as Record<string, unknown>
+			if (Array.isArray(d.organizations)) candidates.push(...d.organizations)
+			if (d.organization && typeof d.organization === "object")
+				candidates.push(d.organization)
+		}
+	}
+	for (const c of candidates) {
+		if (!c || typeof c !== "object") continue
+		const id = (c as Record<string, unknown>).id
+		if (typeof id === "string" && id.trim()) return id.trim()
+	}
+	return null
+}
+
 /** The operator's Buffer channels, best effort — [] when unreachable. */
 export async function listBufferChannels(
 	env: Env,
@@ -475,9 +499,30 @@ export async function listBufferChannels(
 		const { connectToolProvider } = await mcpDeps()
 		handle = await connectToolProvider(env, connection, mcpCallbackUrl(env))
 		const tools = await handle.listTools()
-		const tool = bufferChannelTool(tools)
-		if (!tool) return []
-		const res = await handle.callTool(tool.name, {}, { retryOnTimeout: true })
+		const channelTool = bufferChannelTool(tools)
+		if (!channelTool) return []
+
+		// Buffer's list_channels is scoped to an organization. Resolve it
+		// from get_account rather than guessing — a bare {} returns nothing.
+		let organizationId: string | null = null
+		const accountTool =
+			tools.find((t) => /get.?account/i.test(t.name)) ??
+			tools.find((t) => /account/i.test(t.name))
+		if (accountTool) {
+			const acctRes = await handle.callTool(
+				accountTool.name,
+				{},
+				{ retryOnTimeout: true },
+			)
+			if (!toolError(acctRes)) {
+				organizationId = bufferOrganizationId(extractJsonPayload(acctRes))
+			}
+		}
+
+		const args = organizationId ? { organizationId } : {}
+		const res = await handle.callTool(channelTool.name, args, {
+			retryOnTimeout: true,
+		})
 		if (toolError(res)) return []
 		return normalizeBufferChannels(extractJsonPayload(res))
 	} catch (err) {

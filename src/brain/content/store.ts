@@ -17,6 +17,14 @@
  */
 import { generateId } from "@repo/lib/generate-id"
 import type { CompanyBrainAgent } from "../turn/agent"
+import {
+	defaultFunnelForKind,
+	defaultVehicleForKind,
+	resolveFunnel,
+	resolveVehicle,
+	type ContentFunnel,
+	type ContentVehicle,
+} from "./taxonomy"
 
 export const CONTENT_DRAFT_KINDS = [
 	"build_log",
@@ -51,6 +59,7 @@ export type ContentDraftFact = {
 	claim?: string
 	source?: string
 	quote?: string
+	url?: string
 }
 
 export type ContentDraftSources = {
@@ -93,6 +102,13 @@ export function draftLink(
 	draft: ContentDraft,
 ): { url: string; title: string | null } | null {
 	for (const fact of draftFacts(draft)) {
+		const explicit = fact.url?.trim()
+		if (explicit) {
+			return {
+				url: explicit.replace(/[),.;]+$/, ""),
+				title: fact.claim?.trim() || null,
+			}
+		}
 		const source = fact.source?.trim()
 		if (!source) continue
 		const match = source.match(URL_RE)
@@ -120,6 +136,10 @@ export type ContentDraft = {
 	ownerSlackUserId: string | null
 	dmChannelId: string | null
 	kind: ContentDraftKind
+	/** The job this post does: reach, trust, or action. */
+	funnel: ContentFunnel
+	/** The form the post takes: story, breakdown, proof, ... */
+	vehicle: ContentVehicle
 	channelId: string | null
 	channelService: string | null
 	channelLabel: string | null
@@ -143,6 +163,8 @@ export type NewContentDraft = {
 	ownerSlackUserId?: string | null
 	dmChannelId?: string | null
 	kind: ContentDraftKind
+	funnel?: ContentFunnel | null
+	vehicle?: ContentVehicle | null
 	channelId?: string | null
 	channelService?: string | null
 	channelLabel?: string | null
@@ -161,6 +183,8 @@ type ContentDraftRow = {
 	owner_slack_user_id: string | null
 	dm_channel_id: string | null
 	kind: string
+	funnel: string | null
+	vehicle: string | null
 	channel_id: string | null
 	channel_service: string | null
 	channel_label: string | null
@@ -198,6 +222,7 @@ function asKind(value: string): ContentDraftKind {
 }
 
 function rowToDraft(row: ContentDraftRow): ContentDraft {
+	const kind = asKind(row.kind)
 	return {
 		id: row.id,
 		automationId: row.automation_id,
@@ -206,7 +231,9 @@ function rowToDraft(row: ContentDraftRow): ContentDraft {
 		ownerUserId: row.owner_user_id,
 		ownerSlackUserId: row.owner_slack_user_id,
 		dmChannelId: row.dm_channel_id,
-		kind: asKind(row.kind),
+		kind,
+		funnel: resolveFunnel(row.funnel, kind),
+		vehicle: resolveVehicle(row.vehicle, kind),
 		channelId: row.channel_id,
 		channelService: row.channel_service,
 		channelLabel: row.channel_label,
@@ -223,7 +250,11 @@ function rowToDraft(row: ContentDraftRow): ContentDraft {
 	}
 }
 
+/** The schema work is once per Durable Object, not once per query. */
+const contentDraftSchemaReady = new WeakSet<CompanyBrainAgent>()
+
 export function ensureContentDraftTable(agent: CompanyBrainAgent): void {
+	if (contentDraftSchemaReady.has(agent)) return
 	agent.sql`
 		CREATE TABLE IF NOT EXISTS brain_content_draft (
 			id TEXT PRIMARY KEY,
@@ -234,6 +265,8 @@ export function ensureContentDraftTable(agent: CompanyBrainAgent): void {
 			owner_slack_user_id TEXT,
 			dm_channel_id TEXT,
 			kind TEXT NOT NULL,
+			funnel TEXT,
+			vehicle TEXT,
 			channel_id TEXT,
 			channel_service TEXT,
 			channel_label TEXT,
@@ -255,6 +288,19 @@ export function ensureContentDraftTable(agent: CompanyBrainAgent): void {
 	try {
 		agent.sql`CREATE INDEX IF NOT EXISTS brain_content_draft_round ON brain_content_draft (round_id)`
 	} catch {}
+	try {
+		agent.sql`CREATE INDEX IF NOT EXISTS brain_content_draft_buffer_post ON brain_content_draft (buffer_post_id)`
+	} catch {}
+	// Existing orgs have the original table. SQLite has no ADD COLUMN IF NOT
+	// EXISTS, so each migration is tried once and ignored when the column is
+	// already there (the normal case after the first run).
+	try {
+		agent.sql`ALTER TABLE brain_content_draft ADD COLUMN funnel TEXT`
+	} catch {}
+	try {
+		agent.sql`ALTER TABLE brain_content_draft ADD COLUMN vehicle TEXT`
+	} catch {}
+	contentDraftSchemaReady.add(agent)
 }
 
 export function insertContentDraft(
@@ -272,6 +318,10 @@ export function insertContentDraft(
 		ownerSlackUserId: input.ownerSlackUserId ?? null,
 		dmChannelId: input.dmChannelId ?? null,
 		kind: input.kind,
+		funnel:
+			input.funnel ?? defaultFunnelForKind(input.kind),
+		vehicle:
+			input.vehicle ?? defaultVehicleForKind(input.kind),
 		channelId: input.channelId ?? null,
 		channelService: input.channelService ?? null,
 		channelLabel: input.channelLabel ?? null,
@@ -289,13 +339,15 @@ export function insertContentDraft(
 	agent.sql`
 		INSERT INTO brain_content_draft (
 			id, automation_id, round_id, team_id, owner_user_id,
-			owner_slack_user_id, dm_channel_id, kind, channel_id, channel_service,
+			owner_slack_user_id, dm_channel_id, kind, funnel, vehicle,
+			channel_id, channel_service,
 			channel_label, body, sources_json, flags_json, trace_id, status,
 			buffer_post_id, buffer_mode, error, created_at, updated_at
 		) VALUES (
 			${draft.id}, ${draft.automationId}, ${draft.roundId}, ${draft.teamId},
 			${draft.ownerUserId}, ${draft.ownerSlackUserId}, ${draft.dmChannelId},
-			${draft.kind}, ${draft.channelId}, ${draft.channelService},
+			${draft.kind}, ${draft.funnel}, ${draft.vehicle},
+			${draft.channelId}, ${draft.channelService},
 			${draft.channelLabel}, ${draft.body}, ${draft.sourcesJson},
 			${draft.flagsJson}, ${draft.traceId}, ${draft.status},
 			${draft.bufferPostId}, ${draft.bufferMode}, ${draft.error},
@@ -312,6 +364,22 @@ export function getContentDraft(
 	ensureContentDraftTable(agent)
 	const rows = agent.sql<ContentDraftRow>`
 		SELECT * FROM brain_content_draft WHERE id = ${id}
+	`
+	return rows[0] ? rowToDraft(rows[0]) : null
+}
+
+/** The draft a Buffer post came from, for joining performance back to content. */
+export function getContentDraftByBufferPostId(
+	agent: CompanyBrainAgent,
+	bufferPostId: string,
+): ContentDraft | null {
+	if (!bufferPostId) return null
+	ensureContentDraftTable(agent)
+	const rows = agent.sql<ContentDraftRow>`
+		SELECT * FROM brain_content_draft
+		WHERE buffer_post_id = ${bufferPostId}
+		ORDER BY updated_at DESC
+		LIMIT 1
 	`
 	return rows[0] ? rowToDraft(rows[0]) : null
 }
@@ -507,6 +575,208 @@ export function sweepStaleContentDrafts(agent: CompanyBrainAgent): number {
 			error = 'the previous attempt was interrupted — try again',
 			updated_at = ${now}
 		WHERE status IN ('pushing', 'remixing') AND updated_at < ${staleCutoff}
+		RETURNING id
+	`
+	return rows.length
+}
+
+/**
+ * The state of a round, so "what happened to that run?" has an answer.
+ *
+ * A round is a background task: it can be in the evidence stage, writing, or
+ * done, and from Slack none of that is visible until a card arrives. One row
+ * per round, written as the round moves, is what makes the wait explainable.
+ */
+export type ContentRoundStatus =
+	| "running"
+	| "writing"
+	| "posted"
+	| "empty"
+	| "failed"
+
+export type ContentRound = {
+	id: string
+	automationId: string
+	teamId: string | null
+	ownerUserId: string | null
+	trigger: string | null
+	brief: string
+	status: ContentRoundStatus
+	drafts: number
+	error: string | null
+	startedAt: number
+	updatedAt: number
+}
+
+type ContentRoundRow = {
+	id: string
+	automation_id: string
+	team_id: string | null
+	owner_user_id: string | null
+	trigger: string | null
+	brief: string
+	status: string
+	drafts: number
+	error: string | null
+	started_at: number
+	updated_at: number
+}
+
+const ROUND_STATUSES = new Set<ContentRoundStatus>([
+	"running",
+	"writing",
+	"posted",
+	"empty",
+	"failed",
+])
+
+function asRoundStatus(value: string): ContentRoundStatus {
+	return ROUND_STATUSES.has(value as ContentRoundStatus)
+		? (value as ContentRoundStatus)
+		: "running"
+}
+
+function rowToRound(row: ContentRoundRow): ContentRound {
+	return {
+		id: row.id,
+		automationId: row.automation_id,
+		teamId: row.team_id,
+		ownerUserId: row.owner_user_id,
+		trigger: row.trigger,
+		brief: row.brief,
+		status: asRoundStatus(row.status),
+		drafts: row.drafts ?? 0,
+		error: row.error,
+		startedAt: row.started_at,
+		updatedAt: row.updated_at,
+	}
+}
+
+const contentRoundSchemaReady = new WeakSet<CompanyBrainAgent>()
+
+export function ensureContentRoundTable(agent: CompanyBrainAgent): void {
+	if (contentRoundSchemaReady.has(agent)) return
+	agent.sql`
+		CREATE TABLE IF NOT EXISTS brain_content_round (
+			id TEXT PRIMARY KEY,
+			automation_id TEXT NOT NULL,
+			team_id TEXT,
+			owner_user_id TEXT,
+			trigger TEXT,
+			brief TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'running',
+			drafts INTEGER NOT NULL DEFAULT 0,
+			error TEXT,
+			started_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`
+	try {
+		agent.sql`CREATE INDEX IF NOT EXISTS brain_content_round_started ON brain_content_round (started_at)`
+	} catch {}
+	contentRoundSchemaReady.add(agent)
+}
+
+export function startContentRound(
+	agent: CompanyBrainAgent,
+	input: {
+		id: string
+		automationId: string
+		teamId?: string | null
+		ownerUserId?: string | null
+		trigger?: string | null
+		brief?: string | null
+	},
+): ContentRound {
+	ensureContentRoundTable(agent)
+	const now = Date.now()
+	const round: ContentRound = {
+		id: input.id,
+		automationId: input.automationId,
+		teamId: input.teamId ?? null,
+		ownerUserId: input.ownerUserId ?? null,
+		trigger: input.trigger ?? null,
+		brief: (input.brief ?? "").replace(/\s+/g, " ").trim().slice(0, 2000),
+		status: "running",
+		drafts: 0,
+		error: null,
+		startedAt: now,
+		updatedAt: now,
+	}
+	agent.sql`
+		INSERT INTO brain_content_round (
+			id, automation_id, team_id, owner_user_id, trigger, brief,
+			status, drafts, error, started_at, updated_at
+		) VALUES (
+			${round.id}, ${round.automationId}, ${round.teamId},
+			${round.ownerUserId}, ${round.trigger}, ${round.brief},
+			${round.status}, ${round.drafts}, ${round.error},
+			${round.startedAt}, ${round.updatedAt}
+		)
+	`
+	return round
+}
+
+export function updateContentRound(
+	agent: CompanyBrainAgent,
+	id: string,
+	patch: {
+		status?: ContentRoundStatus
+		drafts?: number
+		error?: string | null
+	},
+): void {
+	ensureContentRoundTable(agent)
+	const now = Date.now()
+	const status = patch.status ?? null
+	const drafts = patch.drafts ?? null
+	const error = patch.error === undefined ? null : patch.error
+	agent.sql`
+		UPDATE brain_content_round SET
+			status = COALESCE(${status}, status),
+			drafts = COALESCE(${drafts}, drafts),
+			error = COALESCE(${error}, error),
+			updated_at = ${now}
+		WHERE id = ${id}
+	`
+}
+
+/** The most recent rounds, newest first. */
+export function listRecentContentRounds(
+	agent: CompanyBrainAgent,
+	limit = 5,
+): ContentRound[] {
+	ensureContentRoundTable(agent)
+	const take = Math.max(1, Math.min(limit, 20))
+	const rows = agent.sql<ContentRoundRow>`
+		SELECT * FROM brain_content_round
+		ORDER BY started_at DESC
+		LIMIT ${take}
+	`
+	return rows.map(rowToRound)
+}
+
+/**
+ * Mark rounds that never finished as failed.
+ *
+ * A round runs in the background, so a deploy or an evicted Durable Object
+ * can end it without anything recording the fact. Left alone, the round
+ * would read as "still writing" forever, which is the one answer the
+ * operator can least use.
+ */
+export function sweepStaleContentRounds(
+	agent: CompanyBrainAgent,
+	maxAgeMs = 30 * 60 * 1000,
+): number {
+	ensureContentRoundTable(agent)
+	const now = Date.now()
+	const cutoff = now - maxAgeMs
+	const rows = agent.sql<{ id: string }>`
+		UPDATE brain_content_round SET
+			status = 'failed',
+			error = 'the round was interrupted before it finished',
+			updated_at = ${now}
+		WHERE status IN ('running', 'writing') AND updated_at < ${cutoff}
 		RETURNING id
 	`
 	return rows.length

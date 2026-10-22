@@ -127,6 +127,17 @@ export function applyTimeBudgetPolicy(
 	return { warned, wrapUp: remaining <= 0 }
 }
 
+/**
+ * The most a turn may generate in one response.
+ *
+ * The brain writes posts, summaries and tool calls; it does not write books.
+ * The cap matters because providers estimate the request size as input plus
+ * the model's maximum output: with no cap, a 24k-token prompt plus a 32k
+ * output allowance overflows a 32k context window and the request is refused
+ * before it is sent.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 4096
+
 export type RunModelLoopArgs = {
 	deps: TurnDeps
 	env: Env
@@ -142,6 +153,8 @@ export type RunModelLoopArgs = {
 	stepLimit?: number
 	suspendRequested?: () => boolean
 	abortSignal?: AbortSignal
+	/** The most a single response may generate. */
+	maxOutputTokens?: number
 	functionId: string
 	prepareMessages?: (messages: ModelMessage[]) => ModelMessage[]
 	/** Tracks finish_turn proposals so the planning gate can detect drift. */
@@ -192,6 +205,12 @@ export function runModelLoop(args: RunModelLoopArgs) {
 		messages: initialMessages,
 		tools: args.tools,
 		activeTools: resolveActiveTools(),
+		// Cap the output. A brain answer is a post, a summary or a tool call —
+		// never tens of thousands of tokens — and without a cap the provider
+		// estimates "input + the model's maximum output" against the context
+		// window. That is how a 24k-token prompt overflowed a 32k window and
+		// the turn died with OpenRouter's 5021 instead of answering.
+		maxOutputTokens: args.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
 		abortSignal: args.abortSignal,
 		stopWhen: [
 			args.deps.stepCountIs(limit),

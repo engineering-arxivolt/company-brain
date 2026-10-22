@@ -21,6 +21,13 @@ export {
 	textBrainResults,
 } from "../search-brain-format"
 
+export type BrainSearchOptions = {
+	/** Lower than the interactive default when seeding from broad questions. */
+	threshold?: number
+	/** Per-container candidate limit. */
+	limit?: number
+}
+
 export async function searchBrain(
 	agent: CompanyBrainAgent,
 	org: SlackOrg,
@@ -30,8 +37,11 @@ export async function searchBrain(
 	traceId?: string,
 	focusTags?: string[],
 	containerTagsOverride?: string[],
+	options: BrainSearchOptions = {},
 ) {
 	const startedAt = Date.now()
+	const perContainerLimit = Math.max(1, Math.min(options.limit ?? 40, 80))
+	const threshold = options.threshold ?? BRAIN_RELEVANCE_THRESHOLD
 	const deps = await getTurnDeps()
 	const c = deps.makeSlackSearchContext(
 		brainAgent(agent).env,
@@ -70,8 +80,8 @@ export async function searchBrain(
 		const t = Date.now()
 		const result = await deps.searchMemoryEntries({
 			q,
-			limit: 40,
-			threshold: BRAIN_RELEVANCE_THRESHOLD,
+			limit: perContainerLimit,
+			threshold,
 			include,
 			rerank: false,
 			aggregate: false,
@@ -113,7 +123,7 @@ export async function searchBrain(
 	}
 	const results = [...byId.values()]
 		.sort((a, b) => b.similarity - a.similarity)
-		.slice(0, 40)
+		.slice(0, perContainerLimit)
 	if (traceId) {
 		console.log(
 			`[company-brain][${traceId}] searchBrain finish containers=${containerTags.length} raw=${searches.reduce((total, search) => total + search.results.length, 0)} deduped=${byId.size} duplicates=${duplicates} returned=${results.length} totalMs=${Date.now() - startedAt} finalScores=${formatBrainScoreSummary(results)}`,

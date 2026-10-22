@@ -12,6 +12,7 @@ import {
 	availableProviders,
 	providerKey,
 	catalogMainTurnModels,
+	setCatalogFreeToolModels,
 	setCatalogMainTurnModels,
 	OPENAI_COMPATIBLE_TRIAGE_FALLBACK_MODEL,
 	OPENROUTER_MAIN_MODEL,
@@ -160,6 +161,11 @@ async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	free.sort(sortByContext)
 	cheap.sort(sortByContext)
 	premium.sort(sortByContext)
+
+	// The free bucket becomes the answering chain's free hops. This is what
+	// keeps the free tier current: OpenRouter adds, renames and retires
+	// `:free` ids without warning, and a retired id is a 404 on every turn.
+	setCatalogFreeToolModels(free as SupportedModel[])
 
 	// An empty or failed catalog must not change which model serves a turn.
 	// Fall back to the two known-good ids rather than serving something else.

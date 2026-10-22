@@ -547,6 +547,18 @@ export async function computeTurn(
 				),
 				"</loaded_skills>",
 			].join("\n\n")
+			// A turn that can load a second playbook needs to know the others
+			// exist. The index is names and one line each — cheap, and it is
+			// the difference between "the pre-selected playbook is the only
+			// one that exists" and the writer knowing what else is on the shelf.
+			if (options?.toolPolicy === "none") {
+				const index = buildAvailableSkillsContext({
+					agent,
+					userId: actor.userId,
+				})
+				availableSkillsContextText = index?.text
+				state.availableSkillIds = index?.skillIds ?? []
+			}
 		} else {
 			const availableSkills = buildAvailableSkillsContext({
 				agent,

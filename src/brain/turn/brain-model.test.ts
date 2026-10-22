@@ -19,8 +19,10 @@ import {
 	catalogMainTurnModels,
 	setCatalogMainTurnModels,
 	clearCatalogMainTurnModels,
+	setCatalogFreeToolModels,
 	isFreeModel,
 	OPENAI_COMPATIBLE_FREE_MODELS,
+	WORKERS_AI_LAST_RESORT_MODEL,
 	UNAVAILABLE_NOTICE,
 } from "./brain-model"
 import { BRAIN_MAIN_MODEL_CHOICES, TRIAGE_MODEL } from "./model-profile"
@@ -64,7 +66,8 @@ describe("free OpenAI-compatible models", () => {
 	it("falls back to a free model when the endpoint is the only provider", () => {
 		const model = inspect(getBrainModel("grok-4.5", openRouterEnv))
 
-		expect(model.modelId).toBe("minimax/minimax-m3.1-flash:free")
+		// Not a pinned id: the free pool moves, and a retired one answers 404.
+		expect(model.modelId).toBe("dots-studio/dots-3-note-preview:free")
 	})
 
 	it("keeps triage on the light free model", () => {
@@ -429,7 +432,7 @@ describe("quota fallback chain", () => {
 		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
 			mainTurn: true,
 		})
-		expect(chain[0]).toBe("minimax-m3.1-flash-free")
+		expect(isFreeModel(chain[0] as never)).toBe(true)
 	})
 
 	it("offers several free hops so one dead endpoint cannot end the turn", () => {
@@ -444,11 +447,53 @@ describe("quota fallback chain", () => {
 		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
 			mainTurn: true,
 		})
-		const freeHops = chain.filter((name) => isFreeModel(name))
+		const freeHops = chain.filter(
+			(name) => isFreeModel(name) && name !== WORKERS_AI_LAST_RESORT_MODEL,
+		)
 		expect(freeHops.length).toBeGreaterThan(1)
 		for (const hop of freeHops) {
 			expect(OPENAI_COMPATIBLE_FREE_MODELS).toContain(hop)
 		}
+	})
+
+	it("takes the free hops from the live catalog, not a list written down months ago", () => {
+		// OpenRouter renames and retires `:free` ids without warning: the
+		// minimax free id was gone within a day of being pinned here. The
+		// catalog is the list, so the chain follows it.
+		const live = ["nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-26b-a4b-it:free"]
+		registerOpenRouterModels(live)
+		setCatalogFreeToolModels(live as never)
+		try {
+			const chain = brainChainModelNames(
+				"claude-sonnet-5",
+				asEnv({
+					OPENAI_API_KEY: "sk-or-v1-test",
+					OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+					BRAIN_ALLOW_FREE_MAIN_TURN: "1",
+				}),
+				{ mainTurn: true },
+			)
+			expect(chain[0]).toBe(live[0])
+			expect(chain).toContain(live[1])
+		} finally {
+			setCatalogFreeToolModels([])
+		}
+	})
+
+	it("ends the chain with Workers AI when the deployment has the binding", () => {
+		// Every provider can be out of quota at the same moment. The last hop
+		// is Cloudflare's own allocation, so the answer is a model rather than
+		// a degraded notice.
+		const chain = brainChainModelNames(
+			"claude-sonnet-5",
+			asEnv({
+				OPENAI_API_KEY: "sk-or-v1-test",
+				OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+				AI: {} as never,
+			}),
+			{ mainTurn: true },
+		)
+		expect(chain[chain.length - 1]).toBe(WORKERS_AI_LAST_RESORT_MODEL)
 	})
 
 	it("leads the answering chain with the paid models, cheapest first", () => {

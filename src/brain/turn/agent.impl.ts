@@ -8,8 +8,10 @@ import { clearBrainProfileSync } from "../memory/profile-sync"
 import { ensureBrainMemoryTagTable } from "../memory/tags"
 import {
 	runContentDraftInteraction,
+	runContentNewsInteraction,
 	type SlackContentDraftInteraction,
 } from "../content/interactions"
+import type { ContentNewsInteraction } from "../content/news"
 import {
 	advanceBrainMemoryResetEpoch,
 	clearBrainMemoryRegistry,
@@ -403,6 +405,19 @@ export async function onContentDraftInteraction(
 		await runContentDraftInteraction(agent, interaction)
 	} catch (err) {
 		console.error("[company-brain] content draft interaction failed:", err)
+	} finally {
+		await flushBrainTelemetry()
+	}
+}
+
+export async function onContentNewsInteraction(
+	agent: CompanyBrainAgent,
+	interaction: ContentNewsInteraction,
+): Promise<void> {
+	try {
+		await runContentNewsInteraction(agent, interaction)
+	} catch (err) {
+		console.error("[company-brain] content news interaction failed:", err)
 	} finally {
 		await flushBrainTelemetry()
 	}

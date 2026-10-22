@@ -13,7 +13,7 @@
 import { generateId } from "@repo/lib/generate-id"
 import { decryptToken } from "@/lib/crypto"
 import { captureContentEvent } from "@/lib/posthog"
-import { getAutomation } from "../tools/automations"
+import { getAutomation, listAutomations } from "../tools/automations"
 import {
 	lookupSlackUserInfo,
 	updateSlackInteractionResponse,
@@ -31,6 +31,12 @@ import {
 } from "./buffer"
 import { buildContentRoundBlocks } from "./cards"
 import { writeContentDraftTurn } from "./generate"
+import { pushContentDraftToBuffer } from "./push"
+import {
+	respondNews,
+	runContentNewsInteraction as runNewsInteraction,
+	type ContentNewsInteraction,
+} from "./news"
 import {
 	claimContentDraft,
 	dismissContentDraft,
@@ -108,11 +114,47 @@ async function verifiedActor(
 	}
 }
 
+/**
+ * A news signal was drafted, or skipped.
+ *
+ * The draft goes through the same Content Studio round the operator already
+ * uses, so the post arrives as a review card with Push, Remix and Dismiss:
+ * the news desk decides what is worth saying, the operator decides what ships.
+ */
+export async function runContentNewsInteraction(
+	agent: CompanyBrainAgent,
+	interaction: ContentNewsInteraction,
+): Promise<void> {
+	const verified = await verifiedActor(
+		agent,
+		interaction.teamId,
+		interaction.slackUserId,
+	)
+	if (!verified) {
+		await respondNews(interaction.responseUrl, "I couldn't verify who you are.")
+		return
+	}
+	const env = brainAgent(agent).env
+	const automations = listAutomations(agent, {
+		userId: verified.actor.userId,
+		isAdmin: verified.actor.isAdmin,
+	})
+	const content = automations.find((a) => a.mode === "content")
+	const automationId = content?.id ?? `content-studio-${verified.org.id}`
+	await runNewsInteraction({
+		agent,
+		env,
+		interaction,
+		org: verified.org,
+		botToken: verified.botToken,
+		automationId,
+	})
+}
+
 export async function runContentDraftInteraction(
 	agent: CompanyBrainAgent,
 	interaction: SlackContentDraftInteraction,
-): Promise<void> {
-	const draft = getContentDraft(agent, interaction.draftId)
+): Promise<void> {	const draft = getContentDraft(agent, interaction.draftId)
 	if (!draft || draft.teamId !== interaction.teamId) {
 		await respond(interaction.responseUrl, "That content draft is unavailable.")
 		return
@@ -171,92 +213,16 @@ export async function runContentDraftInteraction(
 	}
 
 	if (interaction.action === "push") {
-		if (!draft.channelId) {
-			const { blocks } = await rebuild()
-			await respond(
-				interaction.responseUrl,
-				"This draft isn't targeted at a Buffer channel yet — hit Remix first.",
-				{ blocks, replaceOriginal: true },
-			)
-			return
-		}
-		const claimed = claimContentDraft(agent, draft.id, "pushing")
-		if (!claimed) {
-			const { blocks } = await rebuild()
-			await respond(
-				interaction.responseUrl,
-				"That draft is already being handled.",
-				{ blocks, replaceOriginal: true },
-			)
-			return
-		}
-		const connection = await findBufferConnection(
-			env,
-			verified.org.id,
-			ownerUserId,
-		).catch(() => null)
-		if (!connection) {
-			finishContentPush(agent, draft.id, {
-				ok: false,
-				error: "no Buffer connection found",
-			})
-			const { blocks } = await rebuild()
-			await respond(
-				interaction.responseUrl,
-				"There's no Buffer connection I can use — connect Buffer under Settings → Connectors, then push again.",
-				{ blocks, replaceOriginal: true },
-			)
-			return
-		}
 		// The click is the approval: this is the one intentional Buffer write.
-		//
-		// The channel's type decides how Buffer can publish it (a Facebook group
-		// or an Instagram personal profile needs a human), and the draft's
-		// source becomes the link preview card when it has one.
-		const [channels, link] = await Promise.all([
-			listBufferChannels(env, connection).catch(() => []),
-			Promise.resolve(draftLink(draft)),
-		])
-		const channel = channels.find((c) => c.id === draft.channelId)
-		const result = await pushDraftToBuffer(env, connection, {
-			text: draft.body,
-			channelId: draft.channelId,
-			channelType: channel?.type ?? null,
-			channelService: channel?.service ?? draft.channelService ?? null,
-			linkUrl: link?.url ?? null,
-			linkTitle: link?.title ?? null,
-		})
-		finishContentPush(
+		const outcome = await pushContentDraftToBuffer({
+			env,
 			agent,
-			draft.id,
-			result.ok
-				? {
-						ok: true,
-						bufferPostId: result.postId,
-						bufferMode: result.mode,
-					}
-				: { ok: false, error: result.error },
-		)
-		captureContentEvent({
-			event: "content_draft_pushed",
-			orgId: verified.org.id,
-			userId: ownerUserId,
-			draftId: draft.id,
-			kind: draft.kind,
-			channel: draft.channelService,
-			ok: result.ok,
-			mode: result.ok ? result.mode : undefined,
-			error: result.ok ? undefined : result.error,
+			org: verified.org,
+			ownerUserId,
+			draft,
 		})
 		const { blocks } = await rebuild()
-		const message = result.ok
-			? result.mode === "draft"
-				? "Pushed to your Buffer drafts ✓"
-				: result.mode === "queue"
-					? "Added to your Buffer queue ✓"
-					: "Sent to Buffer ✓"
-			: `Couldn't push it: ${result.error}`
-		await respond(interaction.responseUrl, message, {
+		await respond(interaction.responseUrl, outcome.message, {
 			blocks,
 			replaceOriginal: true,
 		})
@@ -356,6 +322,8 @@ export async function runContentDraftInteraction(
 		ownerUserId,
 		ownerSlackUserId: draft.ownerSlackUserId ?? interaction.slackUserId,
 		kind: draft.kind,
+		funnel: draft.funnel,
+		vehicle: draft.vehicle,
 		channel,
 		focus: automation?.prompt ?? null,
 		recentBodies,

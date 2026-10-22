@@ -40,9 +40,10 @@ export type DeliverTo = "channel" | "dm"
 /**
  * What a scheduled run does: a digest summarizes and replies in one message;
  * "content" runs the Content Studio, which drafts social posts and DMs a
- * review card the owner acts on with buttons.
+ * review card the owner acts on with buttons; "news" runs the alert watch,
+ * which reads the machine-readable feeds and raises only what is new.
  */
-export type AutomationMode = "digest" | "content"
+export type AutomationMode = "digest" | "content" | "news"
 
 export type AutomationInput = {
 	title: string
@@ -140,7 +141,12 @@ function rowToAutomation(row: AutomationRow): Automation {
 		title: row.title,
 		channelId: row.channel_id,
 		deliverTo: row.deliver_to === "dm" ? "dm" : "channel",
-		mode: row.mode === "content" ? "content" : "digest",
+		mode:
+			row.mode === "content"
+				? "content"
+				: row.mode === "news"
+					? "news"
+					: "digest",
 		creatorSlackUserId: row.creator_slack_user_id,
 		prompt: row.prompt,
 		cron: row.cron,
@@ -193,10 +199,20 @@ type Validated = {
 
 function validate(input: AutomationInput): Validated {
 	// Content Studio drafts are review cards for one person, so content mode is
-	// DM-only no matter what the caller sends.
-	const mode: AutomationMode = input.mode === "content" ? "content" : "digest"
+	// DM-only no matter what the caller sends. The alert watch is the same
+	// shape: an alert is a private prompt to the owner, not a channel post.
+	const mode: AutomationMode =
+		input.mode === "content"
+			? "content"
+			: input.mode === "news"
+				? "news"
+				: "digest"
 	const deliverTo: DeliverTo =
-		mode === "content" ? "dm" : input.deliverTo === "dm" ? "dm" : "channel"
+		mode === "content" || mode === "news"
+			? "dm"
+			: input.deliverTo === "dm"
+				? "dm"
+				: "channel"
 	const title = input.title?.trim()
 	const cron = input.cron?.trim()
 	const channelId = input.channelId?.trim() ?? ""
@@ -263,7 +279,12 @@ function automationPayload(
 		deliverTo: v.deliverTo === "dm" ? "dm" : "channel",
 		creatorUserId,
 		creatorSlackUserId: slackUserId ?? undefined,
-		kind: v.mode === "content" ? ("content" as const) : ("digest" as const),
+		kind:
+			v.mode === "content"
+				? ("content" as const)
+				: v.mode === "news"
+					? ("news" as const)
+					: ("digest" as const),
 		cadence: cronToCadence(v.cron),
 		// DM goes only to the owner, so its own personal connections are safe to
 		// read when no org-shared one exists; channel posts stay org-shared only.

@@ -11,11 +11,15 @@ type BrainResultForFormat = {
 
 export function formatBrainResults(
 	results: ReadonlyArray<BrainResultForFormat>,
-	opts: { filterByScore?: boolean; limit?: number } = {},
+	opts: { filterByScore?: boolean; limit?: number; minScore?: number } = {},
 ): string {
-	const { filterByScore = true, limit } = opts
+	const { filterByScore = true, limit, minScore = BRAIN_RELEVANCE_THRESHOLD } =
+		opts
 	const filtered = filterByScore
-		? relevantBrainResults(results)
+		? textBrainResults(results).filter(
+				(r) =>
+					r.similarity === undefined || r.similarity >= minScore,
+			)
 		: textBrainResults(results)
 	const visible =
 		typeof limit === "number" ? filtered.slice(0, limit) : filtered
