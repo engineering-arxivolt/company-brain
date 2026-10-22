@@ -359,10 +359,6 @@ export async function resetAllState(
 	}
 	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_channel_observe`)
 	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect`)
-	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect_retry`)
-	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect_probe`)
-	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_public_channel_rollout`)
-	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_team_invite_run`)
 
 	ifTablesExist(
 		() => agent.sql`DELETE FROM brain_user_seen`,
