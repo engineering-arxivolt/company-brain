@@ -141,6 +141,8 @@ bun run dev
 
 Because the `containers` block in `wrangler.jsonc` is enabled, Docker has to be running for the sandbox container. Slack has to reach your machine, so point a tunnel at the dev server, set `PUBLIC_URL` in `.dev.vars` to the tunnel's URL, and create the Slack app from the tunnel's `/setup` page.
 
+The brain works inside that sandbox with three tools: `sandbox_search` finds where the code lives in a cloned repo, `sandbox_write_file` makes the edit, and `sandbox_diff` shows exactly what changed before it becomes a pull request.
+
 After changing the schema in `src/db/schema`, run `bun run db:generate`. It writes the migration and bundles it into the worker, which applies it on its next request.
 
 ---
