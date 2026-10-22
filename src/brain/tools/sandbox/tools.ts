@@ -3,6 +3,7 @@ import { logPreview } from "../../observability/log-utils"
 import { uploadSlackFile } from "../../slack/client"
 import type { CompanyBrainAgent } from "../../turn/agent"
 import type { TurnDeps } from "../../turn/deps"
+import { findGitHubConnection, operatorGitHubToken } from "../github-connection"
 import {
 	base64FromArrayBuffer,
 	createSandboxClient,
@@ -27,7 +28,6 @@ import {
 	touchSandboxSession,
 } from "./sessions"
 import { openPullRequestFromSandbox } from "./pull-request"
-import type { McpConnectionRow } from "../mcp/store"
 
 export type CreateSandboxToolsArgs = {
 	env: Env
@@ -644,51 +644,4 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 		sandbox_diff,
 		sandbox_open_pull_request,
 	}
-}
-
-/** The operator's GitHub connection, for the pull-request handoff. */
-async function findGitHubConnection(
-	env: Env,
-	orgId: string,
-	userId?: string,
-): Promise<McpConnectionRow | null> {
-	const { listActiveConnectionsForActor } = await import("../mcp/store")
-	// The connection list is scoped to who is asking: GitHub is usually
-	// connected personally, so looking without a user id finds only
-	// org-shared connections and misses the one that has the credential.
-	const connections = await listActiveConnectionsForActor(
-		env,
-		orgId,
-		userId,
-		false,
-	)
-	const github = connections.filter((connection) => {
-		const slug = (connection.serverSlug ?? "").toLowerCase()
-		const url = (connection.serverUrl ?? "").toLowerCase()
-		return slug === "github" || url.includes("githubcopilot.com")
-	})
-	if (!github.length) return null
-	return github.find((c) => c.userId !== null) ?? github[0] ?? null
-}
-
-/**
- * The operator's GitHub token, decrypted on demand.
- *
- * Used for two things: cloning a private repository, and opening a pull
- * request. It is never persisted in the sandbox, never written to disk, and
- * never put in a command line.
- */
-async function operatorGitHubToken(
-	env: Env,
-	orgId: string,
-	userId?: string,
-): Promise<string | null> {
-	const connection = await findGitHubConnection(env, orgId, userId).catch(
-		() => null,
-	)
-	if (!connection?.accessToken) return null
-	const { decryptToken } = await import("@/lib/crypto")
-	return decryptToken(connection.accessToken, env.ENCRYPTION_SECRET).catch(
-		() => null,
-	)
 }

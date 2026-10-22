@@ -452,6 +452,7 @@ export async function assembleTurnTools(
 				allowSave:
 					Boolean(actor.userId) && !passiveInvestigation && !actor.readOnly,
 				turnState: args.turnState,
+				env,
 			},
 			traceId,
 		),

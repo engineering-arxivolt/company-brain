@@ -22,6 +22,7 @@ import { memoryDocsFromWriteback } from "../memory/writeback"
 import {
 	createSkillWithSideEffects,
 	deleteSkillWithSideEffects,
+	importSkillsWithSideEffects,
 	updateSkillWithSideEffects,
 } from "../skills/operations"
 import {
@@ -94,6 +95,7 @@ export {
 export {
 	createSkillWithSideEffects,
 	deleteSkillWithSideEffects,
+	importSkillsWithSideEffects,
 	updateSkillWithSideEffects,
 }
 export { listSkills }

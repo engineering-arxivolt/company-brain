@@ -849,4 +849,25 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 			expectedVersion,
 		)
 	}
+
+	/** Import a curated pack or a repository of SKILL.md files (admin only). */
+	async importSkills(
+		org: SlackOrg,
+		params: {
+			userId: string
+			isAdmin: boolean
+			pack?: string
+			repo?: string
+			ref?: string
+			select?: readonly string[]
+			max?: number
+		},
+	) {
+		return (await this.loadImpl()).importSkillsWithSideEffects(
+			this,
+			this.env,
+			org,
+			params,
+		)
+	}
 }

@@ -138,6 +138,43 @@ export const brainSkillsRoutes = new Hono<AppContext>()
 			return errorResponse(c, error)
 		}
 	})
+	.post("/import", async (c) => {
+		const required = requireOrg(c)
+		if (required instanceof Response) return required
+		const user = c.get("user")
+		if (!user) return c.json({ error: "unauthorized" }, 401)
+		if (!isAdmin(c)) return c.json({ error: "forbidden" }, 403)
+		type ImportBody = {
+			pack?: unknown
+			repo?: unknown
+			ref?: unknown
+			select?: unknown
+			max?: unknown
+		}
+		const body = await c.req
+			.json<ImportBody>()
+			.catch(() => ({} as ImportBody))
+		try {
+			const agent = await brainAgentFor(c, required.id)
+			const result = await agent.importSkills(skillOrg(required), {
+				userId: user.id,
+				isAdmin: true,
+				pack: typeof body.pack === "string" ? body.pack : undefined,
+				repo: typeof body.repo === "string" ? body.repo : undefined,
+				ref: typeof body.ref === "string" ? body.ref : undefined,
+				select: Array.isArray(body.select)
+					? body.select.filter((value): value is string => typeof value === "string")
+					: undefined,
+				max:
+					typeof body.max === "number" && Number.isFinite(body.max)
+						? Math.floor(body.max)
+						: undefined,
+			})
+			return c.json(result)
+		} catch (error) {
+			return errorResponse(c, error)
+		}
+	})
 	.put("/:id", async (c) => {
 		const required = requireOrg(c)
 		if (required instanceof Response) return required

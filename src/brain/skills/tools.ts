@@ -44,6 +44,7 @@ export type SkillToolContext = {
 	creatorSlackUserId?: string
 	allowSave: boolean
 	turnState?: TurnState
+	env: Env
 }
 
 export function createSkillTools(
@@ -122,6 +123,83 @@ export function createSkillTools(
 	})
 
 	const tools: ToolSet = { load_skill }
+
+	// Importing is how a library of playbooks gets into the brain at all:
+	// people point at a repository of SKILL.md files, not at one file at a
+	// time. It is organization-wide and destructive to the skill index, so it
+	// is the owner's call and never something a turn talks itself into.
+	if (ctx.userId && ctx.isAdmin) {
+		tools.import_skills = deps.tool({
+			description:
+				"Import SKILL.md playbooks from a GitHub repository into the organization's skills. Use only when the requester explicitly asks to import or install a skill pack. Two curated packs exist: `knowledge-work` (Anthropic's knowledge-work-plugins: engineering, marketing, pSEO, compliance, product, data, design, support) and `anidoodle` (code-drawn art and animation, with its engine). For any other repository pass `repo` (owner/name) and optionally `select` (plugin names, `plugin/skill` paths, or skill names) so the import stays small. Imported bodies keep attribution and are re-importable; hand-written skills with the same name are never overwritten.",
+			inputSchema: deps.z.object({
+				pack: deps.z
+					.enum(["knowledge-work", "anidoodle"])
+					.optional()
+					.describe("A curated pack to import."),
+				repo: deps.z
+					.string()
+					.optional()
+					.describe("GitHub repository as owner/name, when not using a pack."),
+				ref: deps.z
+					.string()
+					.optional()
+					.describe("Branch, tag or commit. Defaults to the pack's branch."),
+				select: deps.z
+					.array(deps.z.string())
+					.optional()
+					.describe(
+						"Limit the import: plugin names (engineering), plugin/skill paths (engineering/debug), or skill names (debug).",
+					),
+				max: deps.z
+					.number()
+					.int()
+					.min(1)
+					.max(60)
+					.optional()
+					.describe("Maximum skills to import. Defaults to 60."),
+			}),
+			execute: async ({ pack, repo, ref, select, max }) => {
+				try {
+					const { importSkillsWithSideEffects } = await import("./operations")
+					const result = await importSkillsWithSideEffects(
+						agent,
+						ctx.env,
+						ctx.org,
+						{
+							userId: ctx.userId as string,
+							isAdmin: true,
+							pack,
+							repo,
+							ref,
+							select,
+							max,
+						},
+					)
+					console.log(
+						`[company-brain][${traceId}] import_skills repo=${result.repo} created=${result.created.length} updated=${result.updated.length} skipped=${result.skipped.length}`,
+					)
+					return {
+						repo: result.repo,
+						ref: result.ref,
+						created: result.created,
+						updated: result.updated,
+						skipped: result.skipped,
+						fetched: result.fetched,
+						note: "The imported playbooks are in the skill index now. Load them by name with load_skill when a task matches.",
+					}
+				} catch (error) {
+					return {
+						error:
+							error instanceof Error
+								? error.message
+								: "The import failed before anything was saved.",
+					}
+				}
+			},
+		})
+	}
+
 	if (
 		!ctx.allowSave ||
 		!ctx.userId ||

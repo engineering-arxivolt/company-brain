@@ -26,6 +26,7 @@ import { BRAIN_MODEL, TRIAGE_MODEL } from "../turn/model-profile"
 import type { TurnState } from "../turn/state"
 import type { TurnTerminalOutcome } from "../turn/terminal"
 import { toolErrorKindsFromOutput } from "./tool-outcome"
+import { toolCallProperties, toolTextPreviews } from "./tool-telemetry"
 
 export { toolErrorKindsFromOutput } from "./tool-outcome"
 export { captureAiToolCall, captureAiToolCallAwaitable } from "@/lib/posthog"
@@ -303,6 +304,10 @@ export function createBrainTurnTelemetry(
 				}
 			}
 			calledToolNames.add(args.toolName)
+			const isError = !args.success || observedKinds.length > 0
+			// Nested span: the turn span is the parent, the tool call is the
+			// child, and the id is the harness's own call id so a slow sandbox
+			// call can be joined to the log line that has its output.
 			captureAiSpan({
 				distinctId,
 				traceId,
@@ -316,11 +321,42 @@ export function createBrainTurnTelemetry(
 						? { success: args.success }
 						: { success: args.success, output: args.output },
 				latencySeconds: latencyMs !== undefined ? latencyMs / 1000 : undefined,
-				isError: !args.success || observedKinds.length > 0,
+				isError,
 				groups,
 				properties: {
 					...baseProps,
 					...(observedKinds[0] ? { tool_error_kind: observedKinds[0] } : {}),
+				},
+			})
+			// `$ai_tool_call` is the event PostHog's LLM analytics treats as a
+			// tool call; until now only MCP connector calls emitted it, so a
+			// sandbox command, a web search or a skill load was invisible in
+			// the tool dashboard. The payload is bounded and redacted — see
+			// tool-telemetry.ts for what a sandbox call is allowed to send.
+			const previews = toolTextPreviews(args.toolName, args.input, args.output)
+			captureAiToolCall({
+				distinctId,
+				traceId,
+				sessionId: input?.sessionId,
+				spanId: args.toolCallId,
+				parentId: turnSpanId,
+				toolName: args.toolName,
+				...(previews.input !== undefined ? { input: previews.input } : {}),
+				...(previews.output !== undefined ? { output: previews.output } : {}),
+				latencySeconds: latencyMs !== undefined ? latencyMs / 1000 : undefined,
+				isError,
+				groups,
+				properties: {
+					...baseProps,
+					...toolCallProperties({
+						toolName: args.toolName,
+						input: args.input,
+						output: args.output,
+						success: args.success,
+						isError,
+						latencyMs,
+						errorKinds: observedKinds,
+					}),
 				},
 			})
 		},

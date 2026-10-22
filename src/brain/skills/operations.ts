@@ -1,6 +1,7 @@
 import { captureBrainSkillEvent } from "@/lib/posthog"
 import type { SlackOrg } from "../slack/workspace"
 import type { CompanyBrainAgent } from "../turn/agent"
+import { type RunSkillImportResult, runSkillImport } from "./import"
 import {
 	type BrainSkill,
 	createSkill,
@@ -58,4 +59,53 @@ export function deleteSkillWithSideEffects(
 	expectedVersion: number,
 ): BrainSkill | null {
 	return deleteSkill(agent, id, userId, isAdmin, expectedVersion)
+}
+
+export type ImportSkillsParams = {
+	userId: string
+	isAdmin: boolean
+	pack?: string
+	repo?: string
+	ref?: string
+	select?: readonly string[]
+	max?: number
+}
+
+/**
+ * Import a pack and record what happened.
+ *
+ * The import itself has no approval step, on purpose: it is an admin asking
+ * for a library, and every imported skill is visible and deletable in the
+ * skills settings. What it must never do is overwrite a hand-written skill,
+ * which persistImportedSkills enforces by only updating its own markers.
+ */
+export async function importSkillsWithSideEffects(
+	agent: CompanyBrainAgent,
+	env: Env,
+	org: SlackOrg,
+	params: ImportSkillsParams,
+): Promise<RunSkillImportResult> {
+	const result = await runSkillImport({
+		env,
+		agent,
+		viewer: { userId: params.userId, isAdmin: params.isAdmin },
+		orgId: org.id,
+		pack: params.pack,
+		repo: params.repo,
+		ref: params.ref,
+		select: params.select,
+		max: params.max,
+	})
+	captureBrainSkillEvent({
+		distinctId: params.userId,
+		orgId: org.id,
+		action: "imported",
+		pack: result.pack ?? "custom",
+		repo: result.repo,
+		ref: result.ref,
+		created: result.created.length,
+		updated: result.updated.length,
+		skipped: result.skipped.length,
+	})
+	return result
 }
