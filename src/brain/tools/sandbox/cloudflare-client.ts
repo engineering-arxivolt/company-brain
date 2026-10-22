@@ -5,6 +5,7 @@ import {
 	type SandboxFileInfo,
 } from "./client"
 import {
+	cloneNeedsCredentials,
 	normalizeCwd,
 	normalizePath,
 	normalizeSearchLimit,
@@ -72,7 +73,21 @@ async function workspaceIsIntact(
 	}
 }
 
-export function createCloudflareSandboxClient(env: Env): SandboxClient {
+/**
+ * The credential helper that reads the token from the environment.
+ *
+ * The token never appears in the command line, in the process arguments, or
+ * on disk: git runs the helper through a shell, and the shell expands
+ * $GITHUB_TOKEN from the environment the command was given. The credential
+ * lives in one process for the length of the clone.
+ */
+const CREDENTIAL_HELPER =
+	"!f() { echo username=x-access-token; echo password=$GITHUB_TOKEN; }; f"
+
+export function createCloudflareSandboxClient(
+	env: Env,
+	options: { githubToken?: () => Promise<string | null> } = {},
+): SandboxClient {
 	const client: SandboxClient = {
 		async isSandboxRunning(sandboxId) {
 			try {
@@ -96,12 +111,45 @@ export function createCloudflareSandboxClient(env: Env): SandboxClient {
 			if (!repo) return { sandboxId, defaultCwd: "workspace" }
 
 			const defaultCwd = safeRepoDir(repo.url)
-			const clone = await client.runCommand({
+			const destination = shellQuote(absolute(defaultCwd))
+			const cloneCommand = `git clone --depth 1 -- ${shellQuote(repo.url)} ${destination}`
+			let clone = await client.runCommand({
 				sandboxId,
-				command: `git clone --depth 1 -- ${shellQuote(repo.url)} ${shellQuote(absolute(defaultCwd))}`,
+				command: cloneCommand,
 				cwd: "workspace",
 				timeoutSec: 120,
 			})
+
+			// A private repository needs the operator's GitHub credential. The
+			// worker holds it (the MCP connection), the container does not: the
+			// token is passed to this one command as an environment variable and
+			// is gone when the clone finishes.
+			if (clone.exitCode !== 0 && cloneNeedsCredentials(clone.output)) {
+				const token = await options.githubToken?.().catch(() => null)
+				if (token) {
+					const retry = await sandbox
+						.exec(
+							`git config --global credential.helper '${CREDENTIAL_HELPER}' && ${cloneCommand}`,
+							{ timeout: 120_000, env: { GITHUB_TOKEN: token } },
+						)
+						clone = {
+							exitCode: retry.exitCode,
+							output: retry.stdout + retry.stderr,
+							truncated: false,
+							cwd: "workspace",
+							timeoutSec: 120,
+						}
+				}
+			}
+
+			// A failed clone used to leave a session pointing at a directory that
+			// was never created, so every later command failed with "no such
+			// directory" and the real reason was gone.
+			if (clone.exitCode !== 0) {
+				throw new Error(
+					`The clone of ${repo.url} failed: ${clone.output.replace(/\s+/g, " ").trim().slice(0, 400)}`,
+				)
+			}
 			return {
 				sandboxId,
 				defaultCwd,

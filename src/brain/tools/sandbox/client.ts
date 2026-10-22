@@ -100,9 +100,12 @@ export type SandboxClient = {
 	isSandboxRunning(sandboxId: string): Promise<boolean>
 }
 
-export function createSandboxClient(env: Env): SandboxClient {
+export function createSandboxClient(
+	env: Env,
+	options: { githubToken?: () => Promise<string | null> } = {},
+): SandboxClient {
 	if (env.DAYTONA_API_KEY) return createDaytonaSandboxClient(env)
-	return createCloudflareSandboxClient(env)
+	return createCloudflareSandboxClient(env, options)
 }
 
 export function base64FromArrayBuffer(buffer: ArrayBuffer): string {

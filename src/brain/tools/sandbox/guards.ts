@@ -157,6 +157,21 @@ export function normalizeTimeout(timeoutSec?: number): number {
 	return Math.max(1, Math.min(MAX_TIMEOUT_SEC, Math.floor(timeoutSec)))
 }
 
+/**
+ * True when a clone failed because the repository is not public.
+ *
+ * An anonymous clone of a private repository is rejected before it says
+ * anything useful, so the only way to know is the shape of the failure.
+ * A repository that simply does not exist is not a credential problem: that
+ * is a different message and retrying with a token would not help.
+ */
+export function cloneNeedsCredentials(output: string): boolean {
+	if (/does not exist/i.test(output)) return false
+	return /(authentication failed|could not read username|repository not found|not found|401|403|permission denied|access denied|terminal prompts disabled)/i.test(
+		output,
+	)
+}
+
 export function validateCommand(
 	command: string,
 ): { ok: true; command: string } | { ok: false; error: string } {

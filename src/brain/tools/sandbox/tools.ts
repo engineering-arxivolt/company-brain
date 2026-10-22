@@ -73,7 +73,12 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 
 	const { env, agent, deps, scope, traceId } = args
 	const sessionKey = sandboxSessionKey(scope)
-	const client = createSandboxClient(env)
+	// The operator's GitHub credential, fetched only when a clone turns out to
+	// need it. The worker holds it; the container only ever sees it for the
+	// length of one clone.
+	const client = createSandboxClient(env, {
+		githubToken: () => operatorGitHubToken(env, scope.orgId),
+	})
 	// Models sometimes inspect the same artifact twice while drafting their
 	// answer. Reusing a successful upload keeps that from creating duplicates.
 	const artifactUploads = new Map<
@@ -572,4 +577,23 @@ async function findGitHubConnection(
 	})
 	if (!github.length) return null
 	return github.find((c) => c.userId !== null) ?? github[0] ?? null
+}
+
+/**
+ * The operator's GitHub token, decrypted on demand.
+ *
+ * Used for two things: cloning a private repository, and opening a pull
+ * request. It is never persisted in the sandbox, never written to disk, and
+ * never put in a command line.
+ */
+async function operatorGitHubToken(
+	env: Env,
+	orgId: string,
+): Promise<string | null> {
+	const connection = await findGitHubConnection(env, orgId).catch(() => null)
+	if (!connection?.accessToken) return null
+	const { decryptToken } = await import("@/lib/crypto")
+	return decryptToken(connection.accessToken, env.ENCRYPTION_SECRET).catch(
+		() => null,
+	)
 }
