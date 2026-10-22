@@ -1,10 +1,12 @@
 import { Hono } from "hono"
+import { getAgentByName } from "agents"
 import { db } from "@repo/db"
 import { organization } from "@repo/db/schema/auth"
 import { slackWorkspace } from "@repo/db/schema/slack"
 import { ROLE_ADMIN, roleAtLeast } from "@repo/lib/permissions"
 import { applyMigrations, migrationStatus } from "../db/migrate"
 import { availableProviders } from "@/lib/brain/turn/brain-model"
+import type { CompanyBrainAgent } from "@/lib/brain/turn/agent"
 import type { AppContext } from "@/types"
 import { slackCredentials, storeSlackCredentials } from "./config-store"
 import { slackAppManifest } from "./manifest"
@@ -70,6 +72,23 @@ export const setupRoutes = new Hono<AppContext>()
 			return c.redirect(`/setup?migrate_error=${encodeURIComponent(message)}`)
 		}
 	})
+	// Post-deploy cleanup: wipes every embedded-SQL table and cancels all
+	// schedules on this Durable Object so stale fiber checkpoints, sandbox
+	// sessions, and learned state don't survive into the new build.
+	.post("/cleanup", async (c) => {
+		const agent = await getAgentByName(
+			c.env.COMPANY_BRAIN_AGENT,
+			"cleanup",
+		) as unknown as CompanyBrainAgent
+		try {
+			await agent.resetAllState()
+			return c.json({ ok: true, cleaned: "all" })
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			return c.json({ ok: false, error: message }, 500)
+		}
+	})
+
 	.post("/slack", async (c) => {
 		// Before anyone has signed in there is nobody to ask. After that, only an
 		// admin may swap the Slack app out from under the workspace.

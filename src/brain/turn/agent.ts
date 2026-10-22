@@ -245,6 +245,13 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		return (await this.loadImpl()).resetSlackWorkspaceState(this)
 	}
 
+	/** Nuke every embedded-SQL table and cancel every schedule on this DO.
+	 * Call after a deploy so stale state doesn't survive into the new build.
+	 */
+	async resetAllState(): Promise<void> {
+		return (await this.loadImpl()).resetAllState(this)
+	}
+
 	async onSlackEvent(msg: SlackTurnMessage): Promise<void> {
 		return this.startSlackTurnFiber(msg)
 	}

@@ -345,6 +345,87 @@ export async function resetMemoryRegistry(
 	)
 }
 
+/** Nuke every embedded-SQL table and cancel every schedule on this DO.
+ * Called after a deploy so stale fiber checkpoints, sandbox sessions,
+ * schedules, and learned state don't survive into the new build.
+ */
+export async function resetAllState(
+	agent: CompanyBrainAgent,
+): Promise<void> {
+	// Cancel every recurring schedule first so nothing re-fires mid-cleanup.
+	const scheduleIds: string[] = []
+	const collect = (rows: Array<{ schedule_id: string }>) => {
+		for (const row of rows) if (row.schedule_id) scheduleIds.push(row.schedule_id)
+	}
+	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_channel_observe`)
+	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect`)
+	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect_retry`)
+	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect_probe`)
+	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_public_channel_rollout`)
+	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_team_invite_run`)
+
+	ifTablesExist(
+		() => agent.sql`DELETE FROM brain_user_seen`,
+		() => agent.sql`DELETE FROM brain_observe_cursor`,
+		() => agent.sql`DELETE FROM brain_paused_turn`,
+		() => agent.sql`DELETE FROM brain_thread_investigation`,
+		() => agent.sql`DELETE FROM brain_pending_approval`,
+		() => agent.sql`DELETE FROM brain_decision_log`,
+		() => agent.sql`DELETE FROM brain_sandbox_session`,
+		() => agent.sql`DELETE FROM brain_sandbox_edit`,
+		() => agent.sql`DELETE FROM brain_memory_state`,
+		() => agent.sql`DELETE FROM brain_memory_node`,
+		() => agent.sql`DELETE FROM brain_memory_tag`,
+		() => agent.sql`DELETE FROM brain_workspace_prompt`,
+		() => agent.sql`DELETE FROM brain_profile_sync`,
+		() => agent.sql`DELETE FROM brain_skill`,
+		() => agent.sql`DELETE FROM brain_skill_draft`,
+		() => agent.sql`DELETE FROM brain_lease`,
+		() => agent.sql`DELETE FROM brain_founder_brain`,
+		() => agent.sql`DELETE FROM brain_journey_beat`,
+		() => agent.sql`DELETE FROM research_announced`,
+		() => agent.sql`DELETE FROM brain_trial_claim`,
+		() => agent.sql`DELETE FROM install_nudge`,
+		() => agent.sql`DELETE FROM slack_home_channel`,
+		() => agent.sql`DELETE FROM brain_channel_observe`,
+		() => agent.sql`DELETE FROM brain_channel_observe_scan`,
+		() => agent.sql`DELETE FROM brain_channel_observe_pending`,
+		() => agent.sql`DELETE FROM brain_channel_observe_batch`,
+		() => agent.sql`DELETE FROM brain_channel_observe_retry`,
+		() => agent.sql`DELETE FROM brain_channel_observe_probe`,
+		() => agent.sql`DELETE FROM brain_public_channel_rollout`,
+		() => agent.sql`DELETE FROM brain_public_channel_rollout_card`,
+		() => agent.sql`DELETE FROM brain_public_channel_rollout_channel`,
+		() => agent.sql`DELETE FROM brain_public_channel_rollout_document`,
+		() => agent.sql`DELETE FROM brain_public_channel_rollout_message`,
+		() => agent.sql`DELETE FROM brain_public_channel_rollout_thread`,
+		() => agent.sql`DELETE FROM brain_public_channel_introduction`,
+		() => agent.sql`DELETE FROM brain_team_invite_run`,
+		() => agent.sql`DELETE FROM brain_team_invite_settings`,
+		() => agent.sql`DELETE FROM brain_team_invite_target`,
+		() => agent.sql`DELETE FROM brain_home_welcome`,
+		() => agent.sql`DELETE FROM brain_member_notified`,
+		() => agent.sql`DELETE FROM brain_channel_membership`,
+		() => agent.sql`DELETE FROM brain_channel_backfill`,
+		() => agent.sql`DELETE FROM brain_reaction_queue_schedule`,
+		() => agent.sql`DELETE FROM brain_trial_reminder_arm`,
+		() => agent.sql`DELETE FROM brain_post_turn_reflect`,
+		() => agent.sql`DELETE FROM brain_post_turn_reflect_retry`,
+		() => agent.sql`DELETE FROM brain_post_turn_reflect_probe`,
+		() => agent.sql`DELETE FROM brain_research`,
+		() => agent.sql`DELETE FROM brain_research_phase`,
+		() => agent.sql`DELETE FROM brain_research_card`,
+	)
+
+	clearInteractionObserveState(agent)
+	clearBrainProfileSync(agent)
+	clearBrainMemoryRegistry(agent)
+
+	await Promise.all(
+		scheduleIds.map((id) => agent.cancelSchedule(id).catch(() => false)),
+	)
+}
+
 export async function onApprovalDecision(
 	agent: CompanyBrainAgent,
 	decision: SlackApprovalDecision,
