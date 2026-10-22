@@ -30,7 +30,6 @@ import {
 import {
 	normalizeSkillName,
 	SKILL_BODY_MAX_BYTES,
-	SKILL_DESCRIPTION_MAX_CHARS,
 	SKILL_NAME_MAX_CHARS,
 	validateSkillInput,
 	type SkillEditableInput,
@@ -77,23 +76,18 @@ const KNOWLEDGE_WORK_SELECT = [
 	"engineering/tech-debt",
 	"engineering/testing-strategy",
 	// marketing
-	"marketing/brand-review",
-	"marketing/campaign-plan",
-	"marketing/competitive-brief",
-	"marketing/content-creation",
-	"marketing/draft-content",
-	"marketing/email-sequence",
+	// The organization already has a deeper, Arxivolt-specific marketing
+	// library (pSEO, paid ads, copywriting, email sequences, launch), so the
+	// generic playbooks here would only compete with it in the router. The
+	// one exception is performance reporting, which nothing else covers.
 	"marketing/performance-report",
-	"marketing/seo-audit",
 	// small business (the closest thing in the pack to an operator's job)
 	"small-business/brand-style",
-	"small-business/content-strategy",
 	"small-business/lead-triage",
 	"small-business/outreach-composer",
 	"small-business/proposal-builder",
 	"small-business/report-builder",
 	"small-business/seo-ai-visibility",
-	"small-business/social-content-engine",
 	// product
 	"product-management/metrics-review",
 	"product-management/product-brainstorming",
@@ -213,11 +207,28 @@ export function fitSkillBody(args: {
 	return { body, truncated: true }
 }
 
-/** One line, and never longer than the index can render. */
+/** One line, and short enough that 90 skills still fit the turn's index. */
+export const IMPORTED_DESCRIPTION_MAX_CHARS = 140
+
+/**
+ * One line, and never longer than the index can render.
+ *
+ * Imported descriptions are written for a catalog, with trigger phrases after
+ * the semantics ("… Use when a PR lands."). The brain pays for every character
+ * on every turn, so the cut prefers a sentence boundary inside 140 characters
+ * over a hard ellipsis in the middle of a phrase.
+ */
 export function fitSkillDescription(value: string): string {
 	const normalized = value.replace(/\s+/g, " ").trim()
-	if (normalized.length <= SKILL_DESCRIPTION_MAX_CHARS) return normalized
-	return `${normalized.slice(0, SKILL_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`
+	if (normalized.length <= IMPORTED_DESCRIPTION_MAX_CHARS) return normalized
+	const slice = normalized.slice(0, IMPORTED_DESCRIPTION_MAX_CHARS).trimEnd()
+	const boundary = Math.max(
+		slice.lastIndexOf(". "),
+		slice.lastIndexOf("; "),
+		slice.lastIndexOf(" — "),
+	)
+	if (boundary >= 90) return slice.slice(0, boundary + 1)
+	return `${slice.slice(0, IMPORTED_DESCRIPTION_MAX_CHARS - 1).trimEnd()}…`
 }
 
 export function fitSkillName(value: string): string {
@@ -586,7 +597,12 @@ export async function runSkillImport(
 		args.viewer.userId,
 	).catch(() => null)
 	const fetched = await fetchSkillsFromRepo({
-		fetchImpl: args.fetchImpl ?? (globalThis.fetch as unknown as FetchLike),
+		// Call the global as a bare function: passing `globalThis.fetch` as a
+		// value and then invoking `args.fetchImpl(...)` sets `this` to the
+		// options object, which Workers rejects as an illegal invocation.
+		fetchImpl:
+			args.fetchImpl ??
+			((input, init) => globalThis.fetch(input, init as RequestInit)),
 		repo,
 		ref,
 		select: args.select ?? pack?.select,

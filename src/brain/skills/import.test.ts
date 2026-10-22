@@ -147,7 +147,7 @@ describe("fitSkillDescription", () => {
 	it("collapses whitespace and fits the index limit", () => {
 		const long = `word ${"x".repeat(400)}`
 		const fitted = fitSkillDescription(long)
-		expect(fitted.length).toBeLessThanOrEqual(200)
+		expect(fitted.length).toBeLessThanOrEqual(140)
 		expect(fitted.endsWith("…")).toBe(true)
 	})
 })
