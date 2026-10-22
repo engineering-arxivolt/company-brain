@@ -53,7 +53,7 @@ export function isTransientUpstreamError(error: unknown): boolean {
  */
 export async function callWithTransientRetry<T>(
 	call: () => PromiseLike<T>,
-	options: { readOnly: boolean; attempt?: number },
+	options: { readOnly: boolean; attempt?: number; label?: string },
 ): Promise<T> {
 	const maxAttempts = options.readOnly ? (options.attempt ?? 2) : 1
 	let lastError: unknown
@@ -64,6 +64,11 @@ export async function callWithTransientRetry<T>(
 			lastError = error
 			if (attempt >= maxAttempts) break
 			if (!isTransientUpstreamError(error)) break
+			console.log(
+				`[company-brain] transient upstream failure on ${
+					options.label ?? "connected app"
+				}, retrying once: ${errorText(error).slice(0, 160)}`,
+			)
 		}
 	}
 	throw lastError

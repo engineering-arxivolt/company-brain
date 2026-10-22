@@ -19,6 +19,7 @@ import { captureAiToolCall } from "../../observability"
 import type { McpApprovalClassifier } from "./approval-classifier"
 import { operationIsRead } from "./approval-classifier"
 import { callWithTransientRetry } from "./transient-retry"
+import { allowedValuesSummary } from "./method-contract"
 import {
 	type CatalogMethod,
 	catalogMethods,
@@ -200,6 +201,17 @@ export {
 	isTransientUpstreamError,
 } from "./transient-retry"
 
+/**
+ * How many times one method may fail in a turn before the harness stops it.
+ *
+ * The guard on identical calls does not catch this case: a model that guesses
+ * a field name wrongly tends to guess it *differently* each time, so every
+ * attempt is a new call, none of them is a duplicate, and the turn spends
+ * six calls re-learning the same schema error. Six remote calls in a row
+ * against one method is a loop, not an attempt.
+ */
+const METHOD_FAILURE_LIMIT = 3
+
 function resultTooLargeSuggestion(method: CatalogMethod): string {
 	const schema =
 		method.inputSchema &&
@@ -236,6 +248,8 @@ function toolError(args: {
 	suggestion: string
 	retryable?: boolean
 	detail?: string
+	/** Extra contract text, e.g. the allowed values for a field. */
+	contract?: string
 	traceId: string
 }): ToolError {
 	return new ToolError({
@@ -244,7 +258,9 @@ function toolError(args: {
 		message: args.message,
 		suggestion: args.suggestion,
 		retryable: args.retryable ?? false,
-		contract: args.method.canonical,
+		contract: args.contract
+			? `${args.method.canonical}\n${args.contract}`
+			: args.method.canonical,
 		detail: args.detail,
 		traceId: args.traceId,
 	})
@@ -539,6 +555,30 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 							}),
 						)
 					}
+					// A method that keeps failing with different arguments is a
+					// schema problem, not an attempt. Stop it here, with the
+					// schema's own allowed values, rather than letting the turn
+					// spend its call budget re-learning the same rejection.
+					const methodFailures = this.target.state.nativeCalls.filter(
+						(call) =>
+							call.method === args.method.sourceToolName &&
+							call.status === "error",
+					).length
+					if (methodFailures >= METHOD_FAILURE_LIMIT) {
+						const contract = allowedValuesSummary(args.method.inputSchema)
+						throwEncoded(
+							toolError({
+								kind: "invalid_arguments",
+								method: args.method,
+								message: `${args.method.path} has failed ${methodFailures} times in this turn. The server is rejecting the arguments, not the request.`,
+								contract: contract || undefined,
+								suggestion: contract
+									? "Use exactly the listed values for each field, or stop calling this method and answer from the evidence you already have."
+									: "Stop calling this method and answer from the evidence you already have.",
+								traceId: this.target.traceId,
+							}),
+						)
+					}
 					if (!reserveNativeCall(this.target.state)) {
 						throwEncoded(
 							toolError({
@@ -577,6 +617,7 @@ export class CompanyBrainMcpConnector extends McpConnector<Env> {
 							async () => await args.connectorTool.execute(remoteInput, context),
 							{
 								readOnly: operationIsRead(evaluated.decision.effect),
+								label: `${this.target.displayName}.${args.method.sourceToolName}`,
 							},
 						)
 						captureAiToolCall({
