@@ -1,5 +1,5 @@
 import { slackCredentials } from "../../setup/config-store"
-import { TURN_CONTINUE_ACTION_ID } from "../constants"
+import { TURN_CONTINUE_ACTION_ID, TURN_STOP_ACTION_ID } from "../constants"
 import { getCatalogIconUrlForToolLabel } from "../tools/mcp/catalog"
 import {
 	humanizeToolAction,
@@ -846,6 +846,97 @@ export async function postPausedTurnCard(
 		`I ran out of time mid-task. <@${askerUser}> press Continue to pick it back up from exactly where it stopped.`,
 		threadTs,
 		pausedTurnContinueBlocks(pauseId),
+	)
+}
+
+export function longJobStatusBlocks(text: string, jobId: string): unknown[] {
+	return [
+		{
+			type: "section",
+			text: { type: "mrkdwn", text },
+		},
+		{
+			type: "actions",
+			block_id: "brain_long_job_actions",
+			elements: [
+				{
+					type: "button",
+					action_id: TURN_STOP_ACTION_ID,
+					value: jobId,
+					style: "danger",
+					text: { type: "plain_text", text: "Stop this task", emoji: true },
+					confirm: {
+						title: { type: "plain_text", text: "Stop this task?" },
+						text: {
+							type: "mrkdwn",
+							text: "I'll stop at the next safe point. Anything already finished stays.",
+						},
+						confirm: { type: "plain_text", text: "Stop" },
+						deny: { type: "plain_text", text: "Keep going" },
+					},
+				},
+			],
+		},
+	]
+}
+
+export function longJobStatusText(
+	askerUser: string,
+	autoContinues: number,
+	maxAutoContinues: number,
+): string {
+	return `I hit the time limit mid-task, so I'm continuing in the background (step ${autoContinues} of ${maxAutoContinues}). <@${askerUser}> can stop it with the button below.`
+}
+
+export async function postLongJobCard(
+	botToken: string,
+	channel: string,
+	threadTs: string,
+	text: string,
+	jobId: string,
+): Promise<string | undefined> {
+	return postSlackMessage(
+		botToken,
+		channel,
+		text,
+		threadTs,
+		longJobStatusBlocks(text, jobId),
+	)
+}
+
+export async function updateLongJobCard(
+	botToken: string,
+	channel: string,
+	messageTs: string,
+	text: string,
+	jobId: string,
+): Promise<boolean> {
+	return updateSlackMessage(
+		botToken,
+		channel,
+		messageTs,
+		text,
+		longJobStatusBlocks(text, jobId),
+	)
+}
+
+export async function markLongJobCardFinished(
+	botToken: string,
+	channel: string,
+	messageTs: string,
+	text: string,
+): Promise<boolean> {
+	return updateSlackMessage(
+		botToken,
+		channel,
+		messageTs,
+		text,
+		[
+			{
+				type: "context",
+				elements: [{ type: "mrkdwn", text }],
+			},
+		],
 	)
 }
 

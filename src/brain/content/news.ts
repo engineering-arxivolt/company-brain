@@ -362,7 +362,11 @@ export async function collectNewsSignals(args: {
 }
 
 function signalLine(signal: NewsSignal): string {
-	return `• ${signal.headline}${signal.sourceName ? ` (${signal.sourceName}${signal.date ? `, ${signal.date}` : ""})` : ""}\n  What changed: ${signal.whatChanged}\n  Who cares: ${signal.whoCares || "—"}\n  Product hook: ${signal.productHook || "—"}`
+	const hasSource = !!signal.sourceUrl
+	const sourceDisplay = hasSource
+		? `<${signal.sourceUrl}|🔗 ${cleanLine(signal.sourceUrl, 80)}>`
+		: ""
+	return `• ${signal.headline}${signal.sourceName ? ` (${signal.sourceName}${signal.date ? `, ${signal.date}` : ""})` : ""}\n  What changed: ${signal.whatChanged}\n  Who cares: ${signal.whoCares || "—"}\n  Product hook: ${signal.productHook || "—"}${hasSource ? `\n  ${signal.sourceUrl}` : ""}`
 }
 
 /** The review card: the signals, and a decision per signal. */
@@ -419,6 +423,16 @@ export function buildNewsBriefBlocks(brief: NewsBrief): {
 			],
 		})
 	}
+	// Prepend the brief summary as the first block so it appears before the signals
+	const summaryBlock: Record<string, unknown> = {
+		type: "section",
+		text: {
+			type: "mrkdwn",
+			text: `📰 News Brief — ${brief.signals.length} signal(s) worth a post. Review them in your DM.`,
+		},
+	}
+	// Insert the summary at the beginning so it renders first
+	blocks.unshift(summaryBlock)
 	return {
 		text: `📰 News Brief — ${brief.signals.length} signal(s) worth a post. Review them in your DM.`,
 		blocks,

@@ -64,10 +64,26 @@ import {
 	runPassiveReactionQueue as runPassiveReactionQueueImpl,
 } from "../slack/reaction-queue"
 import { ensureTriageTraceSamplingTable } from "../slack/triage-sampling"
-import { ensureTurnControlTables } from "../slack/turn-control"
+import { ensureTurnControlTables, getThreadTurn } from "../slack/turn-control"
 import { brainAgent, type CompanyBrainAgent } from "./agent"
 import { ensureApprovalTables } from "./approval"
-import { ensurePausedTurnTables } from "./pause"
+import {
+	ensurePausedTurnTables,
+	loadPausedTurn,
+	markPausedTurnTerminal,
+} from "./pause"
+import {
+	cancelLongJob,
+	cancelPendingApprovalsForJob,
+	ensureLongJobTables,
+	hasPendingApprovalForJob,
+	loadLongJob,
+	longJobIsExpired,
+	type LongJobStepPayload,
+	type LongJobStopPayload,
+	markLongJobStatus,
+	reconcileLongJobs,
+} from "./long-job"
 import { ensureDecisionTables } from "./decision-log"
 import {
 	type ApprovalExpiryPayload,
@@ -132,6 +148,7 @@ export { getDecisions } from "./decision-log"
 import type { Schedule } from "agents"
 import { flushBrainTelemetry } from "../observability"
 import { runSlackChimeIn } from "../slack/chime"
+import { updateSlackInteractionResponse } from "../slack/client"
 import {
 	isDebugReactionEvent,
 	isFeedbackReactionEvent,
@@ -179,6 +196,7 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 	ensureBrainMemoryStateTable(agent)
 	ensureApprovalTables(agent)
 	ensurePausedTurnTables(agent)
+	ensureLongJobTables(agent)
 	ensureDecisionTables(agent)
 	ensureLeaseTables(agent)
 	ensureChimeBudgetTables(agent)
@@ -213,6 +231,7 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 		reconcilePostTurnReflectSchedules(agent),
 		reconcileTeamInviteSchedule(agent),
 		cancelAutoResearchSchedules(agent),
+		reconcileLongJobs(agent),
 	])
 	for (const repair of repairs) {
 		if (repair.status === "rejected") {
@@ -274,6 +293,12 @@ function slackOwnedScheduleIds(agent: CompanyBrainAgent): string[] {
 					schedule_id: string
 				}>`SELECT schedule_id FROM brain_team_invite_run`,
 			]),
+		() =>
+			collect([
+				...agent.sql<{
+					schedule_id: string
+				}>`SELECT schedule_id FROM brain_long_job WHERE schedule_id IS NOT NULL`,
+			]),
 	)
 	return ids
 }
@@ -306,6 +331,7 @@ export async function resetSlackWorkspaceState(
 		() => agent.sql`DELETE FROM brain_channel_backfill`,
 		() => agent.sql`DELETE FROM brain_reaction_queue_schedule`,
 		() => agent.sql`DELETE FROM brain_trial_reminder_arm`,
+		() => agent.sql`DELETE FROM brain_long_job`,
 	)
 	await Promise.all(
 		scheduleIds.map((id) => agent.cancelSchedule(id).catch(() => false)),
@@ -359,11 +385,19 @@ export async function resetAllState(
 	}
 	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_channel_observe`)
 	collect(agent.sql<{ schedule_id: string }>`SELECT schedule_id FROM brain_post_turn_reflect`)
+	ifTablesExist(() =>
+		collect(
+			agent.sql<{ schedule_id: string }>`
+				SELECT schedule_id FROM brain_long_job WHERE schedule_id IS NOT NULL
+			`,
+		),
+	)
 
 	ifTablesExist(
 		() => agent.sql`DELETE FROM brain_user_seen`,
 		() => agent.sql`DELETE FROM brain_observe_cursor`,
 		() => agent.sql`DELETE FROM brain_paused_turn`,
+		() => agent.sql`DELETE FROM brain_long_job`,
 		() => agent.sql`DELETE FROM brain_thread_investigation`,
 		() => agent.sql`DELETE FROM brain_pending_approval`,
 		() => agent.sql`DELETE FROM brain_decision_log`,
@@ -443,6 +477,121 @@ export async function onTurnContinue(
 		await runSlackContinueTurn(agent, turnContinue)
 	} catch (err) {
 		console.error("[company-brain] turn continue failed:", err)
+	} finally {
+		await flushBrainTelemetry()
+	}
+}
+
+// One chunk per job at a time. Duplicate alarms are harmless to the paused
+// envelope (resuming is one-shot), but two callbacks racing would each decide
+// the job's terminal status and could mark a still-running job completed.
+const activeLongJobSteps = new Set<string>()
+
+export async function runTurnAutoContinue(
+	agent: CompanyBrainAgent,
+	payload: LongJobStepPayload,
+): Promise<void> {
+	try {
+		if (activeLongJobSteps.has(payload.jobId)) return
+		const job = loadLongJob(agent, payload.jobId)
+		if (!job || job.status !== "running") return
+		if (longJobIsExpired(job)) {
+			markLongJobStatus(agent, job.jobId, "expired")
+			return
+		}
+		const paused = loadPausedTurn(agent, payload.pauseId)
+		if (!paused || paused.status !== "paused") return
+
+		activeLongJobSteps.add(payload.jobId)
+		try {
+			await runSlackContinueTurn(agent, {
+				teamId: job.teamId,
+				pauseId: payload.pauseId,
+				userId: job.askerUser,
+			})
+
+			// A pause while this chunk ran armed the next step and moved the
+			// job's last_pause_id; leave the job alone. Otherwise the job is
+			// done, or it handed off to an approval card.
+			const after = loadLongJob(agent, payload.jobId)
+			if (
+				!after ||
+				after.status !== "running" ||
+				after.lastPauseId !== payload.pauseId
+			) {
+				return
+			}
+			const stillPaused = loadPausedTurn(agent, payload.pauseId)
+			// Only a consumed pause means this chunk got to run. Anything else
+			// (still paused, expired, unreadable) means the resume was refused.
+			if (stillPaused?.status !== "resumed") {
+				markLongJobStatus(agent, after.jobId, "cancelled")
+				return
+			}
+			if (hasPendingApprovalForJob(agent, after)) {
+				markLongJobStatus(agent, after.jobId, "waiting_approval")
+				return
+			}
+			// A turn that was superseded or aborted between chunks never reached
+			// the finish card, so close the job instead of reporting completion.
+			const threadTurn = getThreadTurn(agent, after.threadKey)
+			markLongJobStatus(
+				agent,
+				after.jobId,
+				threadTurn?.turn_id === after.turnId &&
+					threadTurn.status === "completed"
+					? "completed"
+					: "cancelled",
+			)
+		} finally {
+			activeLongJobSteps.delete(payload.jobId)
+		}
+	} catch (err) {
+		console.error("[company-brain] long job auto-continue failed:", err)
+		markLongJobStatus(agent, payload.jobId, "error")
+	} finally {
+		await flushBrainTelemetry()
+	}
+}
+
+export async function onLongJobStop(
+	agent: CompanyBrainAgent,
+	payload: LongJobStopPayload,
+): Promise<void> {
+	const respond = async (text: string, responseType?: "ephemeral") => {
+		if (!payload.responseUrl) return
+		await updateSlackInteractionResponse(payload.responseUrl, {
+			text,
+			replaceOriginal: !responseType,
+			...(responseType ? { responseType } : {}),
+		})
+	}
+	try {
+		const job = loadLongJob(agent, payload.jobId)
+		if (!job) {
+			await respond("That task is no longer running.", "ephemeral")
+			return
+		}
+		if (job.teamId !== payload.teamId) return
+		if (job.askerUser !== payload.userId) {
+			await respond(
+				`Only <@${job.askerUser}> can stop this task.`,
+				"ephemeral",
+			)
+			return
+		}
+		if (job.status === "cancelled" || job.status === "completed") {
+			await respond("That task already finished.", "ephemeral")
+			return
+		}
+		const cancelled = await cancelLongJob(agent, job.jobId)
+		if (cancelled?.lastPauseId) {
+			markPausedTurnTerminal(agent, cancelled.lastPauseId, "cancelled")
+		}
+		cancelPendingApprovalsForJob(agent, job)
+		await respond(
+			"Stopped. Anything I already finished is still in the thread.",
+		)
 	} finally {
 		await flushBrainTelemetry()
 	}

@@ -9,6 +9,7 @@ import {
 	TEAM_INVITE_SELECT_ACTION_ID,
 	TEAM_INVITE_SEND_ACTION_ID,
 	TURN_CONTINUE_ACTION_ID,
+	TURN_STOP_ACTION_ID,
 } from "@/lib/brain/constants"
 import {
 	completeSlackAccountLink,
@@ -268,6 +269,48 @@ function parseTurnContinueInteractionPayload(rawBody: Uint8Array): {
 	}
 }
 
+
+function parseLongJobStopInteractionPayload(rawBody: Uint8Array): {
+	teamId: string
+	userId: string
+	jobId: string
+	responseUrl?: string
+} | null {
+	const body = new TextDecoder().decode(rawBody)
+	const payload = new URLSearchParams(body).get("payload")
+	if (!payload) return null
+	let parsed: unknown
+	try {
+		parsed = JSON.parse(payload)
+	} catch {
+		return null
+	}
+	if (!parsed || typeof parsed !== "object") return null
+	const p = parsed as {
+		type?: unknown
+		team?: { id?: unknown }
+		user?: { id?: unknown }
+		response_url?: unknown
+		actions?: Array<{ action_id?: unknown; value?: unknown }>
+	}
+	if (p.type !== "block_actions") return null
+	const action = p.actions?.[0]
+	const actionId =
+		typeof action?.action_id === "string" ? action.action_id : undefined
+	const jobId = typeof action?.value === "string" ? action.value : undefined
+	const teamId = typeof p.team?.id === "string" ? p.team.id : undefined
+	const userId = typeof p.user?.id === "string" ? p.user.id : undefined
+	if (!teamId || !userId || !jobId || actionId !== TURN_STOP_ACTION_ID) {
+		return null
+	}
+	return {
+		teamId,
+		userId,
+		jobId,
+		responseUrl:
+			typeof p.response_url === "string" ? p.response_url : undefined,
+	}
+}
 
 function parseLeaseInteractionPayload(rawBody: Uint8Array): {
 	teamId: string
@@ -1117,6 +1160,23 @@ export const slackRoutes = new Hono<AppContext>()
 			return c.json({ ok: true })
 		}
 
+
+		const longJobStop = parseLongJobStopInteractionPayload(rawBody)
+		if (longJobStop) {
+			const ws = await getWorkspaceByTeamId(c.env, longJobStop.teamId)
+			if (!ws) return c.json({ ok: true })
+
+			const agent = await getAgentByName(c.env.COMPANY_BRAIN_AGENT, ws.orgId)
+			c.executionCtx.waitUntil(
+				agent.onLongJobStop({
+					teamId: longJobStop.teamId,
+					jobId: longJobStop.jobId,
+					userId: longJobStop.userId,
+					responseUrl: longJobStop.responseUrl,
+				}),
+			)
+			return c.json({ ok: true })
+		}
 
 		const lease = parseLeaseInteractionPayload(rawBody)
 		if (lease) {

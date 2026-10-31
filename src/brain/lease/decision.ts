@@ -8,7 +8,6 @@ import {
 	getSlackUserInfo,
 	type LeaseCardStatus,
 	postSlackApprovalCard,
-	postPausedTurnCard,
 	postSlackMessage,
 	resolvedLeaseBlocks,
 	type SlackLeaseCard,
@@ -40,6 +39,7 @@ import {
 } from "../turn/approval"
 import { armApprovalExpiry } from "../turn/approval-expiry"
 import { persistPausedTurn } from "../turn/pause"
+import { postPauseStatus } from "../turn/pause-card"
 import {
 	raceWithAbortSignal,
 	retainAbandoned,
@@ -797,13 +797,14 @@ async function runLeaseFollowUp(
 					question: out.state.question ?? "",
 					envelope: out.state,
 				})
-				await postPausedTurnCard(
+				await postPauseStatus({
+					agent,
 					botToken,
-					request.channel,
-					request.threadTs,
-					request.lesseeSlackUser,
-					pausedTurn.pauseId,
-				)
+					paused: pausedTurn,
+					channel: request.channel,
+					threadTs: request.threadTs,
+					askerUser: request.lesseeSlackUser,
+				})
 			}
 			return
 		}

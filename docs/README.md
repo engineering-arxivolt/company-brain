@@ -18,15 +18,18 @@ For how Company Brain behaves day to day (memory and permissions, connectors, au
 |-----|----------------|
 | [architecture.md](./architecture.md) | End-to-end map, privacy + tools summary |
 | [slack.md](./slack.md) | Install, events, turns, triage/chime, rollout, UX |
+| [surfaces/teams-whatsapp-research.md](./surfaces/teams-whatsapp-research.md) | Teams and WhatsApp platform research, approval-card design, parity plan |
 | [agent.md](./agent.md) | DO surface, models, billing, data pointers |
 | [spec.md](./spec.md) | Full technical spec: beachhead, signup research, turn finalization, `finish_turn`, recovery, gateway health, effort levels |
 | [local-dev.md](./local-dev.md) | Run it locally: Slack sandbox, tunnel, env vars, `/brain` install |
 | [do-split-runbook.md](./do-split-runbook.md) | Moving `CompanyBrainAgent` to its own worker: `exports` transfer, four deploys, risks |
 | [slack-app-manifest.yaml](./slack-app-manifest.yaml) | Manifest for creating a personal Slack app |
 
-The first three pages are the short orientation; `spec.md` is the long-form detail
-they summarize. `spec.md` predates recent work and still has stale passages, so
-treat neither as authoritative over the code.
+The architecture, Slack, and agent pages are the short orientation. The
+Teams/WhatsApp paper is a forward-looking decision document, not current
+behavior. `spec.md` is the long-form detail the orientation pages summarize;
+it predates recent work and still has stale passages, so treat the docs as less
+authoritative than the code.
 
 **Rule:** code is source of truth. If these pages disagree with `apps/api/src/lib/brain/**`, fix the docs in the same change.
 

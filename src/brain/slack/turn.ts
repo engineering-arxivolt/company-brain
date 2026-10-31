@@ -58,6 +58,7 @@ import {
 	pausedTurnIsExpired,
 	persistPausedTurn,
 } from "../turn/pause"
+import { finishLongJobCard, postPauseStatus } from "../turn/pause-card"
 import { resolveApprovalIconUrl } from "../turn/approval-icons"
 import { computeTurn } from "../turn/compute"
 import { getHomeChannel } from "../turn/home-channel"
@@ -112,7 +113,6 @@ import {
 	postSlackApprovalCard,
 	postSlackEphemeral,
 	postSlackMessage,
-	postPausedTurnCard,
 	removeSlackReaction,
 	resolvedApprovalBlocks,
 	type SlackConversationInfo,
@@ -591,13 +591,14 @@ async function runSlackContinueTurnInner(
 				question: out.state.question ?? paused.question,
 				envelope: out.state,
 			})
-			await postPausedTurnCard(
+			await postPauseStatus({
+				agent,
 				botToken,
-				paused.channel,
-				paused.threadTs,
-				paused.askerUser,
-				nextPause.pauseId,
-			)
+				paused: nextPause,
+				channel: paused.channel,
+				threadTs: paused.threadTs,
+				askerUser: paused.askerUser,
+			})
 			markThreadTurnCompleted(agent, turnControl)
 			return
 		}
@@ -620,11 +621,26 @@ async function runSlackContinueTurnInner(
 				out.reaction,
 			)
 		}
+		if (isThreadTurnCurrent(agent, turnControl)) {
+			await finishLongJobCard({
+				agent,
+				threadKey: paused.threadKey,
+				botToken,
+				channel: paused.channel,
+			})
+		}
 	} catch (err) {
 		retainAbandoned(resume, (promise) => brainAgent(agent).waitUntil(promise))
 		if (turnWasInterrupted(agent, turnControl)) return
 		const timedOut = deadline.aborted
 		console.error("[company-brain] turn continue failed:", err)
+		await finishLongJobCard({
+			agent,
+			threadKey: paused.threadKey,
+			botToken,
+			channel: paused.channel,
+			failed: true,
+		}).catch(() => {})
 		await stream.finalize(
 			timedOut
 				? "This is still taking a while, so I paused again — reply here and I'll pick it back up."
@@ -1307,13 +1323,14 @@ async function runSlackApprovalDecisionInner(
 					question: out.state.question ?? approval.state.question ?? "",
 					envelope: out.state,
 				})
-				await postPausedTurnCard(
+				await postPauseStatus({
+					agent,
 					botToken,
-					approval.channel,
-					approval.threadTs,
-					approval.askerUser,
-					pausedTurn.pauseId,
-				)
+					paused: pausedTurn,
+					channel: approval.channel,
+					threadTs: approval.threadTs,
+					askerUser: approval.askerUser,
+				})
 			}
 			return
 		}
@@ -1371,6 +1388,15 @@ async function runSlackApprovalDecisionInner(
 				expressive.reaction,
 			)
 		}
+	}
+	if (turnStillCurrent(agent, turnControl)) {
+		await finishLongJobCard({
+			agent,
+			threadKey: `${approval.teamId}:${approval.channel}:${approval.threadTs}`,
+			botToken,
+			channel: approval.channel,
+			failed: failed || resumeDeadline.aborted,
+		})
 	}
 	try {
 		const memoryScope = approval.state.memoryScope
@@ -3559,13 +3585,14 @@ async function runSlackTurnInner(
 					question: out.state.question ?? question,
 					envelope: out.state,
 				})
-				await postPausedTurnCard(
+				await postPauseStatus({
+					agent,
 					botToken,
+					paused: pausedTurn,
 					channel,
 					threadTs,
-					ev.user ?? "",
-					pausedTurn.pauseId,
-				)
+					askerUser: ev.user ?? "",
+				})
 			} else {
 				// No turn control means the thread moved on and this envelope is
 				// already superseded. Say so rather than finalizing into silence,

@@ -12,11 +12,11 @@ const PRIVATE_172_REGEX = /^172\.(1[6-9]|2\d|3[01])\./
 const BLOCKED_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 	{
 		pattern: /\bgit\s+push\b/i,
-		reason: "Pushing changes is not available in V1.",
+		reason: "Pushing changes directly to a remote is not available in V1. Use sandbox_write_file to modify files and sandbox_diff to review changes, then open a draft PR via sandbox_open_pull_request.",
 	},
 	{
 		pattern: /\b(?:wrangler|vercel|netlify|firebase)\s+deploy\b/i,
-		reason: "Deploy commands are not available in V1.",
+		reason: "Deploy commands are blocked in the sandbox V1 toolset. Use `bun run deploy` from the project root to deploy worker changes.",
 	},
 	{
 		pattern: /\b(?:curl|wget)\b[^|;&]*\|\s*(?:sh|bash|zsh|fish)\b/i,

@@ -46,6 +46,7 @@ import type { ScheduledTaskPayload } from "../tools/scheduling"
 import type { ApprovalExpiryPayload } from "./approval-expiry"
 import type { HomeChannel } from "./home-channel"
 import type { InstallNudgeArm } from "./install-nudge"
+import type { LongJobStepPayload, LongJobStopPayload } from "./long-job"
 import type { ParallelMonitorEvent } from "./parallel-monitor"
 import type { PostTurnReflectPayload } from "./post-turn-reflect"
 import type { ResearchOnSignupInput } from "./research"
@@ -374,6 +375,16 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 
 	async onTurnContinue(turnContinue: SlackTurnContinue): Promise<void> {
 		return (await this.loadImpl()).onTurnContinue(this, turnContinue)
+	}
+
+	// Schedule callback: resume the next chunk of a durable long-running job.
+	async runTurnAutoContinue(payload: LongJobStepPayload): Promise<void> {
+		return (await this.loadImpl()).runTurnAutoContinue(this, payload)
+	}
+
+	// The Stop button on a long job's status card.
+	async onLongJobStop(payload: LongJobStopPayload): Promise<void> {
+		return (await this.loadImpl()).onLongJobStop(this, payload)
 	}
 
 	async onLeaseDecision(decision: SlackLeaseDecision): Promise<void> {

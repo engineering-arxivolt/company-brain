@@ -1,8 +1,10 @@
+import type { ToolExecutionOptions } from "ai"
 import { describe, expect, it } from "vitest"
 import { createBrainBrowserAgentTool, hasBrowserService } from "./browse"
 
 const URL = "https://browser.example.com"
 const TOKEN = "service-token"
+const CALL = { toolCallId: "test-call", messages: [] } as ToolExecutionOptions
 
 describe("hasBrowserService", () => {
 	it("is false unless both URL and token are set", () => {
@@ -43,7 +45,7 @@ describe("createBrainBrowserAgentTool", () => {
 		const realFetch = globalThis.fetch
 		globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
 			seenUrl = String(input)
-			seenAuth = (init?.headers as Record<string, string>).authorization
+			seenAuth = (init?.headers as Record<string, string | undefined>).authorization ?? ""
 			return new Response(
 				JSON.stringify({ ok: true, result: "price is $9", steps: 3, ms: 100 }),
 				{ status: 200 },
@@ -52,7 +54,7 @@ describe("createBrainBrowserAgentTool", () => {
 		try {
 			const out = (await tool.execute(
 				{ task: "List plan prices", start_url: "https://acme.test/pricing" },
-				{},
+				CALL,
 			)) as { output: string; sources: { source: string }[] }
 			expect(seenUrl).toBe(`${URL}/run`)
 			expect(seenAuth).toBe(`Bearer ${TOKEN}`)
@@ -78,7 +80,7 @@ describe("createBrainBrowserAgentTool", () => {
 		try {
 			const out = await tool.execute(
 				{ task: "List plan prices", start_url: "https://acme.test/pricing" },
-				{},
+				CALL,
 			)
 			expect(String(out)).toContain("busy")
 		} finally {
@@ -99,7 +101,7 @@ describe("createBrainBrowserAgentTool", () => {
 		try {
 			const out = await tool.execute(
 				{ task: "List plan prices", start_url: "https://acme.test/pricing" },
-				{},
+				CALL,
 			)
 			expect(String(out)).toContain("too long")
 		} finally {
@@ -121,7 +123,7 @@ describe("createBrainBrowserAgentTool", () => {
 		try {
 			const out = (await tool.execute(
 				{ task: "List plan prices", start_url: "https://acme.test/pricing" },
-				{},
+				CALL,
 			)) as { output: string }
 			expect(out.output).toContain("truncated")
 		} finally {

@@ -4,7 +4,12 @@ import type { CompanyBrainAgent } from "./agent"
 
 export const PAUSED_TURN_TTL_MS = 15 * 60 * 1000
 
-export type PausedTurnStatus = "paused" | "resumed" | "expired" | "error"
+export type PausedTurnStatus =
+	| "paused"
+	| "resumed"
+	| "expired"
+	| "cancelled"
+	| "error"
 
 export type PausedTurn = {
 	pauseId: string
@@ -150,7 +155,7 @@ export function markPausedTurnResumed(
 export function markPausedTurnTerminal(
 	agent: CompanyBrainAgent,
 	pauseId: string,
-	status: "expired" | "error",
+	status: "expired" | "cancelled" | "error",
 ): void {
 	agent.sql`
 		UPDATE brain_paused_turn
