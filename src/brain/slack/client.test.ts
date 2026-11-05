@@ -4,7 +4,31 @@ import {
 	longJobStatusBlocks,
 	longJobStatusText,
 	pausedTurnContinueBlocks,
+	uploadContentType,
 } from "./client"
+
+describe("uploadContentType", () => {
+	it("tells Slack a PDF is a PDF", () => {
+		// Regression: every upload went up as application/octet-stream, so the
+		// file landed in the thread as an opaque blob and its viewer showed a
+		// black box instead of the document.
+		expect(uploadContentType("cv.pdf")).toBe("application/pdf")
+		expect(uploadContentType("Cover-Letter.PDF")).toBe("application/pdf")
+	})
+
+	it("maps the other types the brain sends", () => {
+		expect(uploadContentType("chart.png")).toBe("image/png")
+		expect(uploadContentType("photo.jpeg")).toBe("image/jpeg")
+		expect(uploadContentType("data.csv")).toBe("text/csv")
+		expect(uploadContentType("notes.md")).toBe("text/plain")
+		expect(uploadContentType("export.zip")).toBe("application/zip")
+	})
+
+	it("falls back to a blob when the name says nothing", () => {
+		expect(uploadContentType("artifact")).toBe("application/octet-stream")
+		expect(uploadContentType("weird.xyz")).toBe("application/octet-stream")
+	})
+})
 
 describe("pausedTurnContinueBlocks", () => {
 	it("raises a primary Continue button keyed by the pause id", () => {

@@ -3,6 +3,7 @@ import { logPreview } from "../../observability/log-utils"
 import { uploadSlackFile } from "../../slack/client"
 import type { CompanyBrainAgent } from "../../turn/agent"
 import type { TurnDeps } from "../../turn/deps"
+import type { DocumentDeliveryGuard } from "../../turn/document-delivery"
 import { findGitHubConnection, operatorGitHubToken } from "../github-connection"
 import {
 	base64FromArrayBuffer,
@@ -37,12 +38,28 @@ export type CreateSandboxToolsArgs = {
 	/** Present only for an interactive Slack turn. Never persisted with session state. */
 	slackArtifactDestination?: {
 		botToken: string
+		/** The conversation this turn belongs to; the default share destination. */
 		channel: string
 		threadTs?: string
 		signal?: AbortSignal
 		canShare?: () => boolean
+		/**
+		 * Resolves a channel the asker named ("#design", "design", "C123",
+		 * "<#C123|design>") to a conversation the bot can actually post into.
+		 * Supplied by the turn, which holds the channel directory; the sandbox
+		 * tool must never guess a destination or fall back to a fixed channel.
+		 */
+		resolveChannel?: (ref: string) => Promise<
+			| { ok: true; id: string; name?: string }
+			| { ok: false; error: string }
+		>
 	}
 	traceId: string
+	/**
+	 * Records that a promised document actually reached the conversation, so a
+	 * document turn cannot finish on prose (see turn/document-delivery.ts).
+	 */
+	documentDelivery?: DocumentDeliveryGuard
 }
 
 function missingSession() {
@@ -86,7 +103,12 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 	// answer. Reusing a successful upload keeps that from creating duplicates.
 	const artifactUploads = new Map<
 		string,
-		Promise<{ fileId: string; sizeBytes: number; path: string }>
+		Promise<{
+			fileId: string
+			sizeBytes: number
+			path: string
+			shared: boolean
+		}>
 	>()
 
 	/**
@@ -337,11 +359,18 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 
 	const sandbox_get_artifact = deps.tool({
 		description:
-			"Retrieve a small generated artifact from the active sandbox, such as a PDF, CSV, image, or report. During an interactive Slack turn, it is automatically uploaded into the active thread so images render inline; otherwise it returns base64 content with metadata.",
+			"Retrieve a small generated artifact from the active sandbox, such as a PDF, CSV, image, or report, and deliver it to Slack. During an interactive Slack turn it is uploaded and shared in the conversation so it renders inline; pass channel to send it somewhere the asker named instead (\"#design\", \"design\", or a channel id). Without a Slack turn it returns base64 content with metadata. The file is shared only when this call returns uploaded: true.",
 		inputSchema: deps.z.object({
 			path: deps.z.string().min(1).describe("Path to the generated artifact."),
+			channel: deps.z
+				.string()
+				.min(1)
+				.optional()
+				.describe(
+					'Slack channel to share the artifact into, when the asker asked for one (e.g. "#product-development"). Omit to share in the current conversation.',
+				),
 		}),
-		execute: async ({ path }) => {
+		execute: async ({ path, channel }) => {
 			try {
 				const session = await ensureSession(
 					"workspace opened on demand for a sandbox tool call",
@@ -361,7 +390,34 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 					}
 				}
 				const artifactPath = normalizePath(path, session.defaultCwd)
-				const existing = artifactUploads.get(artifactPath)
+
+				// The destination is whatever the asker asked for: the named
+				// channel when one was given, otherwise this conversation. A
+				// named channel that cannot be resolved is an error, never a
+				// quiet redirect somewhere else.
+				let shareChannel = slackDestination.channel
+				let shareChannelName: string | undefined
+				if (channel) {
+					const resolved = await slackDestination.resolveChannel?.(channel)
+					if (!resolved) {
+						return {
+							isError: true,
+							error:
+								"Sharing an artifact into a named channel needs an interactive Slack conversation with channel access. Share it in this conversation by omitting channel.",
+						}
+					}
+					if (!resolved.ok) return { isError: true, error: resolved.error }
+					shareChannel = resolved.id
+					shareChannelName = resolved.name
+				}
+				// A thread timestamp is only valid inside the channel it came
+				// from, so a cross-channel share has to be a top-level post.
+				const shareThreadTs =
+					shareChannel === slackDestination.channel
+						? slackDestination.threadTs
+						: undefined
+				const uploadKey = `${artifactPath}::${shareChannel}`
+				const existing = artifactUploads.get(uploadKey)
 				if (existing) {
 					const uploaded = await existing
 					touchSandboxSession(agent, session)
@@ -371,6 +427,8 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 						uploaded: true,
 						reusedUpload: true,
 						slackFileId: uploaded.fileId,
+						...(uploaded.shared ? {} : { deliveredAs: "link" }),
+						...(shareChannelName ? { channel: `#${shareChannelName}` } : {}),
 					}
 				}
 
@@ -386,8 +444,8 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 
 					const filename = artifactFilename(out.path)
 					const upload = await uploadSlackFile(slackDestination.botToken, {
-						channel: slackDestination.channel,
-						threadTs: slackDestination.threadTs,
+						channel: shareChannel,
+						threadTs: shareThreadTs,
 						filename,
 						sizeBytes: out.sizeBytes,
 						content: out.content,
@@ -408,23 +466,32 @@ export function createSandboxTools(args: CreateSandboxToolsArgs): ToolSet {
 						fileId: upload.fileId,
 						sizeBytes: out.sizeBytes,
 						path: out.path,
+						// False means Slack would not attach it, so the client
+						// posted the file's permalink into the conversation
+						// instead: delivered, but as a link rather than an
+						// attachment.
+						shared: upload.shared,
 					}
 				})()
-				artifactUploads.set(artifactPath, uploadPromise)
+				artifactUploads.set(uploadKey, uploadPromise)
 				let uploaded: Awaited<typeof uploadPromise>
 				try {
 					uploaded = await uploadPromise
 				} catch (error) {
-					if (artifactUploads.get(artifactPath) === uploadPromise) {
-						artifactUploads.delete(artifactPath)
+					if (artifactUploads.get(uploadKey) === uploadPromise) {
+						artifactUploads.delete(uploadKey)
 					}
 					throw error
 				}
+				// The file is in the conversation now; a document turn may finish.
+				args.documentDelivery?.markDelivered(uploaded.path)
 				return {
 					path: uploaded.path,
 					sizeBytes: uploaded.sizeBytes,
 					uploaded: true,
 					slackFileId: uploaded.fileId,
+					...(uploaded.shared ? {} : { deliveredAs: "link" }),
+					...(shareChannelName ? { channel: `#${shareChannelName}` } : {}),
 				}
 			} catch (error) {
 				if (error instanceof SlackArtifactUploadError) throw error

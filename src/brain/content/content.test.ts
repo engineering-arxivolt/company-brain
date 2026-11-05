@@ -257,6 +257,72 @@ describe("buildCreatePostArgs", () => {
 		expect(plan.args).toEqual({ text, channelId: "c" })
 	})
 
+	it("nests the Facebook type under metadata where Buffer declares it", () => {
+		// The live create_post schema (mcp.buffer.com) declares
+		// metadata.facebook.type as post|reel|story. A top-level `type` is not
+		// a field — sending it there is why Buffer answered "Facebook posts
+		// require a type" twice in a row.
+		const plan = buildCreatePostArgs(
+			{
+				type: "object",
+				properties: {
+					channelId: { type: "string" },
+					text: { type: "string" },
+					schedulingType: { enum: ["notification", "automatic"] },
+					metadata: {
+						type: "object",
+						properties: {
+							facebook: {
+								type: "object",
+								properties: {
+									type: { enum: ["post", "reel", "story"] },
+									linkAttachment: { type: "object" },
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				text,
+				channelId: "chan_1",
+				channelService: "facebook",
+				channelType: "page",
+				linkUrl: "https://arxivolt.dev/blog/launch",
+				linkTitle: "We shipped the thing",
+			},
+		)
+		expect(plan.args.type).toBeUndefined()
+		expect(plan.args.metadata).toEqual({
+			facebook: {
+				type: "post",
+				linkAttachment: {
+					url: "https://arxivolt.dev/blog/launch",
+					title: "We shipped the thing",
+				},
+			},
+		})
+		expect(plan.args.schedulingType).toBe("automatic")
+	})
+
+	it("leaves non-service channels without metadata", () => {
+		const plan = buildCreatePostArgs(
+			{
+				type: "object",
+				properties: {
+					channelId: { type: "string" },
+					text: { type: "string" },
+					metadata: {
+						type: "object",
+						properties: { facebook: { type: "object" } },
+					},
+				},
+			},
+			{ text, channelId: "chan_1", channelService: "mastodon" },
+		)
+		expect(plan.args.metadata).toBeUndefined()
+	})
+
 	it("always sends the scheduling type Buffer requires", () => {
 		// Buffer's create-post lists schedulingType as required, so a request
 		// without it is rejected for a missing field — which reads as Buffer

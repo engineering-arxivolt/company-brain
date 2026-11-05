@@ -8,6 +8,7 @@ import {
 import type { SlackOrg } from "../slack/workspace"
 import type { CompanyBrainAgent } from "../turn/agent"
 import type { TurnDeps } from "../turn/deps"
+import type { LazyToolFamily } from "../turn/lazy-tools"
 import { type TurnState, touchTurnState } from "../turn/state"
 import {
 	deletePendingSkillDraft,
@@ -45,6 +46,16 @@ export type SkillToolContext = {
 	allowSave: boolean
 	turnState?: TurnState
 	env: Env
+	/**
+	 * Unlocks the optional tool families a playbook depends on and reports the
+	 * ones that are available now, so the load can say so. Without it the
+	 * playbook can name `sandbox_run` in a turn where the sandbox family is
+	 * still hidden, and the model has no way to act on its own instructions.
+	 */
+	resolveToolFamilies?: (skill: {
+		name: string
+		body: string
+	}) => LazyToolFamily[]
 }
 
 export function createSkillTools(
@@ -118,7 +129,27 @@ export function createSkillTools(
 			console.log(
 				`[company-brain][${traceId}] load_skill id=${loaded.id} version=${loaded.version} matchedVia=${matchedVia}`,
 			)
-			return { name: loaded.name, body: loaded.body, version: loaded.version }
+			// The playbook may name tools that live in a lazily-hidden family.
+			// Unlocking them here is what keeps "compile the PDF and share it"
+			// reachable on the very next step instead of one hop out of reach.
+			const toolFamilies =
+				ctx.resolveToolFamilies?.({ name: loaded.name, body: loaded.body }) ?? []
+			if (toolFamilies.length) {
+				console.log(
+					`[company-brain][${traceId}] load_skill unlocked families=${toolFamilies.join(",")}`,
+				)
+			}
+			return {
+				name: loaded.name,
+				body: loaded.body,
+				version: loaded.version,
+				...(toolFamilies.length
+					? {
+							toolFamilies,
+							instruction: `The ${toolFamilies.join(" and ")} tools this playbook names are available now. Do the work with them — the workspace, the build, the artifact — instead of describing what you would do.`,
+						}
+					: {}),
+			}
 		},
 	})
 

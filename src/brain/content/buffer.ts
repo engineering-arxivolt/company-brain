@@ -19,6 +19,33 @@ export type BufferChannel = ContentChannel
 
 const CHANNEL_TYPE_KEYS = ["type", "channelType", "channel_type"]
 
+/** Buffer's create_post nests platform knobs under metadata.<service>. */
+const SERVICE_KEY_PATTERN: Array<[RegExp, string]> = [
+	[/facebook/i, "facebook"],
+	[/instagram/i, "instagram"],
+	[/linkedin/i, "linkedin"],
+	[/twitter|^x$/i, "twitter"],
+	[/threads/i, "threads"],
+	[/bluesky/i, "bluesky"],
+	[/tiktok/i, "tiktok"],
+	[/youtube/i, "youtube"],
+	[/mastodon/i, "mastodon"],
+	[/pinterest/i, "pinterest"],
+	[/substack/i, "substack"],
+	[/google|gbp|business/i, "google"],
+]
+
+export function bufferServiceKey(
+	service: string | null | undefined,
+): string | null {
+	const value = (service ?? "").trim()
+	if (!value) return null
+	for (const [pattern, key] of SERVICE_KEY_PATTERN) {
+		if (pattern.test(value)) return key
+	}
+	return null
+}
+
 /**
  * Buffer cannot publish automatically to a Facebook group or an Instagram
  * personal profile: those channels only accept a reminder that a human
@@ -231,9 +258,37 @@ export function buildCreatePostArgs(
 		if (chosen) args[schedulingKey] = chosen
 	}
 
-	// A link preview card, when the schema has a place for one.
+	// Buffer's create_post carries platform knobs under `metadata.<service>`:
+	// its schema declares metadata.facebook.type as post/reel/story. A
+	// top-level `type` is not a field, so sending one there is ignored and
+	// Facebook answers "Facebook posts require a type (post, story, reel)" —
+	// which read as Buffer being broken when the request was merely in the
+	// wrong place. A plain text post is type "post" everywhere it applies.
+	const serviceKey = bufferServiceKey(input.channelService)
+	if (serviceKey) {
+		const metadataProps = schemaProps(props.metadata)
+		const serviceProps = metadataProps
+			? schemaProps(metadataProps[serviceKey])
+			: null
+		if (serviceProps) {
+			const serviceMeta: Record<string, unknown> = {}
+			if (collectEnumValues(serviceProps.type).some((value) => /^post$/i.test(value))) {
+				serviceMeta.type = "post"
+			}
+			if (input.linkUrl && serviceProps.linkAttachment) {
+				const attachment: Record<string, unknown> = { url: input.linkUrl }
+				if (input.linkTitle?.trim()) attachment.title = input.linkTitle.trim()
+				serviceMeta.linkAttachment = attachment
+			}
+			if (Object.keys(serviceMeta).length) {
+				args.metadata = { [serviceKey]: serviceMeta }
+			}
+		}
+	}
+
+	// A link preview card on schemas that keep it flat (no per-service object).
 	const metadataKey = "metadata"
-	if (input.linkUrl && metadataKey in props) {
+	if (input.linkUrl && metadataKey in props && !("metadata" in args)) {
 		const metadataProps = schemaProps(props[metadataKey])
 		const attachmentKey = metadataProps ? "linkAttachment" : null
 		if (attachmentKey && metadataProps && attachmentKey in metadataProps) {
@@ -583,6 +638,41 @@ export async function pushDraftToBuffer(
 		})
 		const errText = toolError(res)
 		if (errText) {
+			// Some channels demand a type discriminator (Facebook wants
+			// post/story/reel). The field lives under metadata.<service>.type — a
+			// top-level `type` is ignored, which is what made the first retry fail
+			// too. One self-healing retry in the right place.
+			const serviceKey = bufferServiceKey(input.channelService)
+			const retryMeta = (plan.args.metadata ?? {}) as Record<string, unknown>
+			const retryKey = serviceKey ?? "facebook"
+			const existingMeta = retryMeta[retryKey] as
+				| Record<string, unknown>
+				| undefined
+			if (/require a type|missing.*type/i.test(errText) && !existingMeta?.type) {
+				const retryArgs = {
+					...plan.args,
+					metadata: {
+						...retryMeta,
+						[retryKey]: { ...(existingMeta ?? {}), type: "post" },
+					},
+				}
+				const retry = await handle.callTool(tool.name, retryArgs, {
+					retryOnTimeout: false,
+				})
+				const retryErr = toolError(retry)
+				if (!retryErr) {
+					const payload = extractJsonPayload(retry)
+					const postId = findPostId(payload)
+					console.log(
+						`[company-brain] buffer push ok tool=${tool.name} mode=${plan.mode} postId=${postId ?? "-"} (type retry)`,
+					)
+					return { ok: true, mode: plan.mode, postId }
+				}
+				console.warn(
+					`[company-brain] buffer push rejected tool=${tool.name} mode=${plan.mode} args=${Object.keys(retryArgs).join(",")} err=${retryErr}`,
+				)
+				return { ok: false, error: `Buffer rejected the post: ${retryErr}` }
+			}
 			console.warn(
 				`[company-brain] buffer push rejected tool=${tool.name} mode=${plan.mode} args=${Object.keys(plan.args).join(",")} err=${errText}`,
 			)

@@ -130,6 +130,17 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
 		personalOnly: true,
 		leaseable: false,
 	},
+{
+	slug: "freehire",
+	name: "Freehire",
+	category: "Jobs",
+	iconDomain: "freehire.me",
+	runtime: "remote_mcp",
+	serverUrl: "https://freehire.me/api/v1/mcp",
+	authType: "none",
+	leaseable: true,
+	tokenHint: "Read-only search works with no key. Add FREEHIRE_TOKEN (freehire.me → account → API keys) for apply/save/stage/write tools.",
+},
 ]
 
 // Reserve non-leaseable slugs before their catalog entries ship so a future

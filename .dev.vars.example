@@ -58,3 +58,13 @@ MODEL_API_KEY=""
 # PostHog analytics + LLM observability (optional). Unset = silent no-op.
 # POSTHOG_API_KEY=""
 # POSTHOG_HOST="https://us.posthog.com"
+
+# ── PesaCast M-PESA Integration ──────────────────────────────────────────────
+# Signing secret for PesaCast webhook verification (set in PesaCast Android app).
+PESACAST_WEBHOOK_SECRET=""
+# Fallback bearer token for PesaCast webhook auth.
+PESACAST_WEBHOOK_TOKEN=""
+# Slack channel ID where matched M-PESA receipts are posted.
+PESACAST_SLACK_CHANNEL=""
+# Slack bot token for posting messages.
+SLACK_BOT_TOKEN=""

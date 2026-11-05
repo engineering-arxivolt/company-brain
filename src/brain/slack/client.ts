@@ -17,7 +17,18 @@ type SlackOkResponse = { ok: boolean; error?: string }
 type SlackFileUploadBody = ArrayBuffer | ReadableStream<Uint8Array>
 
 export type SlackFileUploadResult =
-	| { ok: true; fileId: string }
+	| {
+			ok: true
+			fileId: string
+			/**
+			 * Whether Slack actually attached the file to the conversation.
+			 * `completeUploadExternal` answers `ok: true` even when it shares
+			 * the file nowhere, so the caller cannot treat the file id as a
+			 * delivery on its own.
+			 */
+			shared: boolean
+			permalink?: string
+	  }
 	| {
 			ok: false
 			stage: "request_upload_url" | "upload_bytes" | "complete_upload"
@@ -54,11 +65,63 @@ async function cancelSlackFileUploadBody(
 	await content.cancel().catch(() => {})
 }
 
+/** SHA-256 of the bytes, to compare what we sent with what Slack kept. */
+async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
+	const digest = await crypto.subtle.digest("SHA-256", buffer)
+	return [...new Uint8Array(digest)]
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("")
+}
+
 /**
  * Upload a generated artifact directly to Slack and share it in the active
  * thread. Slack owns the final file; no temporary public object storage is
  * needed (or used) for sandbox artifacts.
  */
+/**
+ * The content type Slack is told when the bytes are uploaded.
+ *
+ * This used to be `application/octet-stream` for everything. Slack then has no
+ * idea the attachment is a PDF: the file lands in the thread as an opaque blob
+ * and the viewer renders a black box — the file is fine, the type is not. The
+ * filename is already the best evidence of the type, so map it.
+ */
+export function uploadContentType(filename: string): string {
+	const extension = filename.toLowerCase().split(".").pop() ?? ""
+	switch (extension) {
+		case "pdf":
+			return "application/pdf"
+		case "png":
+			return "image/png"
+		case "jpg":
+		case "jpeg":
+			return "image/jpeg"
+		case "gif":
+			return "image/gif"
+		case "svg":
+			return "image/svg+xml"
+		case "mp4":
+			return "video/mp4"
+		case "webm":
+			return "video/webm"
+		case "mov":
+			return "video/quicktime"
+		case "csv":
+			return "text/csv"
+		case "txt":
+		case "md":
+			return "text/plain"
+		case "json":
+			return "application/json"
+		case "zip":
+			return "application/zip"
+		case "tex":
+			return "text/x-tex"
+		default:
+			return "application/octet-stream"
+	}
+}
+
 export async function uploadSlackFile(
 	botToken: string,
 	args: {
@@ -104,11 +167,13 @@ export async function uploadSlackFile(
 		// Slack documents JSON for this endpoint, but its production API currently
 		// ignores JSON fields for this route and responds that `filename` and
 		// `length` are missing. URL-encoded form data is supported and parsed
-		// consistently by both external-upload endpoints.
+		// consistently by both external-upload endpoints. `alt_txt` is NOT sent
+		// here: with it, Slack stores PDFs untyped (filetype/mimetype empty, no
+		// preview, an unopenable "black page"), verified against the live API on
+		// 2026-11-04 — identical bytes upload and type correctly without it.
 		const requestUploadBody = new URLSearchParams({
 			filename: args.filename,
 			length: String(length),
-			...(args.altText ? { alt_txt: args.altText.slice(0, 1000) } : {}),
 		})
 		const response = await fetch(`${SLACK_API}/files.getUploadURLExternal`, {
 			method: "POST",
@@ -140,12 +205,23 @@ export async function uploadSlackFile(
 		return uploadFailure("request_upload_url", error)
 	}
 
+	// An exact content-length matters more than it looks: a body sent as an
+	// unknown-length stream can be stored short, and a half-written PDF is
+	// precisely what a viewer renders as a black page. It is also the copy the
+	// digest check below compares against.
+	const body = args.content
 	try {
+		const headers: Record<string, string> = {
+			"content-type": uploadContentType(args.filename),
+		}
+		if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+			headers["content-length"] = String(length)
+		}
 		const response = await fetch(ticket.upload_url, {
 			method: "POST",
 			signal: requestSignal(),
-			headers: { "content-type": "application/octet-stream" },
-			body: args.content,
+			headers,
+			body,
 		})
 		if (!response.ok) {
 			await cancelSlackFileUploadBody(args.content)
@@ -194,9 +270,255 @@ export async function uploadSlackFile(
 				complete.error ?? "invalid_response",
 			)
 		}
-		return { ok: true, fileId: ticket.file_id }
+		// `ok: true` only means Slack accepted the upload. It returns the same
+		// answer when the file ends up shared nowhere (seen in DMs), which is
+		// how "uploaded: true" used to be reported for a file the user could
+		// not see. Ask the file itself where it landed, and if the answer is
+		// nowhere, post a link so the artifact still reaches the conversation.
+		const landed = await slackFileDelivery(botToken, ticket.file_id, requestSignal)
+		if (landed.size !== undefined && landed.size !== args.sizeBytes) {
+			// A size mismatch is a truncated upload: the bytes on Slack's side
+			// are not the bytes we sent, and the attachment will not open.
+			console.log(
+				`[slack] artifact size mismatch channel=${args.channel} file=${ticket.file_id} stored=${landed.size} sent=${args.sizeBytes}`,
+			)
+			return uploadFailure("complete_upload", "size_mismatch")
+		}
+		// Read the file back and compare digests. A viewer that shows nothing is
+		// only "the viewer" once the stored bytes are proven identical to the
+		// ones we sent — this is that proof, on every upload. Slack serves the
+		// file through its processing pipeline, so a read that lands before
+		// processing finishes comes back as a tiny error body; retry until the
+		// stored bytes actually exist before calling the file corrupt.
+		if (body instanceof ArrayBuffer && landed.urlPrivate) {
+			const readBack = async (): Promise<{
+				status: number
+				stored: ArrayBuffer
+			}> => {
+				const response = await fetch(landed.urlPrivate ?? "", {
+					headers: { authorization: `Bearer ${botToken}` },
+					signal: requestSignal(),
+				})
+				return { status: response.status, stored: await response.arrayBuffer() }
+			}
+			try {
+				let status = 0
+				let stored = new ArrayBuffer(0)
+				for (const delay of [0, 2000, 5000]) {
+					if (delay > 0) await new Promise((r) => setTimeout(r, delay))
+					;({ status, stored } = await readBack())
+					if (stored.byteLength >= body.byteLength) break
+				}
+				if (stored.byteLength < body.byteLength) {
+					// Not one read succeeded in getting the real bytes: log what
+					// came back instead of guessing at the shape of the failure.
+					const head = new TextDecoder()
+						.decode(stored.slice(0, 40))
+						.replace(/[^\x20-\x7e]/g, "?")
+					console.log(
+						`[slack] artifact byte check skipped file=${ticket.file_id} status=${status} storedBytes=${stored.byteLength} head=${head}`,
+					)
+				} else {
+					const [sentHash, storedHash] = await Promise.all([
+						sha256Hex(body),
+						sha256Hex(stored),
+					])
+					const matches =
+						stored.byteLength === body.byteLength && sentHash === storedHash
+					console.log(
+						`[slack] artifact bytes file=${ticket.file_id} sent=${body.byteLength} stored=${stored.byteLength} sha=${storedHash.slice(0, 16)} match=${matches}`,
+					)
+					if (!matches) {
+						return uploadFailure("complete_upload", "bytes_mismatch")
+					}
+				}
+			} catch (error) {
+				console.log(
+					`[slack] artifact byte check failed file=${ticket.file_id}:`,
+					error instanceof Error ? error.message : error,
+				)
+			}
+		}
+		if (landed.shared) {
+			// A PDF whose mimetype never settles is what Slack shows as a black,
+			// unopenable page. Say so here rather than letting the turn report a
+			// file the user cannot read.
+			if (landed.mimetype === undefined || landed.mimetype === "") {
+				console.log(
+					`[slack] artifact unprocessed channel=${args.channel} file=${ticket.file_id} mimetype empty after settle window`,
+				)
+				return uploadFailure("complete_upload", "processing_timeout")
+			}
+			console.log(
+				`[slack] artifact shared channel=${args.channel} file=${ticket.file_id}`,
+			)
+			return { ok: true, fileId: ticket.file_id, shared: true }
+		}
+		const permalink =
+			landed.permalink ??
+			(await slackFilePermalink(botToken, ticket.file_id, requestSignal))
+		console.log(
+			`[slack] artifact NOT shared channel=${args.channel} file=${ticket.file_id} permalink=${permalink ? "yes" : "no"} — posting link fallback`,
+		)
+		if (permalink) {
+			await postSlackFileLink({
+				botToken,
+				channel: args.channel,
+				threadTs: args.threadTs,
+				permalink,
+				filename: args.filename,
+				signal: requestSignal(),
+			})
+			return {
+				ok: true,
+				fileId: ticket.file_id,
+				shared: false,
+				permalink,
+			}
+		}
+		return uploadFailure("complete_upload", "not_shared")
 	} catch (error) {
 		return uploadFailure("complete_upload", error)
+	}
+}
+
+/**
+ * Where Slack says a file actually lives. `shares` is populated only once the
+ * file is attached to a conversation, so a non-empty map is proof of delivery.
+ */
+async function slackFileDelivery(
+	botToken: string,
+	fileId: string,
+	requestSignal: () => AbortSignal,
+): Promise<{
+	shared: boolean
+	permalink?: string
+	urlPrivate?: string
+	size?: number
+	filetype?: string
+	mimetype?: string
+}> {
+	const info = async (): Promise<{
+		ok?: boolean | undefined
+		file?: {
+			permalink?: string
+			url_private?: string
+			url_private_download?: string
+			size?: number
+			filetype?: string
+			mimetype?: string
+			shares?: Record<string, unknown>
+			channels?: string[]
+			groups?: string[]
+			ims?: string[]
+		}
+	}> => {
+		const response = await fetch(
+			`${SLACK_API}/files.info?${new URLSearchParams({ file: fileId })}`,
+			{
+				headers: { authorization: `Bearer ${botToken}` },
+				signal: requestSignal(),
+			},
+		)
+		return (await response.json().catch(() => ({}))) as {
+			ok?: boolean | undefined
+			file?: {
+				permalink?: string
+				url_private?: string
+				url_private_download?: string
+				size?: number
+				filetype?: string
+				mimetype?: string
+				shares?: Record<string, unknown>
+				channels?: string[]
+				groups?: string[]
+				ims?: string[]
+			}
+		}
+	}
+	try {
+		// Slack's own guidance: mimetype "might not be known immediately" after
+		// completeUploadExternal — it fills in asynchronously, a second or two
+		// later. Polling until it settles is the difference between a file whose
+		// preview renders and a "binary blob" that shows as a black page.
+		const settleDelays = [0, 1000, 2000, 4000, 8000]
+		let body: Awaited<ReturnType<typeof info>> | undefined
+		for (const delay of settleDelays) {
+			if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
+			body = await info()
+			if (body.ok && body.file?.mimetype) break
+		}
+		const file = body?.file
+		if (body?.ok !== true || !file) return { shared: false }
+		const shared = Boolean(
+			(file.shares && Object.keys(file.shares).length > 0) ||
+				file.channels?.length ||
+				file.groups?.length ||
+				file.ims?.length,
+		)
+		// What Slack actually stored is not something we should guess at: if it
+		// did not register a PDF as a PDF, no viewer will open it. An empty
+		// mimetype after the settle window means the file was never processed.
+		console.log(
+			`[slack] artifact stored file=${fileId} filetype=${file.filetype ?? "-"} mimetype=${file.mimetype ?? "-"} size=${file.size ?? "-"}`,
+		)
+		return {
+			shared,
+			permalink: file.permalink,
+			urlPrivate: file.url_private_download ?? file.url_private,
+			size: typeof file.size === "number" ? file.size : undefined,
+			filetype: file.filetype,
+			mimetype: file.mimetype,
+		}
+	} catch {
+		// A lookup failure must not turn a real upload into a lost artifact:
+		// report it as shared and let the tool answer stand.
+		return { shared: true }
+	}
+}
+
+async function slackFilePermalink(
+	botToken: string,
+	fileId: string,
+	requestSignal: () => AbortSignal,
+): Promise<string | undefined> {
+	const delivery = await slackFileDelivery(botToken, fileId, requestSignal)
+	return delivery.permalink
+}
+
+/**
+ * Links the file into the conversation when Slack refused to attach it. A
+ * permalink unfurls as a file card, so the user gets the document either way.
+ */
+async function postSlackFileLink(args: {
+	botToken: string
+	channel: string
+	threadTs?: string
+	permalink: string
+	filename: string
+	signal: AbortSignal
+}): Promise<void> {
+	try {
+		await fetch(`${SLACK_API}/chat.postMessage`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json; charset=utf-8",
+				authorization: `Bearer ${args.botToken}`,
+			},
+			signal: args.signal,
+			body: JSON.stringify({
+				channel: args.channel,
+				text: `${args.filename}: ${args.permalink}`,
+				unfurl_links: true,
+				unfurl_media: true,
+				...(args.threadTs ? { thread_ts: args.threadTs } : {}),
+			}),
+		})
+	} catch (error) {
+		console.warn(
+			`[slack] artifact link fallback failed channel=${args.channel}:`,
+			error instanceof Error ? error.message : error,
+		)
 	}
 }
 
@@ -237,6 +559,53 @@ async function postSlackMessageRaw(
 		)
 	}
 	return { ok: data.ok, ts: data.ts, error: data.error }
+}
+
+/**
+ * Post uploaded images inline, by file id.
+ *
+ * A file that Slack stored but did not attach ("NOT shared") still renders when
+ * an `image` block points at its id, so this is the one way to get the page in
+ * front of the person without depending on the attachment path at all.
+ */
+export async function postSlackFileImages(
+	botToken: string,
+	channel: string,
+	threadTs: string | undefined,
+	images: Array<{ fileId: string; altText: string }>,
+): Promise<boolean> {
+	if (!channel || !images.length) return false
+	const blocks = images.map((image) => ({
+		type: "image",
+		slack_file: { id: image.fileId },
+		alt_text: image.altText,
+	}))
+	const res = await fetch(`${SLACK_API}/chat.postMessage`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json; charset=utf-8",
+			authorization: `Bearer ${botToken}`,
+		},
+		body: JSON.stringify({
+			channel,
+			text: images.map((image) => image.altText).join(", "),
+			blocks,
+			...(threadTs ? { thread_ts: threadTs } : {}),
+			unfurl_links: false,
+			unfurl_media: false,
+		}),
+	})
+	const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string }
+	if (data.ok !== true) {
+		console.warn(
+			`[slack] inline image post failed channel=${channel} error=${data.error ?? "unknown"}`,
+		)
+		return false
+	}
+	console.log(
+		`[slack] inline images posted channel=${channel} count=${images.length}`,
+	)
+	return true
 }
 
 export async function postSlackMessage(

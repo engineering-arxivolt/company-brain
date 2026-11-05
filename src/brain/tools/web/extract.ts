@@ -10,6 +10,7 @@ import type { BrainCostLedger } from "../../billing/cost"
 import { logPreview } from "../../observability/log-utils"
 import type { SourcedToolOutput } from "../../sources"
 import { firecrawlScrape } from "./firecrawl"
+import { fetchPageDirect, normalizeUrl } from "./direct"
 
 const SCRAPE_TIMEOUT_MS = 30_000
 const MAX_URLS = 5
@@ -58,6 +59,24 @@ export function createBrainWebExtractTool(
 ) {
 	// context.dev when its key is set; otherwise Firecrawl, which needs none.
 	const useContext = hasContextWeb(env)
+	const logTag = traceId ? `[${traceId}]` : ""
+
+	/**
+	 * Firecrawl, then a direct fetch. The keyless Firecrawl tier is rate
+	 * limited per IP, and "rate limited" must not be the answer to someone
+	 * pasting a job link, because a plain fetch reads most careers pages fine.
+	 */
+	const readWithFirecrawl = async (url: string): Promise<Page> => {
+		try {
+			return await firecrawlScrape(env, url, SCRAPE_TIMEOUT_MS)
+		} catch (err) {
+			console.warn(
+				`[company-brain]${logTag} web_extract Firecrawl failed url=${url}, trying direct fetch:`,
+				err,
+			)
+			return await fetchPageDirect(url, SCRAPE_TIMEOUT_MS)
+		}
+	}
 
 	return tool({
 		description: `Read the full text of public web pages you already have URLs for. Use this instead of search_web when someone shares a link, or when a search result's snippet is not enough. Handles PDFs and YouTube links (returns the transcript when captions exist). Up to ${MAX_URLS} URLs per call, read in parallel. Not for private or logged-in pages, and not for our own Slack, GitHub, Notion, or Linear — reach those through their connected app tools. If a page needs a login or JavaScript interaction that plain reading cannot handle, use browse_website instead when it is available.`,
@@ -70,7 +89,9 @@ export function createBrainWebExtractTool(
 					`Full public URLs to read, including https://. Pass every page you need in one call, up to ${MAX_URLS}.`,
 				),
 		}),
-		execute: async ({ urls }) => {
+		execute: async ({ urls: requestedUrls }) => {
+			// Slack-wrapped, entity-escaped links arrive here broken otherwise.
+			const urls = requestedUrls.map(normalizeUrl)
 			const t = Date.now()
 			const tag = traceId ? `[${traceId}]` : ""
 			console.log(
@@ -80,24 +101,38 @@ export function createBrainWebExtractTool(
 			const fetched = await Promise.all(
 				urls.map(async (url): Promise<Page | string> => {
 					try {
-						const page = useContext
-							? await contextScrapeMarkdown(
+						// context.dev first when configured, Firecrawl as the
+						// safety net: a throttled or failing context.dev account
+						// must degrade to "still read the page" rather than
+						// "couldn't read this page" for every URL in the call.
+						let page: Page
+						if (useContext) {
+							try {
+								const scraped = await contextScrapeMarkdown(
 									env,
 									url,
 									SCRAPE_TIMEOUT_MS,
 									tag,
-								).then((scraped) => {
-									costLedger?.recordVendorUsd(
-										"context.dev",
-										creditsUsd(scraped),
-									)
-									return {
-										title: scraped.metadata?.title ?? url,
-										url: scraped.url,
-										markdown: scraped.markdown ?? "",
-									}
-								})
-							: await firecrawlScrape(env, url, SCRAPE_TIMEOUT_MS)
+								)
+								costLedger?.recordVendorUsd(
+									"context.dev",
+									creditsUsd(scraped),
+								)
+								page = {
+									title: scraped.metadata?.title ?? url,
+									url: scraped.url,
+									markdown: scraped.markdown ?? "",
+								}
+							} catch (err) {
+								console.warn(
+									`[company-brain]${tag} web_extract context.dev failed url=${url}, falling back to Firecrawl:`,
+									err,
+								)
+								page = await readWithFirecrawl(url)
+							}
+						} else {
+							page = await readWithFirecrawl(url)
+						}
 						const markdown = page.markdown.trim()
 						if (!markdown) return `## ${url}\n\nThe page returned no text.`
 						return { title: page.title, url: page.url, markdown }

@@ -1,0 +1,7 @@
+# LaTeX build output produced by compile-test.sh
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.pdf

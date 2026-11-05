@@ -27,6 +27,7 @@ import {
 	type SlackLookupContext,
 } from "../slack/channel-lookup"
 import type { SlackMember } from "../slack/client"
+import { getConversationMembers } from "../slack/client"
 import { isThreadTurnCurrent } from "../slack/turn-control"
 import type { SlackOrg } from "../slack/workspace"
 import { formatSlackOrgMemberDenial } from "../slack/workspace"
@@ -59,11 +60,21 @@ import type { RuntimeConnectedApp } from "./context"
 import { buildAppCapabilitySnapshot } from "./context-state"
 import { createContextDiscoveryTools } from "./context-tools"
 import type { TurnDeps } from "./deps"
+import { guardDuplicateToolCalls } from "./duplicate-guard"
+import { createDocumentDeliveryGuard } from "./document-delivery"
+import type { DocumentDeliveryGuard } from "./document-delivery"
+
+export { createDocumentDeliveryGuard }
+import {
+	CAREER_DOCUMENT_PATTERN,
+	readCareerProfileSource,
+} from "../memory/career-profile"
 import {
 	createLazyToolState,
 	LAZY_TOOL_FAMILIES,
 	type LazyToolFamily,
 	type LazyToolState,
+	toolFamiliesForSkill,
 } from "./lazy-tools"
 import { resolveBrainTriageProfile } from "./model-profile"
 import { createProgressTools } from "./progress-tools"
@@ -97,6 +108,11 @@ export type AssembleTurnToolsArgs = {
 	capture: TurnCapture
 	turnState?: TurnState
 	initialEnabledFamilies?: LazyToolFamily[]
+	/**
+	 * Tracks whether this turn has delivered the file it promised. Shared with
+	 * the sandbox (marks delivery) and finish_turn (refuses to end before it).
+	 */
+	documentDelivery?: DocumentDeliveryGuard
 	/** Test seam only; production uses createMcpRuntimeTools. */
 	mcpRuntimeFactory?: typeof createMcpRuntimeTools
 	/** Test seam only; production reads the actor's persisted connections. */
@@ -278,6 +294,24 @@ export async function assembleTurnTools(
 	console.log(
 		`[company-brain][${traceId}] assembleTurnTools start actorUser=${actor.userId ?? "-"} personalOnly=${actor.personalConnectionsOnly ? "yes" : "no"} scheduled=${scheduledRun ? "yes" : "no"} slackLookup=${slackLookup ? "yes" : "no"} memoryScope=${slackLookup?.memoryScope?.kind ?? "none"}`,
 	)
+	// Skill tools are built before the lazy families exist, so resolution goes
+	// through this holder. A playbook that names sandbox tools is asking for the
+	// sandbox family; unlocking it as the playbook loads is what turns "compile
+	// the PDF and share it" into work the model can actually do, instead of an
+	// instruction pointing at tools it cannot see.
+	const lazyTools: { state?: LazyToolState } = {}
+	const resolveToolFamilies = (skill: {
+		name: string
+		body: string
+	}): LazyToolFamily[] => {
+		const families = toolFamiliesForSkill(skill.body)
+		const discovery = lazyTools.state
+		if (!discovery || !families.length) return []
+		return discovery
+			.unlock(families)
+			.filter((result) => result.status !== "unavailable")
+			.map((result) => result.family)
+	}
 	if (slackLookup && actor.memberLookup !== "found") {
 		console.warn(
 			`[company-brain][${traceId}] refusing Slack turn for non-member org=${org.id} actorUser=${actor.userId ?? "-"} lookup=${actor.memberLookup ?? "unknown"}`,
@@ -313,6 +347,15 @@ export async function assembleTurnTools(
 			console.log(
 				`[company-brain][${traceId}] search_company_brain start query="${logPreview(query)}"`,
 			)
+			// A career question has one document answer, and semantic search
+			// cannot rank a 6.5KB CV against a short query (measured: it never
+			// scored above 0.67). When the question is about a CV, put the base
+			// CV in the results deterministically so the same document cannot be
+			// "missing" on every attempt.
+			const careerDocument =
+				CAREER_DOCUMENT_PATTERN.test(query) && userId
+					? await readCareerProfileSource(env, userId).catch(() => null)
+					: null
 			const brain = await searchBrain(
 				agent,
 				org,
@@ -330,8 +373,15 @@ export async function assembleTurnTools(
 				limit: 40,
 			})
 			console.log(
-				`[company-brain][${traceId}] search_company_brain finish ms=${Date.now() - t} total=${brain.total}`,
+				`[company-brain][${traceId}] search_company_brain finish ms=${Date.now() - t} total=${brain.total} baseCv=${careerDocument ? "yes" : "no"}`,
 			)
+			if (careerDocument) {
+				const withCv = `0. Base CV (document, the source of truth for any CV or cover letter):\n${careerDocument}\n\n${formatted}`
+				console.log(
+					`[company-brain][${traceId}] search_company_brain result=${redactedPreview(withCv, 5000)}`,
+				)
+				return withCv
+			}
 			console.log(
 				`[company-brain][${traceId}] search_company_brain result=${redactedPreview(formatted, 5000)}`,
 			)
@@ -409,6 +459,7 @@ export async function assembleTurnTools(
 				allowSave: false,
 				turnState: args.turnState,
 				env,
+				resolveToolFamilies,
 			},
 			traceId,
 		)
@@ -417,7 +468,7 @@ export async function assembleTurnTools(
 			// The terminal tool stays: it is how a turn hands over its answer,
 			// and it is one small schema. Everything else is dropped.
 			tools: {
-				[FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps),
+				[FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps, args.documentDelivery),
 				...(skillTools.load_skill ? { load_skill: skillTools.load_skill } : {}),
 			},
 			hasApps: false,
@@ -433,7 +484,7 @@ export async function assembleTurnTools(
 	const lean = args.options?.toolPolicy === "lean"
 	const tools: ToolSet = lean
 		? {
-				[FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps),
+				[FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps, args.documentDelivery),
 			}
 		: {
 		search_company_brain: brainTool,
@@ -442,7 +493,7 @@ export async function assembleTurnTools(
 		// turns propose their terminal answer explicitly; publication stays runtime-owned.
 		...(passiveInvestigation
 			? {}
-			: { [FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps) }),
+			: { [FINISH_TURN_TOOL_NAME]: createFinishTurnTool(deps, args.documentDelivery) }),
 		// Passive background investigations never narrate to the thread.
 		...(passiveInvestigation
 			? {}
@@ -578,6 +629,7 @@ export async function assembleTurnTools(
 				Boolean(actor.userId) && !passiveInvestigation && !actor.readOnly,
 			turnState: args.turnState,
 			env,
+			resolveToolFamilies,
 		},
 		traceId,
 	)
@@ -654,10 +706,57 @@ export async function assembleTurnTools(
 								canShare: () =>
 									!args.options?.abortSignal?.aborted &&
 									isThreadTurnCurrent(agent, args.options?.turnControl),
+								// Artifacts go where the asker asked for them: the
+								// channel they name, resolved against the bot's own
+								// channel directory so a private or non-member
+								// channel fails loudly instead of silently landing
+								// somewhere else.
+								resolveChannel: async (ref: string) => {
+									const resolution = await resolveChannel(
+										env,
+										slackLookup.teamId,
+										slackLookup.botToken,
+										ref,
+									)
+									if (resolution.status === "ok") {
+										const target = resolution.channel
+										// A private room the asker cannot see is not a
+										// legitimate destination: the file would leave
+										// their view the moment it is shared.
+										if (target.isPrivate && askerSlackUserId) {
+											const members = await getConversationMembers(
+												slackLookup.botToken,
+												target.id,
+											)
+											if (!members.includes(askerSlackUserId)) {
+												return {
+													ok: false as const,
+													error: `You're not a member of #${target.name}, so I won't share a file there. Join that channel or pick another destination.`,
+												}
+											}
+										}
+										return {
+											ok: true as const,
+											id: target.id,
+											name: target.name,
+										}
+									}
+									if (resolution.status === "not_member") {
+										return {
+											ok: false as const,
+											error: `I'm not in #${resolution.name}, so I can't share files there. Invite me to that channel (or pick one I'm already in) and ask again.`,
+										}
+									}
+									return {
+										ok: false as const,
+										error: `I could not find a Slack channel called "${ref}". Name it exactly as it appears in the channel list, or share into this conversation by omitting the channel.`,
+									}
+								},
 							},
 						}
 					: {}),
 				traceId,
+				documentDelivery: args.documentDelivery,
 			})
 		: {}
 	if (!lean) Object.assign(tools, sandboxTools)
@@ -1108,6 +1207,8 @@ export async function assembleTurnTools(
 		},
 		args.initialEnabledFamilies,
 	)
+	// From here on a loaded playbook can unlock the families it names.
+	lazyTools.state = toolDiscovery
 	tools.enable_tool_family = deps.tool({
 		description:
 			"Enable optional tool families when the task needs them. `sandbox` adds an isolated workspace for repository, code, command, file, data, PDF, and artifact work. `scheduler` adds reminders, delayed runs, recurring tasks, and schedule management. The requested tools become available on the next step; continue the task then.",
@@ -1130,6 +1231,12 @@ export async function assembleTurnTools(
 		},
 	})
 	const activeToolNames = toolDiscovery.activeToolNames(Object.keys(tools))
+	// Last step before the model sees them: a second identical read in the same
+	// turn is answered from the transcript instead of being run again.
+	guardDuplicateToolCalls(tools, {
+		traceId,
+		turnState: args.turnState,
+	})
 	console.log(
 		`[company-brain][${traceId}] assembleTurnTools finish hasApps=${hasApps ? "yes" : "no"} activeToolCount=${activeToolNames.length} hiddenToolCount=${Object.keys(tools).length - activeToolNames.length} activeTools=${activeToolNames.join(",")} lazyFamilies=${toolDiscovery.availableFamilies().join(",") || "-"} ms=${Date.now() - assembleStartedAt}`,
 	)

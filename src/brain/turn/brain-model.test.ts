@@ -435,6 +435,61 @@ describe("quota fallback chain", () => {
 		expect(isFreeModel(chain[0] as never)).toBe(true)
 	})
 
+	it("puts the paid hops first for a turn that has work to do", () => {
+		// Regression: with BRAIN_ALLOW_FREE_MAIN_TURN=1 the free hops led the
+		// chain, so a CV/cover-letter turn ran on a free model that replied in
+		// prose instead of compiling anything — and the fallback never fired,
+		// because prose is a successful response. A document turn asks for the
+		// capable hops first; free stays in the chain as the safety net.
+		const freeEnv = asEnv({
+			OPENAI_API_KEY: "sk-or-v1-test",
+			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+			BRAIN_ALLOW_FREE_MAIN_TURN: "1",
+		})
+		const chain = brainChainModelNames("claude-sonnet-5", freeEnv, {
+			mainTurn: true,
+			preferCapable: true,
+		})
+		const firstFree = chain.findIndex(
+			(name) => isFreeModel(name) && name !== WORKERS_AI_LAST_RESORT_MODEL,
+		)
+		const lastPaid = chain.reduce(
+			(last, name, index) =>
+				isFreeModel(name) || name === WORKERS_AI_LAST_RESORT_MODEL
+					? last
+					: index,
+			-1,
+		)
+		expect(firstFree).toBeGreaterThan(-1)
+		expect(lastPaid).toBeGreaterThan(-1)
+		expect(lastPaid).toBeLessThan(firstFree)
+	})
+
+	it("tries the deployment's own provider key before settling for a free hop", () => {
+		// Production failure this exists for: OpenRouter answered 402 for every
+		// paid hop, so the turn fell to a free model and answered in prose. The
+		// Google-keyed hop runs on its own quota, so it has to come before the
+		// free hops — being ahead of them is the whole point of preferring a
+		// capable model.
+		const env = asEnv({
+			OPENAI_API_KEY: "sk-or-v1-test",
+			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+			GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key",
+			BRAIN_ALLOW_FREE_MAIN_TURN: "1",
+		})
+		const chain = brainChainModelNames("gemini-3.8-flash", env, {
+			mainTurn: true,
+			preferCapable: true,
+		})
+		const googleHop = chain.indexOf("gemini-3.8-flash")
+		const firstFree = chain.findIndex(
+			(name) => isFreeModel(name) && name !== WORKERS_AI_LAST_RESORT_MODEL,
+		)
+		expect(googleHop).toBeGreaterThan(-1)
+		expect(firstFree).toBeGreaterThan(-1)
+		expect(googleHop).toBeLessThan(firstFree)
+	})
+
 	it("offers several free hops so one dead endpoint cannot end the turn", () => {
 		// A `:free` id can sit in the OpenRouter catalog and still have no healthy
 		// provider endpoint, which OpenRouter answers with a 404. The chain used to

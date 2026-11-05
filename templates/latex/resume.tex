@@ -1,0 +1,164 @@
+\documentclass[10pt,a4paper]{article}
+
+% ── Core packages ─────────────────────────────────────────────────────────────
+% Every package here ships with texlive-latex-base / -recommended /
+% -fonts-recommended. Do not add titlesec, enumitem or lastpage: they live in
+% texlive-latex-extra, which is not installed (the container image would exceed
+% Cloudflare's 4000MB limit), so pdflatex would stop with "File ... .sty not
+% found" and no PDF would be produced.
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1.6cm]{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{tabularx}
+\usepackage{booktabs}
+
+% ── Colors ────────────────────────────────────────────────────────────────────
+\definecolor{headingcolor}{RGB}{40,60,90}
+\definecolor{rulecolor}{RGB}{180,180,180}
+
+% ── Hyperlinks ────────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=headingcolor,
+    filecolor=headingcolor,
+    urlcolor=headingcolor,
+    pdftitle={Joseph Mindo - Resume},
+    pdfauthor={Joseph Mindo},
+}
+
+% ── Section formatting (core LaTeX, no titlesec) ──────────────────────────────
+\newcommand{\cvsection}[1]{%
+    \par\vspace{8pt}%
+    {\color{headingcolor}\Large\bfseries #1}\par
+    \vspace{2pt}%
+    {\color{rulecolor}\hrule height 0.5pt}%
+    \vspace{4pt}%
+}
+
+% ── List styling (core LaTeX, no enumitem) ────────────────────────────────────
+\newenvironment{cvitems}{%
+    \begin{itemize}\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}%
+    \setlength{\topsep}{2pt}\setlength{\leftmargin}{1.2em}%
+}{%
+    \end{itemize}%
+}
+
+% ── Page style ────────────────────────────────────────────────────────────────
+\pagestyle{empty}
+
+% ── Helper: entry with date on right ──────────────────────────────────────────
+\newcommand{\entry}[4]{%
+    \par\vspace{4pt}
+    {\textbf{#1} \hfill #2}\par
+    {\small #3 \hfill #4}\par
+    \vspace{2pt}
+}
+
+\begin{document}
+
+% ── Header ────────────────────────────────────────────────────────────────────
+\begin{center}
+    {\Huge\bfseries Joseph Mindo}\\[4pt]
+    {\small Nairobi, Kenya $\cdot$ \href{mailto:josephmindo27@gmail.com}{josephmindo27@gmail.com} $\cdot$ +254710431513}\\[4pt]
+    {\small \href{https://linkedin.com/in/josephmindo}{LinkedIn} $\cdot$ \href{https://github.com/Mindo-Joseph}{GitHub} $\cdot$ \href{https://site-joe.vercel.app}{Portfolio}}\\[4pt]
+    {\small \textbf{Open to relocation worldwide} $\cdot$ \textbf{Visa sponsorship welcome} $\cdot$ \textbf{Remote-first}}
+\end{center}
+
+\vspace{6pt}
+{\color{rulecolor}\hrule height 0.5pt}
+\vspace{4pt}
+
+% ── Professional Summary ──────────────────────────────────────────────────────
+\cvsection{Professional Summary}
+Versatile Software Engineer with 5 years of experience building scalable applications with Vue.js, React.js, Node.js/Express, Ruby on Rails, Flutter, and Go. Proven track record in container orchestration, AI app generation, and browser automation. \textbf{Seeking worldwide remote or visa-sponsored roles in USD/EUR/GBP/CHF markets} where full-stack and AI expertise drive high-impact outcomes.
+
+% ── Experience ────────────────────────────────────────────────────────────────
+\cvsection{Experience}
+
+\entry{Engineer}{July 2025 -- Present}{GRIFFIN Global Technologies}{}
+Developed a bi-directional reconciliation engine that automatically re-aligns nested HTML canvas layout elements on resize; diagnosed and eliminated non-deterministic failures from a race condition between async persistence and synchronous state validation; traced and fixed a silent pricing defect where stale relational data inflated material estimates on customer-facing invoices; hardened authentication session lifecycle across all HTTP clients to guarantee token invalidation on expiry --- closing four production risks spanning reliability, spatial accuracy, financial integrity, and security on a single customer-critical platform.
+
+\vspace{4pt}
+
+\entry{Frontend Developer}{September 2024 -- June 2025}{Nathan Digital}{}
+Spearheaded a performance overhaul of the main platform by refactoring legacy code, eliminating redundant processes, and implementing a more efficient data-fetching strategy --- \textbf{50\% reduction in API calls} with a more responsive and stable user experience. Collaborated in CI/CD by building and testing frontend deployments, identifying and resolving pre-production bugs to enable smoother, more frequent releases.
+
+\vspace{4pt}
+
+\entry{Software Developer}{August 2023 -- August 2024}{LanguaTalk Inc.}{}
+Drove a significant increase in user engagement (users spending 30+ minutes learning) by designing and implementing an intuitive, user-centric frontend. Played a key role in using Generative AI (ElevenLabs Text-To-Speech, BrowserUse web scraping) to create podcasts and learning materials from news articles, and launched a targeted AI-powered marketing campaign for LATAM regions, expanding the platform's user base into new markets.
+
+\vspace{4pt}
+
+\entry{Technical Instructor}{June 2022 -- July 2023}{PowerLearn Project}{}
+Mentored 50+ aspiring software engineers in mobile technology (Flutter). Contributed to an interactive Learning Management System that \textbf{boosted course completions by 25\%}, demonstrating ability to create educational tools that directly impact learning outcomes.
+
+\vspace{4pt}
+
+\entry{Software Developer}{June 2022 -- July 2023}{AdanianLabs}{}
+Developed innovative USSD applications enabling farmers and rural customers to purchase farm products offline via simple mobile phone interactions. Built robust Node.js backend systems for seamless e-commerce in areas with limited internet connectivity. Designed and implemented an end-to-end USSD-based e-commerce platform processing \textbf{thousands of daily orders}, integrating inventory management, payment gateways, and logistics coordination through efficient backend APIs.
+
+% ── Key Projects ───────────────────────────────────────────────────────────────
+\cvsection{Key Projects}
+
+\entry{Arxivolt Runtime / Miren Platform}{2024 -- Present}{Go, containerd, etcd}{}
+Container orchestration platform built on containerd with strong isolation guarantees. Entity-based architecture with etcd distributed state store. Built the Forge AI app-factory layer that generates deployable applications from natural-language prompts. Features: multi-tenant projects, HTTP ingress, hot reload, CLI tool, secure webhook-based deploy pipeline.
+
+\vspace{4pt}
+
+\entry{Company Brain (Slack AI Agent)}{2024 -- Present}{TypeScript, Cloudflare Workers, MCP}{}
+Slack-based AI agent running on Cloudflare Workers with Durable Objects. Built MCP runtime connecting to external servers, isolated code sandbox for LaTeX-to-PDF document compilation, web search/browse tools, skill system for process playbooks, and scheduler for follow-up reminders. Used for automated job sourcing, scoring, and tailored document generation.
+
+\vspace{4pt}
+
+\entry{arxivolt-engine}{2024 -- Present}{TypeScript, Cloudflare Workers, D1}{}
+Cloudflare Worker source for arxivolt.com and product subdomains. Built redirect resolution system with D1 database backend, SEO page clusters, and live-script injection. Handles redirect validation, kill-switch via Worker variables, and idempotent D1 migrations.
+
+\vspace{4pt}
+
+\entry{Jev Ultrafast (Browser Agent)}{2024 -- Present}{Python, TypeSafe, LLM}{}
+Browser agent with dynamic indexed action space using TypeSafe's Jev system. LLM selects operations (CLICK, TYPE\_TEXT, SELECT, SCROLL, WAIT, DONE, BLOCKED) against an element table. Demonstrated end-to-end browser automation (Zürich to London on Google Flights in 7.1 seconds). Only generates text via LLM for TYPE\_TEXT operations, minimizing token cost.
+
+\vspace{4pt}
+
+\entry{PesaCast (M-PESA Transaction Monitor)}{2024 -- Present}{Kotlin, Android, Tauri, Rust, React}{}
+M-PESA SMS interception and transaction monitoring system. Android app reads incoming SMS, parses structured transaction data, sends to desktop app via BLE GATT or encrypted WiFi WebSocket (ECDH P-256 + HKDF + AES-256-GCM). Open source (MIT), local-first, no cloud dependency.
+
+% ── Education ─────────────────────────────────────────────────────────────────
+\cvsection{Education}
+
+\entry{Bachelor of Science, Computer Science}{}{Laikipia University}{}
+\entry{Full-Stack Software Development Bootcamp}{}{Microverse}{}
+
+% ── Certifications ────────────────────────────────────────────────────────────
+\cvsection{Certifications}
+AWS Educate --- Introduction to Generative AI (March 2025)
+
+% ── Skills ────────────────────────────────────────────────────────────────────
+\cvsection{Skills}
+\textbf{Languages:} TypeScript, JavaScript, Ruby, C\#, Dart, Go, HTML, CSS/SASS\\
+\textbf{Frameworks \& Libraries:} Vue.js, React.js, Node.js (Express), Ruby on Rails, Flutter, Material Design, Tauri, Go\\
+\textbf{Databases:} MongoDB, MySQL, PostgreSQL, etcd, D1, SQLite\\
+\textbf{DevOps \& Tools:} Git, Jira / Atlassian, CI/CD, Docker, containerd, Agile, Cloudflare Workers, Wrangler\\
+\textbf{AI / Emerging:} GenAI, ElevenLabs TTS, BrowserUse, LLM-driven browser agents, TypeSafe Jev, MCP, LaTeX PDF compilation
+
+% ── References ────────────────────────────────────────────────────────────────
+\cvsection{References}
+
+\entry{Alex Redfern}{}{LanguaTalk Inc.}{}
+Email: alexred20@googlemail.com $\cdot$ LinkedIn: linkedin.com/in/alex-redfern-2ab9041b
+
+\vspace{4pt}
+
+\entry{Don Pottinger}{}{LanguaTalk Inc.}{}
+Email: don.pottinger@gmail.com $\cdot$ LinkedIn: linkedin.com/in/donpottinger
+
+\vspace{4pt}
+
+\entry{Calvin Mwangi}{}{Nathan Digital}{}
+Email: munenecalvn@gmail.com $\cdot$ LinkedIn: linkedin.com/in/calvin-munene
+
+\end{document}

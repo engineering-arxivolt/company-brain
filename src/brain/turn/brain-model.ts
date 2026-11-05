@@ -842,6 +842,11 @@ function isQuotaMessage(error: unknown): boolean {
  *   keep the cheap model they resolved and handle quota errors with their own
  *   recovery rather than showing a user-facing notice. Those paths are
  *   read-only, so a free model is acceptable there.
+ * @param options.preferCapable Put the paid hops ahead of the free ones. Set for
+ *   turns that have to *do* something — a document built in the sandbox, a
+ *   multi-step tool workflow — where a weak free model answers instead of
+ *   working. The free hops stay in the chain, so an exhausted paid tier still
+ *   produces an answer rather than a degraded notice.
  *
  * Applies the write-path rule: a free model is dropped unless dropping it
  * would leave nothing — a deployment with no paid provider at all, kept rather
@@ -852,7 +857,7 @@ function isQuotaMessage(error: unknown): boolean {
 export function brainChainModelNames(
 	modelName: SupportedModel,
 	env: Env,
-	options: { mainTurn?: boolean } = {},
+	options: { mainTurn?: boolean; preferCapable?: boolean } = {},
 ): SupportedModel[] {
 	const resolved = resolveModel(modelName, env)
 	const gateway = hasBrainGateway(env)
@@ -884,7 +889,7 @@ export function brainChainModelNames(
 		// catalog and still have no healthy provider endpoint, which OpenRouter
 		// answers with a 404. Several hops turn that dead id into one skipped
 		// request instead of a dead turn.
-		if (allowFreeMainTurn(env)) {
+		if (allowFreeMainTurn(env) && !options.preferCapable) {
 			// The live catalog's free models, not a list written down months
 			// ago: OpenRouter renames and retires free ids constantly.
 			candidates.push(...freeToolModelHops())
@@ -896,6 +901,24 @@ export function brainChainModelNames(
 	const fallback = brainFallbackModelFor(resolved)
 	if (fallback !== resolved && (gateway || providerHasKey(fallback, env))) {
 		candidates.push(fallback)
+	}
+	// A turn that has real work to do tries every model that runs on its own
+	// provider key before it settles for a free one. The free hops stay in the
+	// chain, last, as the safety net they were meant to be.
+	//
+	// This has to sit after `resolved` and its fallback: those hops bill to the
+	// deployment's own provider keys (e.g. a Google key), so they are not
+	// affected by an exhausted OpenRouter balance — and a document turn that
+	// quits at the first 402 never finds that out.
+	//
+	// Workers AI is offered ahead of the OpenRouter free tier here because it is
+	// the better of the two no-cost options: its allocation belongs to this
+	// account, and llama-3.3-70b can actually drive tools, where the free
+	// preview models answer in prose instead of doing the work. Duplicate
+	// entries collapse in the Set below, so the last-resort append is harmless.
+	if (options.mainTurn && allowFreeMainTurn(env) && options.preferCapable) {
+		if (env.AI) candidates.push(WORKERS_AI_LAST_RESORT_MODEL)
+		candidates.push(...freeToolModelHops())
 	}
 	// The last hop: Cloudflare's own Workers AI. Every provider above can be
 	// out of quota at the same time — they did, in one afternoon — and the
@@ -950,7 +973,7 @@ export function brainChainModelNames(
 export function getBrainModel(
 	modelName: SupportedModel,
 	env: Env,
-	options: { mainTurn?: boolean } = {},
+	options: { mainTurn?: boolean; preferCapable?: boolean } = {},
 ): LanguageModel {
 	const gateway = hasBrainGateway(env)
 	const key = gateway ? GATEWAY_INJECTED_KEY : undefined

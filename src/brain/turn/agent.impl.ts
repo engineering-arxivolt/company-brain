@@ -65,6 +65,13 @@ import {
 } from "../slack/reaction-queue"
 import { ensureTriageTraceSamplingTable } from "../slack/triage-sampling"
 import { ensureTurnControlTables, getThreadTurn } from "../slack/turn-control"
+import { postSlackMessage } from "../slack/client"
+import {
+  buildEtimsOscuConfig,
+  submitInvoiceToETimsOscu,
+  ETimsOscuError,
+} from "../etims/oscue-client"
+import { type EtimsInvoiceSlackPayload, postEtimsInvoiceToSlack as postEtimsInvoiceToSlackChannel } from "../slack/invoice-notification"
 import { brainAgent, type CompanyBrainAgent } from "./agent"
 import { ensureApprovalTables } from "./approval"
 import {
@@ -219,6 +226,8 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 	ensurePublicChannelRolloutTables(agent)
 	ensureTeamInviteTables(agent)
 	ensureWorkspacePromptTable(agent)
+	ensurePesacastTables(agent)
+	ensureInvoicesTable(agent)
 	await recoverPassiveReactionQueue(agent)
 	agent.sql`
 		CREATE TABLE IF NOT EXISTS brain_user_seen (
@@ -250,6 +259,752 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 		.catch((error) => {
 			console.warn("[company-brain] settled fiber cleanup failed:", error)
 		})
+}
+
+/**
+ * Ensure the pesacast_transactions table exists in this Durable Object's
+ * embedded SQLite. Idempotent on (org_id, device_id, ref, time).
+ */
+export function ensurePesacastTables(agent: CompanyBrainAgent): void {
+	agent.sql`
+		CREATE TABLE IF NOT EXISTS brain_pesacast_transaction (
+			org_id TEXT NOT NULL,
+			device_id TEXT,
+			source TEXT NOT NULL DEFAULT 'android',
+			direction TEXT NOT NULL,
+			amount TEXT NOT NULL,
+			currency TEXT NOT NULL DEFAULT 'KES',
+			counterparty TEXT,
+			ref TEXT NOT NULL,
+			time TEXT NOT NULL,
+			balance TEXT,
+			transaction_cost TEXT,
+			raw_payload TEXT NOT NULL,
+			received_at INTEGER NOT NULL,
+			PRIMARY KEY (org_id, device_id, ref, time)
+		)
+	`
+	agent.sql`
+		CREATE INDEX IF NOT EXISTS brain_pesacast_transaction_org_idx
+		ON brain_pesacast_transaction (org_id, received_at DESC)
+	`
+	agent.sql`
+		CREATE INDEX IF NOT EXISTS brain_pesacast_transaction_ref_idx
+		ON brain_pesacast_transaction (ref)
+	`
+}
+
+/**
+ * Ingest PesaCast M-PESA transactions from a phone webhook delivery.
+ * Idempotent: a transaction with the same (org_id, device_id, ref, time)
+ * is inserted once; duplicates are silently ignored.
+ */
+export async function ingestPesacastTransactions(
+	agent: CompanyBrainAgent,
+	input: {
+		orgId: string
+		deviceId: string | null
+		source: "android" | "desktop"
+		transactions: Array<{
+			type: string
+			direction: string
+			amount: string
+			currency: string
+			from?: string | null
+			recipient?: string | null
+			ref: string
+			time?: string
+			balance?: string | null
+			transaction_cost?: string | null
+		}>
+	},
+): Promise<void> {
+	const now = Date.now()
+	for (const txn of input.transactions) {
+		const time = txn.time ?? new Date(now).toISOString()
+		const counterparty =
+			txn.from ?? txn.recipient ?? null
+		const existing = await agent.sql<{ n: string }>`
+			SELECT COUNT(*) AS n FROM brain_pesacast_transaction
+			WHERE org_id = ${input.orgId}
+			  AND device_id IS NOT DISTINCT FROM ${input.deviceId}
+			  AND ref = ${txn.ref}
+			  AND time = ${time}
+		`
+		if (Number(existing[0]?.n) > 0) continue
+
+		agent.sql`
+			INSERT INTO brain_pesacast_transaction (
+				org_id, device_id, source, direction, amount, currency,
+				counterparty, ref, time, balance, transaction_cost,
+				raw_payload, received_at
+			) VALUES (
+				${input.orgId}, ${input.deviceId}, ${input.source},
+				${txn.direction}, ${txn.amount}, ${txn.currency},
+				${counterparty}, ${txn.ref}, ${time},
+				${txn.balance ?? null}, ${txn.transaction_cost ?? null},
+				${JSON.stringify(txn)}, ${now}
+			)
+		`
+
+		// Try to match this M-PESA transaction to an open invoice
+		if (txn.direction === "received" && txn.ref) {
+			try {
+				await matchMpesaToInvoice(agent, input.orgId, {
+					ref: txn.ref,
+					amount: txn.amount,
+					counterparty,
+					time,
+					direction: txn.direction,
+				})
+			} catch (err) {
+				console.error("[pesacast] invoice match failed:", err)
+			}
+		}
+	}
+}
+
+/**
+ * List PesaCast transactions for an org, newest first. Optional filters on
+ * direction and time range.
+ */
+export async function listPesacastTransactions(
+	agent: CompanyBrainAgent,
+	input: {
+		orgId: string
+		limit?: number
+		offset?: number
+		direction?: string
+		from?: string
+		to?: string
+	},
+): Promise<Array<{
+	orgId: string
+	deviceId: string | null
+	source: string
+	direction: string
+	amount: string
+	currency: string
+	counterparty: string | null
+	ref: string
+	time: string
+	balance: string | null
+	transactionCost: string | null
+	receivedAt: number
+}>> {
+	const limit = Math.min(input.limit ?? 100, 500)
+	const offset = input.offset ?? 0
+
+	let sql = `
+		SELECT org_id, device_id, source, direction, amount, currency,
+			counterparty, ref, time, balance, transaction_cost, received_at
+		FROM brain_pesacast_transaction
+		WHERE org_id = ${input.orgId}
+	`
+	const params: Array<string | number> = []
+
+	if (input.direction) {
+		sql += ` AND direction = $${params.length + 1}`
+		params.push(input.direction)
+	}
+	if (input.from) {
+		sql += ` AND time >= $${params.length + 1}`
+		params.push(input.from)
+	}
+	if (input.to) {
+		sql += ` AND time <= $${params.length + 1}`
+		params.push(input.to)
+	}
+
+	sql += ` ORDER BY time DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
+	params.push(limit, offset)
+
+	const rows = await agent.sql<{
+		org_id: string
+		device_id: string | null
+		source: string
+		direction: string
+		amount: string
+		currency: string
+		counterparty: string | null
+		ref: string
+		time: string
+		balance: string | null
+		transaction_cost: string | null
+		received_at: number
+	}>(sql as any, ...params)
+
+	return rows.map((row) => ({
+		orgId: row.org_id,
+		deviceId: row.device_id,
+		source: row.source,
+		direction: row.direction,
+		amount: row.amount,
+		currency: row.currency,
+		counterparty: row.counterparty,
+		ref: row.ref,
+		time: row.time,
+		balance: row.balance,
+		transactionCost: row.transaction_cost,
+		receivedAt: row.received_at,
+	}))
+}
+
+export function ensureInvoicesTable(agent: CompanyBrainAgent): void {
+	agent.sql`
+		CREATE TABLE IF NOT EXISTS brain_invoice (
+			id TEXT PRIMARY KEY,
+			org_id TEXT NOT NULL,
+			customer_tin TEXT,
+			customer_name TEXT,
+			customer_mobile TEXT,
+			status TEXT NOT NULL DEFAULT 'draft',
+			tot_taxbl_amt REAL NOT NULL DEFAULT 0,
+			tot_tax_amt REAL NOT NULL DEFAULT 0,
+			tot_amt REAL NOT NULL DEFAULT 0,
+			etims_invoice_no TEXT,
+			etims_confirmed_at TEXT,
+			etims_qr_code TEXT,
+			mpesa_ref TEXT,
+			mpesa_amount TEXT,
+			mpesa_received_at TEXT,
+			mpesa_direction TEXT,
+			raw_payload TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`
+	agent.sql`
+		CREATE INDEX IF NOT EXISTS brain_invoice_org_idx
+		ON brain_invoice (org_id, created_at DESC)
+	`
+	agent.sql`
+		CREATE INDEX IF NOT EXISTS brain_invoice_status_idx
+		ON brain_invoice (org_id, status)
+	`
+	agent.sql`
+		CREATE INDEX IF NOT EXISTS brain_invoice_etims_idx
+		ON brain_invoice (etims_invoice_no)
+	`
+	agent.sql`
+		CREATE INDEX IF NOT EXISTS brain_invoice_mpesa_ref_idx
+		ON brain_invoice (mpesa_ref)
+	`
+}
+
+export async function createInvoice(
+	agent: CompanyBrainAgent,
+	input: {
+		orgId: string
+		customerTin?: string
+		customerName?: string
+		customerMobile?: string
+		items: Array<{
+			itemSeq: number
+			itemCd: string
+			itemNm: string
+			pkgUnitCd: string
+			pkg: number
+			qtyUnitCd: string
+			qty: number
+			prc: number
+			splyAmt: number
+			dcRt?: number
+			dcAmt?: number
+			taxTyCd: string
+			taxblAmt: number
+			taxAmt: number
+			totAmt: number
+		}>
+		receipt: {
+			rcptPbctDt: string
+			prchrAcptcYn: "Y" | "N"
+			custTin?: string
+			custMblNo?: string
+			trdeNm?: string
+			adrs?: string
+			topMsg?: string
+			btmMsg?: string
+		}
+		totTaxblAmt: number
+		totTaxAmt: number
+		totAmt: number
+	},
+): Promise<string> {
+	const id = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+	const now = Date.now()
+
+	agent.sql`
+		INSERT INTO brain_invoice (
+			id, org_id, customer_tin, customer_name, customer_mobile,
+			status, tot_taxbl_amt, tot_tax_amt, tot_amt,
+			raw_payload, created_at, updated_at
+		) VALUES (
+			${id}, ${input.orgId}, ${input.customerTin ?? null},
+			${input.customerName ?? null}, ${input.customerMobile ?? null},
+			'draft', ${input.totTaxblAmt}, ${input.totTaxAmt}, ${input.totAmt},
+			${JSON.stringify({ items: input.items, receipt: input.receipt })}, ${now}, ${now}
+		)
+	`
+
+	return id
+}
+
+export async function submitInvoiceToETims(
+	agent: CompanyBrainAgent,
+	env: Env,
+	invoiceId: string,
+): Promise<{ etimsInvoiceNo: string; confirmedAt: string; qrCode?: string }> {
+	const [row] = await agent.sql<{
+		id: string
+		org_id: string
+		status: string
+		etims_invoice_no: string | null
+		etims_qr_code: string | null
+		tot_taxbl_amt: number
+		tot_tax_amt: number
+		tot_amt: number
+		customer_tin: string | null
+		customer_name: string | null
+		customer_mobile: string | null
+		raw_payload: string
+	}>`
+		SELECT id, org_id, status, etims_invoice_no, etims_qr_code,
+			tot_taxbl_amt, tot_tax_amt, tot_amt,
+			customer_tin, customer_name, customer_mobile, raw_payload
+		FROM brain_invoice WHERE id = ${invoiceId}
+	`
+
+	if (!row) throw new Error(`Invoice ${invoiceId} not found`)
+	if (row.status !== "draft")
+		throw new Error(`Invoice ${invoiceId} is already ${row.status}`)
+
+	const config = buildEtimsOscuConfig(env)
+	if (!config) {
+		throw new Error(
+			"eTIMS OSCU is not configured. Set ETIMS_OSCU_BASE_URL, ETIMS_OSCU_CLIENT_ID, ETIMS_OSCU_CLIENT_SECRET, ETIMS_OSCU_REGR_ID, ETIMS_OSCU_REGR_NM.",
+		)
+	}
+
+	const now = new Date()
+	const salesDt = now.toISOString().replace(/[-:]/g, "").slice(0, 8)
+	const cfmDt = now.toISOString().replace(/[-:]/g, "").slice(0, 14)
+
+	const raw = row.raw_payload ? JSON.parse(row.raw_payload) : {}
+	const items: Array<{
+		itemSeq: number
+		itemCd: string
+		itemNm: string
+		pkgUnitCd: string
+		pkg: number
+		qtyUnitCd: string
+		qty: number
+		prc: number
+		splyAmt: number
+		dcRt?: number
+		dcAmt?: number
+		taxTyCd: string
+		taxblAmt: number
+		taxAmt: number
+		totAmt: number
+	}> = Array.isArray(raw.items) ? raw.items : []
+
+	const etimsInvoiceNo = `ETIMS-${invoiceId}`
+
+	let oscueResponse
+	try {
+		oscueResponse = await submitInvoiceToETimsOscu(config, {
+			invcNo: etimsInvoiceNo,
+			salesDt,
+			cfmDt,
+			taxblAmtA: row.tot_taxbl_amt,
+			taxblAmtB: 0,
+			taxblAmtC: 0,
+			taxblAmtD: 0,
+			taxblAmtE: 0,
+			taxAmtA: row.tot_tax_amt,
+			taxAmtB: 0,
+			taxAmtC: 0,
+			taxAmtD: 0,
+			taxAmtE: 0,
+			totTaxblAmt: row.tot_taxbl_amt,
+			totTaxAmt: row.tot_tax_amt,
+			totAmt: row.tot_amt,
+			prchrAcctcYn: "N",
+			regrId: config.regrId,
+			regrNm: config.regrNm,
+			modrId: config.regrId,
+			modrNm: config.regrNm,
+			receipt: {
+				rcptPbctDt: cfmDt,
+				prchrAcptcYn: "N",
+				custTin: row.customer_tin ?? undefined,
+				custMblNo: row.customer_mobile ?? undefined,
+				trdeNm: row.customer_name ?? undefined,
+				topMsg: "Thank you for your business",
+				btmMsg: "E&OE",
+			},
+			itemList: items.map((item, i) => ({
+				itemSeq: i + 1,
+				itemCd: item.itemCd,
+				itemNm: item.itemNm,
+				pkgUnitCd: item.pkgUnitCd,
+				pkg: item.pkg,
+				qtyUnitCd: item.qtyUnitCd,
+				qty: item.qty,
+				prc: item.prc,
+				splyAmt: item.splyAmt,
+				dcRt: item.dcRt,
+				dcAmt: item.dcAmt,
+				taxTyCd: item.taxTyCd,
+				taxblAmt: item.taxblAmt,
+				taxAmt: item.taxAmt,
+				totAmt: item.totAmt,
+			})),
+			custTin: row.customer_tin ?? undefined,
+			custNm: row.customer_name ?? undefined,
+		})
+	} catch (err) {
+		if (err instanceof ETimsOscuError) {
+			throw new Error(
+				`KRA eTIMS OSCU submission failed: ${err.resultMsg ?? err.message}`,
+			)
+		}
+		throw err
+	}
+
+	const qrCode = oscueResponse.qrcode ?? undefined
+	const confirmedAt = new Date().toISOString()
+
+	agent.sql`
+		UPDATE brain_invoice
+		SET status = 'etims_confirmed',
+			etims_invoice_no = ${etimsInvoiceNo},
+			etims_confirmed_at = ${confirmedAt},
+			etims_qr_code = ${qrCode ?? null},
+			updated_at = ${Date.now()}
+		WHERE id = ${invoiceId}
+	`
+
+	return { etimsInvoiceNo, confirmedAt, qrCode }
+}
+
+export async function postEtimsInvoiceToSlack(
+	agent: CompanyBrainAgent,
+	env: Env,
+	input: {
+		orgId: string
+		invoiceId: string
+		channel?: string
+		threadTs?: string
+	},
+): Promise<{ ok: boolean; ts?: string; error?: string }> {
+	const [row] = await agent.sql<{
+		id: string
+		org_id: string
+		customer_name: string | null
+		customer_tin: string | null
+		customer_mobile: string | null
+		status: string
+		tot_taxbl_amt: number
+		tot_tax_amt: number
+		tot_amt: number
+		etims_invoice_no: string | null
+		etims_confirmed_at: string | null
+		etims_qr_code: string | null
+		raw_payload: string
+	}>`
+		SELECT id, org_id, customer_name, customer_tin, customer_mobile,
+			status, tot_taxbl_amt, tot_tax_amt, tot_amt,
+			etims_invoice_no, etims_confirmed_at, etims_qr_code, raw_payload
+		FROM brain_invoice WHERE id = ${input.invoiceId}
+	`
+
+	if (!row) {
+		return { ok: false, error: `Invoice ${input.invoiceId} not found` }
+	}
+	if (row.org_id !== input.orgId) {
+		return { ok: false, error: "Invoice does not belong to this organization" }
+	}
+
+	const raw = row.raw_payload ? JSON.parse(row.raw_payload) : {}
+	const items: Array<{
+		itemNm: string
+		qty: number
+		prc: number
+		totAmt: number
+		taxAmt: number
+	}> = Array.isArray(raw.items)
+		? raw.items.map((item: any) => ({
+				itemNm: item.itemNm,
+				qty: item.qty,
+				prc: item.prc,
+				totAmt: item.totAmt,
+				taxAmt: item.taxAmt,
+			}))
+		: []
+
+	const payload: import("../slack/invoice-notification").EtimsInvoiceSlackPayload = {
+		orgId: input.orgId,
+		invoiceId: row.id,
+		customerName: row.customer_name,
+		customerTin: row.customer_tin,
+		customerMobile: row.customer_mobile,
+		totTaxblAmt: row.tot_taxbl_amt,
+		totTaxAmt: row.tot_tax_amt,
+		totAmt: row.tot_amt,
+		status: row.status,
+		etimsInvoiceNo: row.etims_invoice_no,
+		etimsConfirmedAt: row.etims_confirmed_at,
+		etimsQrCode: row.etims_qr_code,
+		items,
+		channel: input.channel,
+		threadTs: input.threadTs,
+	}
+
+	const ts = await postEtimsInvoiceToSlackChannel(env, input.orgId, payload)
+	if (!ts) {
+		return { ok: false, error: "Failed to post invoice to Slack" }
+	}
+
+	return { ok: true, ts }
+}
+
+export async function listInvoices(
+	agent: CompanyBrainAgent,
+	input: {
+		orgId: string
+		status?: string
+		limit?: number
+		offset?: number
+	},
+): Promise<Array<{
+	id: string
+	orgId: string
+	customerTin: string | null
+	customerName: string | null
+	customerMobile: string | null
+	status: string
+	totTaxblAmt: number
+	totTaxAmt: number
+	totAmt: number
+	etimsInvoiceNo: string | null
+	etimsConfirmedAt: string | null
+	mpesaRef: string | null
+	mpesaAmount: string | null
+	mpesaReceivedAt: string | null
+	createdAt: number
+	updatedAt: number
+}>> {
+	const limit = Math.min(input.limit ?? 100, 500)
+	const offset = input.offset ?? 0
+	let sql = `
+		SELECT id, org_id, customer_tin, customer_name, customer_mobile,
+			status, tot_taxbl_amt, tot_tax_amt, tot_amt,
+			etims_invoice_no, etims_confirmed_at,
+			mpesa_ref, mpesa_amount, mpesa_received_at,
+			created_at, updated_at
+		FROM brain_invoice
+		WHERE org_id = ${input.orgId}
+	`
+	const params: Array<string | number> = []
+	if (input.status) {
+		sql += ` AND status = $${params.length + 1}`
+		params.push(input.status)
+	}
+	sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`
+	params.push(limit, offset)
+	const rows = await agent.sql<{
+		id: string
+		org_id: string
+		customer_tin: string | null
+		customer_name: string | null
+		customer_mobile: string | null
+		status: string
+		tot_taxbl_amt: number
+		tot_tax_amt: number
+		tot_amt: number
+		etims_invoice_no: string | null
+		etims_confirmed_at: string | null
+		mpesa_ref: string | null
+		mpesa_amount: string | null
+		mpesa_received_at: string | null
+		created_at: number
+		updated_at: number
+	}>(sql as any, ...params)
+	return rows.map((row) => ({
+		id: row.id,
+		orgId: row.org_id,
+		customerTin: row.customer_tin,
+		customerName: row.customer_name,
+		customerMobile: row.customer_mobile,
+		status: row.status,
+		totTaxblAmt: row.tot_taxbl_amt,
+		totTaxAmt: row.tot_tax_amt,
+		totAmt: row.tot_amt,
+		etimsInvoiceNo: row.etims_invoice_no,
+		etimsConfirmedAt: row.etims_confirmed_at,
+		mpesaRef: row.mpesa_ref,
+		mpesaAmount: row.mpesa_amount,
+		mpesaReceivedAt: row.mpesa_received_at,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
+	}))
+}
+
+/**
+ * Match an incoming M-PESA transaction to an open invoice.
+ * Matching rules (per Vendly/Tally/Upeosoft reconciliation guidance):
+ *   1. Exact match on M-PESA ref code (highest confidence)
+ *   2. Amount match + sender name match (medium confidence)
+ *   3. Amount match alone (low confidence, exception queue)
+ */
+export async function matchMpesaToInvoice(
+	agent: CompanyBrainAgent,
+	orgId: string,
+	mpesa: {
+		ref: string
+		amount: string
+		counterparty: string | null
+		time: string
+		direction: string
+	},
+): Promise<{
+	matched: boolean
+	invoiceId: string | null
+	confidence: "exact" | "amount" | "none"
+	reason: string
+}> {
+	// Rule 1: Try exact match on M-PESA ref
+	const [refMatch] = await agent.sql<{
+		id: string
+		status: string
+	}>`SELECT id, status FROM brain_invoice
+		WHERE org_id = ${orgId} AND mpesa_ref = ${mpesa.ref}`
+
+	if (refMatch && refMatch.status !== "paid") {
+		agent.sql`
+			UPDATE brain_invoice
+			SET status = 'paid',
+				mpesa_amount = ${mpesa.amount},
+				mpesa_received_at = ${mpesa.time},
+				mpesa_direction = ${mpesa.direction},
+				updated_at = ${Date.now()}
+			WHERE id = ${refMatch.id}
+		`
+		await postPesaCastReceipt(agent, {
+			invoiceId: refMatch.id,
+			amount: mpesa.amount,
+			counterparty: mpesa.counterparty ?? "",
+			ref: mpesa.ref,
+			time: mpesa.time,
+			confidence: "exact",
+		})
+		return {
+			matched: true,
+			invoiceId: refMatch.id,
+			confidence: "exact",
+			reason: `Matched on M-PESA ref ${mpesa.ref}`,
+		}
+	}
+
+	// Rule 2: Try amount match on open invoices
+	const amount = Number(mpesa.amount)
+	const [amtMatch] = await agent.sql<{
+		id: string
+		customer_name: string | null
+	}>`SELECT id, customer_name FROM brain_invoice
+		WHERE org_id = ${orgId}
+			AND status IN ('draft', 'submitted_to_etims', 'etims_confirmed', 'partially_paid')
+			AND ABS(CAST(tot_amt AS REAL) - ${amount}) < 1
+		ORDER BY created_at DESC LIMIT 1`
+
+	if (amtMatch) {
+		const nameMatch =
+			amtMatch.customer_name && mpesa.counterparty
+				? amtMatch.customer_name
+						.toLowerCase()
+						.includes(mpesa.counterparty.toLowerCase()) ||
+				  mpesa.counterparty
+						.toLowerCase()
+						.includes(amtMatch.customer_name.toLowerCase())
+				: false
+
+		if (nameMatch) {
+			agent.sql`
+				UPDATE brain_invoice
+				SET status = 'paid',
+					mpesa_ref = ${mpesa.ref},
+					mpesa_amount = ${mpesa.amount},
+					mpesa_received_at = ${mpesa.time},
+					mpesa_direction = ${mpesa.direction},
+					updated_at = ${Date.now()}
+				WHERE id = ${amtMatch.id}
+			`
+			await postPesaCastReceipt(agent, {
+				invoiceId: amtMatch.id,
+				amount: mpesa.amount,
+				counterparty: mpesa.counterparty ?? "",
+				ref: mpesa.ref,
+				time: mpesa.time,
+				confidence: "amount",
+			})
+			return {
+				matched: true,
+				invoiceId: amtMatch.id,
+				confidence: "amount",
+				reason: `Matched on amount KES ${mpesa.amount} for ${amtMatch.customer_name}`,
+			}
+		}
+
+		return {
+			matched: false,
+			invoiceId: amtMatch.id,
+			confidence: "none",
+			reason: `Amount match KES ${mpesa.amount} but sender "${mpesa.counterparty}" doesn't match customer "${amtMatch.customer_name}" — needs manual review`,
+		}
+	}
+
+	return { matched: false, invoiceId: null, confidence: "none", reason: "No matching invoice found" }
+}
+
+async function postPesaCastReceipt(
+	agent: CompanyBrainAgent,
+	input: {
+		invoiceId: string
+		amount: string
+		counterparty: string
+		ref: string
+		time: string
+		confidence: "exact" | "amount"
+	},
+): Promise<void> {
+	const env = brainAgent(agent).env
+	const channel = env.PESACAST_SLACK_CHANNEL
+	const token = env.SLACK_BOT_TOKEN
+	if (!channel || !token) return
+
+	const [inv] = await agent.sql<{
+		tot_amt: number
+		etims_invoice_no: string | null
+	}>`SELECT tot_amt, etims_invoice_no FROM brain_invoice WHERE id = ${input.invoiceId}`
+
+	const text = [
+		`💰 *M-PESA Payment Received*`,
+		`*Amount:* KES ${input.amount}`,
+		`*From:* ${input.counterparty}`,
+		`*Ref:* ${input.ref}`,
+		`*Time:* ${input.time}`,
+		`*Invoice:* ${input.invoiceId}`,
+		input.confidence === "exact" ? `*Match:* Exact (ref)` : `*Match:* Amount`,
+		inv?.etims_invoice_no ? `*eTIMS:* ${inv.etims_invoice_no}` : "",
+		"",
+		"_Auto-matched via PesaCast webhook_",
+	].filter(Boolean).join("\n")
+
+	await postSlackMessage(token, channel, text).catch((err) => {
+		console.error("[pesacast] slack receipt failed:", err)
+	})
 }
 
 /** Tables are created lazily, so a missing one is expected; anything else is not. */

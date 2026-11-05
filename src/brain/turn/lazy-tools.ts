@@ -17,6 +17,23 @@ export type LazyToolState = {
 }
 
 /**
+ * The tool families a playbook depends on, read from the tools it names.
+ *
+ * A skill body that says "compile it with latexmk, then share the PDF with
+ * sandbox_get_artifact" is unusable while the sandbox family is still hidden:
+ * the model is instructed to call tools that are not in its schema, and a
+ * weaker model answers with prose instead of doing the work. Naming a family's
+ * tools is the clearest intent a playbook can express, so it is also the signal
+ * that unlocks it.
+ */
+export function toolFamiliesForSkill(body: string): LazyToolFamily[] {
+	const families: LazyToolFamily[] = []
+	// Any sandbox_* tool name (`sandbox_run`, `sandbox_get_artifact`, ...).
+	if (/\bsandbox_[a-z_]+\b/.test(body)) families.push("sandbox")
+	return families
+}
+
+/**
  * Keeps optional typed tools server-side until the model explicitly asks for a
  * family. AI SDK activeTools then exposes the unlocked schemas on the next step.
  */

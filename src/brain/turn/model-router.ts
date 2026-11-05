@@ -317,8 +317,21 @@ function nonOpenRouterTierConfig(env: Env): ModelTierConfig {
 }
 
 /** True when the OpenAI-compatible endpoint is this deployment's primary route. */
-function usesOpenRouterPrimary(env: Env): boolean {
-	return Boolean(openAiCompatibleBaseUrl(env)) && availableProviders(env)[0] === "openai"
+/**
+ * Is OpenRouter (or any OpenAI-compatible endpoint) the answering endpoint?
+ *
+ * Pointing OPENAI_BASE_URL at openrouter.ai is the signal, and it has to stand
+ * on its own: a deployment that also holds, say, a Google key still routes its
+ * turns through OpenRouter, and gating this on `availableProviders[0] ===
+ * "openai"` silently disabled the catalog for exactly those deployments — the
+ * chain fell back to pinned model ids while the router's classification was
+ * never even fetched.
+ */
+export function usesOpenRouterPrimary(env: Env): boolean {
+	const baseUrl = openAiCompatibleBaseUrl(env)
+	if (!baseUrl) return false
+	if (/openrouter\.ai/i.test(baseUrl)) return true
+	return availableProviders(env)[0] === "openai"
 }
 
 /** Default tier configuration - maps to available models based on provider */

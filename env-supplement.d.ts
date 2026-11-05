@@ -18,6 +18,8 @@ interface Env {
 	SLACK_SIGNING_SECRET?: string
 	/** Generated at first boot and kept in KV; encrypts tokens at rest. */
 	ENCRYPTION_SECRET: string
+	/** Image generation provider: "nano" for Gemini (needs billing), else Workers AI flux. */
+	IMAGE_GEN_PROVIDER?: string
 }
 
 /**
@@ -63,6 +65,24 @@ interface Env {
 }
 
 interface Env {
+	/**
+	 * PesaCast webhook signing secret. Set in the PesaCast Android app's
+	 * Webhook card; used to verify HMAC signatures on POST /brain/webhooks/pesacast.
+	 */
+	PESACAST_WEBHOOK_SECRET?: string
+	/**
+	 * PesaCast webhook bearer token. Fallback auth when the app doesn't send
+	 * a signature (e.g. desktop-sourced events).
+	 */
+	PESACAST_WEBHOOK_TOKEN?: string
+	/**
+	 * Slack channel ID where PesaCast receipt notifications are posted.
+	 * When set, matched M-PESA payments are posted here as formatted receipts.
+	 */
+	PESACAST_SLACK_CHANNEL?: string
+}
+
+interface Env {
 	/** Self-hosted browser-use sidecar (VPS FastAPI). Unset = browse_website hidden. */
 	BROWSER_SERVICE_URL?: string
 	BROWSER_SERVICE_TOKEN?: string
@@ -83,6 +103,21 @@ interface Env {
 	 * are out of credits (e.g. GLM exhausted). Off by default: the answering
 	 * turn writes to memory/GitHub/Linear/Notion. */
 	BRAIN_ALLOW_FREE_MAIN_TURN?: string
+}
+
+interface Env {
+	/** KRA eTIMS OSCU base URL (sandbox or production). */
+	ETIMS_OSCU_BASE_URL?: string
+	/** KRA eTIMS OSCU client ID. */
+	ETIMS_OSCU_CLIENT_ID?: string
+	/** KRA eTIMS OSCU client secret (encrypted at rest). */
+	ETIMS_OSCU_CLIENT_SECRET?: string
+	/** KRA eTIMS OSCU registrar ID (your KRA-registered system ID). */
+	ETIMS_OSCU_REGR_ID?: string
+	/** KRA eTIMS OSCU registrar name. */
+	ETIMS_OSCU_REGR_NM?: string
+	/** "sandbox" or "production". Defaults to sandbox. */
+	ETIMS_MODE?: string
 }
 
 interface Env {

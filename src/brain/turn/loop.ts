@@ -155,6 +155,12 @@ export type RunModelLoopArgs = {
 	abortSignal?: AbortSignal
 	/** The most a single response may generate. */
 	maxOutputTokens?: number
+	/**
+	 * Put the paid hops ahead of the free ones for this turn. Set when the turn
+	 * has to do real work (build a document, run a multi-step tool workflow)
+	 * rather than answer from what it already knows.
+	 */
+	preferCapableModel?: boolean
 	functionId: string
 	prepareMessages?: (messages: ModelMessage[]) => ModelMessage[]
 	/** Tracks finish_turn proposals so the planning gate can detect drift. */
@@ -200,7 +206,10 @@ export function runModelLoop(args: RunModelLoopArgs) {
 	return args.deps.streamText({
 		// The main turn is the one call worth spending a frontier model on; the
 		// triage and approval-classification calls leave this off.
-		model: args.deps.getModel(args.profile.name, args.env, { mainTurn: true }),
+		model: args.deps.getModel(args.profile.name, args.env, {
+			mainTurn: true,
+			preferCapable: args.preferCapableModel === true,
+		}),
 		system: args.system(),
 		messages: initialMessages,
 		tools: args.tools,

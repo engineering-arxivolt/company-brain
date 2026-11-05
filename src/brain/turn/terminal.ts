@@ -1,4 +1,5 @@
 import type { TurnDeps } from "./deps"
+import type { DocumentDeliveryGuard } from "./document-delivery"
 
 export const FINISH_TURN_TOOL_NAME = "finish_turn"
 
@@ -74,6 +75,14 @@ function parseTerminalProposal(
  */
 export function createTurnTerminalCapture(args?: {
 	onProposal?: (proposal: TurnTerminalProposal) => void
+	/**
+	 * Why this proposal must not end the turn, or undefined to accept it.
+	 * A refused proposal is not recorded, so the loop keeps running and the
+	 * model sees the reason (returned by the finish tool) instead of stopping.
+	 */
+	refuse?: (proposal: TurnTerminalProposal) => string | undefined
+	/** Called with the refusal so the turn can surface it to the model. */
+	onRefused?: (proposal: TurnTerminalProposal, reason: string) => void
 }): TurnTerminalCapture {
 	let selectedProposal: TurnTerminalProposal | undefined
 	let proposalCount = 0
@@ -82,6 +91,11 @@ export function createTurnTerminalCapture(args?: {
 			if (toolCall.toolName !== FINISH_TURN_TOOL_NAME) return undefined
 			const proposal = parseTerminalProposal(toolCall.input)
 			if (!proposal) return undefined
+			const refusal = args?.refuse?.(proposal)
+			if (refusal) {
+				args?.onRefused?.(proposal, refusal)
+				return undefined
+			}
 			proposalCount += 1
 			selectedProposal = proposal
 			args?.onProposal?.(proposal)
@@ -93,7 +107,10 @@ export function createTurnTerminalCapture(args?: {
 	}
 }
 
-export function createFinishTurnTool(deps: TurnDeps) {
+export function createFinishTurnTool(
+	deps: TurnDeps,
+	guard?: DocumentDeliveryGuard,
+) {
 	return deps.tool({
 		description:
 			"Submit the complete final reply for this turn. Call this exactly once when the user's active requests have been answered, are concretely blocked, or the requested information was not found. The reply is what the user will receive, so make it standalone and complete. Do not continue working or write another answer after calling this tool.",
@@ -122,6 +139,13 @@ export function createFinishTurnTool(deps: TurnDeps) {
 					"Optional id of one GIF candidate returned by search_gifs this turn, attached to your final message. Only on a genuine win (answered only), at most one per turn; omit if nothing fits or the moment is not a real celebration.",
 				),
 		}),
-		execute: async ({ outcome }) => ({ accepted: true, outcome }),
+		execute: async ({ outcome }) => {
+			// A document turn that has delivered nothing is not finished: the
+			// refusal goes back to the model as the tool result so it keeps
+			// working instead of ending on a prose answer.
+			const refusal = guard?.refusal()
+			if (refusal) return { accepted: false, outcome, error: refusal }
+			return { accepted: true, outcome }
+		},
 	})
 }

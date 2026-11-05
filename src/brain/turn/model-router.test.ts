@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { routeModelTier, getHeuristicModelForTask } from "./model-router"
+import {
+	classifyOpenRouterModels,
+	primeOpenRouterTiers,
+	routeModelTier,
+	getHeuristicModelForTask,
+	usesOpenRouterPrimary,
+} from "./model-router"
+import { catalogFreeToolModels } from "./brain-model"
 
 const mockEnv = {
 	TYPESAFE_API_KEY: "test-key",
@@ -107,5 +114,83 @@ describe("model-router", () => {
 
 		const tier = await routeModelTier(mockEnv, "Any task", undefined, "test-trace")
 		expect(tier).toBe("balanced")
+	})
+})
+
+describe("catalog priming", () => {
+	beforeEach(() => {
+		globalThis.fetch = vi.fn()
+	})
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch
+	})
+
+	it("counts OpenRouter as primary even when another provider key exists", () => {
+		// Regression: `availableProviders[0] === "openai"` decided this, so a
+		// deployment holding a Google key silently stopped priming the catalog
+		// and answered from pinned model ids the router never classified.
+		const env = {
+			OPENAI_API_KEY: "sk-or-test",
+			OPENAI_BASE_URL: "https://openrouter.ai/api/v1",
+			GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key",
+		} as unknown as Env
+		expect(usesOpenRouterPrimary(env)).toBe(true)
+	})
+
+	it("does not claim primary without an OpenAI-compatible endpoint", () => {
+		const env = {
+			GOOGLE_GENERATIVE_AI_API_KEY: "google-test-key",
+		} as unknown as Env
+		expect(usesOpenRouterPrimary(env)).toBe(false)
+	})
+
+	it("takes the free hops from the catalog's classification", async () => {
+		;(globalThis.fetch as any).mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					data: [
+						{
+							id: "nvidia/big-context:free",
+							name: "Big free",
+							pricing: { prompt: "0", completion: "0" },
+							context_length: 1_000_000,
+							supported_parameters: ["tools", "response_format"],
+						},
+						{
+							id: "vendor/small-context:free",
+							name: "Small free",
+							pricing: { prompt: "0", completion: "0" },
+							context_length: 32_000,
+							supported_parameters: ["tools", "response_format"],
+						},
+						{
+							id: "vendor/no-tools:free",
+							name: "No tools",
+							pricing: { prompt: "0", completion: "0" },
+							context_length: 200_000,
+							supported_parameters: ["response_format"],
+						},
+						{
+							id: "vendor/cheap-paid",
+							name: "Cheap paid",
+							pricing: { prompt: "0.1", completion: "0.2" },
+							context_length: 200_000,
+							supported_parameters: ["tools", "response_format"],
+						},
+					],
+				}),
+				{ status: 200 },
+			),
+		)
+
+		await primeOpenRouterTiers(mockEnv)
+
+		// Biggest context first, and a model without tool support never makes
+		// it onto the answering chain.
+		expect(catalogFreeToolModels()).toEqual([
+			"nvidia/big-context:free",
+			"vendor/small-context:free",
+		])
 	})
 })

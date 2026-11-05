@@ -898,4 +898,160 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 			params,
 		)
 	}
+
+	// Ingest PesaCast M-PESA transactions pushed from the phone webhook.
+	// Idempotent on (ref, time) per org + device.
+	async ingestPesacastTransactions(input: {
+		orgId: string
+		deviceId: string | null
+		source: "android" | "desktop"
+		transactions: Array<{
+			type: string
+			direction: string
+			amount: string
+			currency: string
+			from?: string | null
+			recipient?: string | null
+			ref: string
+			time?: string
+			balance?: string | null
+			transaction_cost?: string | null
+		}>
+	}): Promise<void> {
+		return (await this.loadImpl()).ingestPesacastTransactions(this, input)
+	}
+
+	// List PesaCast transactions for an org, newest first.
+	async listPesacastTransactions(input: {
+		orgId: string
+		limit?: number
+		offset?: number
+		direction?: string
+		from?: string
+		to?: string
+	}): Promise<Array<{
+		orgId: string
+		deviceId: string | null
+		source: string
+		direction: string
+		amount: string
+		currency: string
+		counterparty: string | null
+		ref: string
+		time: string
+		balance: string | null
+		transactionCost: string | null
+		receivedAt: number
+	}>> {
+		return (await this.loadImpl()).listPesacastTransactions(this, input)
+	}
+
+	// Create a new eTIMS-compliant invoice (draft). Returns the invoice id.
+	async createInvoice(input: {
+		orgId: string
+		customerTin?: string
+		customerName?: string
+		customerMobile?: string
+		items: Array<{
+			itemSeq: number
+			itemCd: string
+			itemNm: string
+			pkgUnitCd: string
+			pkg: number
+			qtyUnitCd: string
+			qty: number
+			prc: number
+			splyAmt: number
+			dcRt?: number
+			dcAmt?: number
+			taxTyCd: string
+			taxblAmt: number
+			taxAmt: number
+			totAmt: number
+		}>
+		receipt: {
+			rcptPbctDt: string
+			prchrAcptcYn: "Y" | "N"
+			custTin?: string
+			custMblNo?: string
+			trdeNm?: string
+			adrs?: string
+			topMsg?: string
+			btmMsg?: string
+		}
+		totTaxblAmt: number
+		totTaxAmt: number
+		totAmt: number
+	}): Promise<string> {
+		return (await this.loadImpl()).createInvoice(this, input)
+	}
+
+	// Submit an invoice to KRA eTIMS (OSCU). Stores the eTIMS invoice number and QR code.
+	async submitInvoiceToETims(invoiceId: string): Promise<{
+		etimsInvoiceNo: string
+		confirmedAt: string
+		qrCode?: string
+	}> {
+		return (await this.loadImpl()).submitInvoiceToETims(this, this.env, invoiceId)
+	}
+
+	// Post an eTIMS invoice to Slack with rich Block Kit formatting.
+	async postEtimsInvoiceToSlack(input: {
+		orgId: string
+		invoiceId: string
+		channel?: string
+		threadTs?: string
+	}): Promise<{ ok: boolean; ts?: string; error?: string }> {
+		return (await this.loadImpl()).postEtimsInvoiceToSlack(this, this.env, input)
+	}
+
+	// List invoices for an org with optional status filter.
+	async listInvoices(input: {
+		orgId: string
+		status?: string
+		limit?: number
+		offset?: number
+	}): Promise<Array<{
+		id: string
+		orgId: string
+		customerTin: string | null
+		customerName: string | null
+		customerMobile: string | null
+		status: string
+		totTaxblAmt: number
+		totTaxAmt: number
+		totAmt: number
+		etimsInvoiceNo: string | null
+		etimsConfirmedAt: string | null
+		mpesaRef: string | null
+		mpesaAmount: string | null
+		mpesaReceivedAt: string | null
+		createdAt: number
+		updatedAt: number
+	}>> {
+		return (await this.loadImpl()).listInvoices(this, input)
+	}
+
+	// Match an incoming M-PESA transaction to an open invoice.
+	async matchMpesaToInvoice(input: {
+		orgId: string
+		ref: string
+		amount: string
+		counterparty: string | null
+		time: string
+		direction: string
+	}): Promise<{
+		matched: boolean
+		invoiceId: string | null
+		confidence: "exact" | "amount" | "none"
+		reason: string
+	}> {
+		return (await this.loadImpl()).matchMpesaToInvoice(this, input.orgId, {
+			ref: input.ref,
+			amount: input.amount,
+			counterparty: input.counterparty,
+			time: input.time,
+			direction: input.direction,
+		})
+	}
 }
