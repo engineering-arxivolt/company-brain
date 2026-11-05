@@ -1,0 +1,26 @@
+[Unit]
+Description=Company Brain render agent (anidoodle plates + Google Flow, on this VPS)
+After=network-online.target
+
+[Service]
+Type=simple
+# The repo checkout on the VPS: the agent runs scripts/render-agent.ts from here.
+WorkingDirectory=/home/ubuntu/company-brain
+Environment=WORKER_URL=https://company-brain.mindo-joseph-mj.workers.dev
+# The anidoodle project template that plate/title jobs are copied from.
+Environment=PROJECT_DIR=/home/ubuntu/art
+Environment=POLL_MS=5000
+# Explicit PATH matters: systemd's default has no node/bun here, and the agent
+# shells out to both ("Executable not found in $PATH: node" without this line).
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v24.21.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# TOKEN is the deployment encryption secret; keep it in a file only this user
+# can read (chmod 600), never in the unit.
+EnvironmentFile=/home/ubuntu/.render-agent.env
+ExecStart=/home/ubuntu/.nvm/versions/node/v24.21.0/bin/bun scripts/render-agent.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/ubuntu/render-agent.log
+StandardError=append:/home/ubuntu/render-agent.log
+
+[Install]
+WantedBy=default.target

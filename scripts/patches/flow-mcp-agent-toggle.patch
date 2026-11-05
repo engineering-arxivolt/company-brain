@@ -1,0 +1,20 @@
+diff --git a/src/flow.ts b/src/flow.ts
+index 1a8d4ac..821184c 100644
+--- a/src/flow.ts
++++ b/src/flow.ts
+@@ -775,8 +775,14 @@ export async function runGeneration(job: Job): Promise<string[]> {
+   const s = job.params;
+ 
+   await ensureProjectGrid(page);
++  // Google renames or hides this toggle between releases; when it is absent,
++  // agent mode is simply off and the plain composer is what we want anyway.
++  // A hard 30 s wait here used to fail every generation on such a release.
+   const agent = page.getByRole("button", { name: "Agent", exact: true });
+-  if ((await agent.getAttribute("aria-pressed")) === "true") await agent.click();
++  const agentPressed = await agent
++    .getAttribute("aria-pressed", { timeout: 2000 })
++    .catch(() => null);
++  if (agentPressed === "true") await agent.click({ timeout: 5000 }).catch(() => undefined);
+   const clear = page.getByRole("button", { name: "Clear prompt" });
+   if (await clear.isVisible().catch(() => false)) await clear.click();
+ 
