@@ -6,6 +6,13 @@
  * waits for the media, and prints the finished file paths as JSON so the
  * render agent can hand them back. Stills cost nothing in Flow; a clip spends
  * the account's own credits, capped by max_credits before anything is spent.
+ *
+ * The checkout at FLOW_MCP carries one local patch (src/flow.ts, in
+ * runGeneration): the Agent-mode toggle lookup at the top of every generation
+ * used to wait 30 s for a button Google's current UI no longer shows, which
+ * failed every job with a Playwright timeout. It now tolerates the button
+ * being absent. A `git pull` in that checkout can reintroduce the bug — reapply
+ * the guard, then `npm run build`.
  */
 const FLOW_MCP = process.env.FLOW_MCP_DIR ?? "/home/ubuntu/flow-mcp"
 const SDK = `${FLOW_MCP}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js`
