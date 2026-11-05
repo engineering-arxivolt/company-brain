@@ -81,6 +81,9 @@ packages; the sandbox already ships a LaTeX toolchain, so try compiling first). 
 with sandbox_get_artifact, and state the checks you actually ran. The house report and campaign
 pipelines stay the default for research reports and campaign packs — the latex pack is for formats the
 house renderer does not have.
+Writing discipline: never emit a whole long document in one tool call. Create the .tex with the
+preamble and the first section, then APPEND each following section as its own call, and only then run
+scripts/compile_latex.sh. A single giant write dies on output limits before the compile ever runs.
 
 ## Where the facts come from — the base CV
 A CV here is *tailored*, never invented. There is one base CV and every

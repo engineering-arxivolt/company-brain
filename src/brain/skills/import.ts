@@ -138,6 +138,7 @@ export const SKILL_PACKS: Record<string, SkillPack> = {
 			"- Scripts in scripts/: compile_latex.sh (engine auto-detect: pdflatex/xelatex/lualatex), latex_lint.sh, latex_package_check.sh, validate_latex.py, latex_diff.sh, latex_wordcount.sh, latex_analyze.sh, latex_citation_extract.sh, fetch_bibtex.sh (DOI to BibTeX), csv_to_latex.py, mail_merge.py (CSV/JSON batch), generate_chart.py (matplotlib), mermaid_to_image.sh, graphviz_to_pdf.sh, plantuml_to_pdf.sh, convert_document.sh (pandoc), pdf_merge.sh, pdf_optimize.sh, pdf_encrypt.sh, pdf_extract_pages.sh, pdf_to_images.sh, pdf_fill_form.py, pdf_fill_annotations.py, pdf_check_form.py, pdf_extract_fields.py, pdf_validate_boxes.py.",
 			"- Deep dives in references/: beamer-guide, poster-design-guide, cheatsheet-guide, bibliography-guide, charts-and-graphs, ieee-journal-twocolumn-guide, resume-ats-guide, debugging-guide, font-guide, packages, format-conversion, pdf-operations, long-form-best-practices, plus OCR profiles (profiles/math-notes, business-document, legal-document, general-notes) for pdf-to-LaTeX of scanned documents.",
 			"- Scaling guidance from the playbook: 1-10 pages single pass, 11-20 split per section, 21+ use its batch pipeline.",
+			"- Write long documents in SECTION CHUNKS: create the .tex with the preamble and first section, then append each further section as a separate call, then compile with scripts/compile_latex.sh. One giant write of the whole document dies on output limits before any compile.",
 		].join("\n"),
 	},
 	anidoodle: {
