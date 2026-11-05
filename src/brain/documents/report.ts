@@ -568,8 +568,8 @@ function clampText(value: unknown, max: number): string | undefined {
  * no shell quoting is involved; the data is read from JSON, never interpolated.
  * Fixed styling: one house look for every report.
  */
-export const CHART_SCRIPT = `
-import json
+export const CHART_SCRIPT = `import json
+import math
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -577,78 +577,76 @@ import matplotlib.pyplot as plt
 with open("charts.json") as fh:
     charts = json.load(fh)
 
-ACCENT = "#1B3A5C"
-ACCENT_LIGHT = "#C7D6E6"
-MUTED = "#58606C"
-INK = "#1E2228"
-PALETTE = ["#1B3A5C", "#5B7FA6", "#A9C0D8"]
+# Okabe-Ito colorblind-safe palette; one accent (blue) carries the story and
+# the rest recede. Direct labels carry values, so color is never the only
+# channel (Cleveland-McGill puts hue last for reading quantities).
+OI = {"orange": "#E69F00", "sky": "#56B4E9", "green": "#009E73", "blue": "#0072B2", "vermillion": "#D55E00", "purple": "#CC79A7"}
+ACCENT = OI["blue"]
+MUTED = "#595959"
+INK = "#1A1A1A"
 
 for i, c in enumerate(charts):
-    fig, ax = plt.subplots(figsize=(6.6, 3.4), dpi=200)
+    fig, ax = plt.subplots(figsize=(4.67, 2.9), dpi=200)
     labels = c["labels"]
     series = c["series"]
     kind = c["type"]
     if kind == "pie" and len(series) == 1:
         values = series[0]["values"]
-        # Donut with the total in the hole: modern, and the number is the point.
-        wedges, _ = ax.pie(
-            values, labels=labels, startangle=90, counterclock=False,
-            colors=PALETTE + ["#D5DEE9"][:max(0, len(labels) - 3)],
-            wedgeprops={"width": 0.42, "edgecolor": "white", "linewidth": 1.5},
-        )
         total = sum(values)
-        ax.text(0, 0, f"{total:,.0f}".rstrip("0").rstrip("."),
-                ha="center", va="center", fontsize=15, fontweight="bold", color=ACCENT)
+        wedges, _ = ax.pie(values, startangle=90, counterclock=False,
+            colors=[OI["blue"], OI["orange"], OI["green"], OI["vermillion"], OI["sky"], OI["purple"]],
+            wedgeprops={"width": 0.42, "edgecolor": "white", "linewidth": 1.5})
+        # Direct labels: category and share beside each slice, so the reader
+        # never has to match a color to a legend.
+        for w, label, value in zip(wedges, labels, values):
+            angle = (w.theta2 + w.theta1) / 2
+            x = 1.14 * math.cos(math.radians(angle))
+            y = 1.14 * math.sin(math.radians(angle))
+            share = 100 * value / total if total else 0
+            ax.text(x, y, label + " " + f"{share:.0f}%", ha="center", va="center", fontsize=8, color=INK)
+        ax.text(0, 0, f"{total:,.0f}".rstrip("0").rstrip("."), ha="center", va="center", fontsize=14, fontweight="bold", color=ACCENT)
         ax.axis("equal")
     elif kind == "line":
         for j, s in enumerate(series):
-            color = PALETTE[j % len(PALETTE)]
-            ax.plot(labels, s["values"], marker="o", linewidth=2.2,
-                    color=color, label=s.get("name"), markersize=4.5,
-                    markerfacecolor="white", markeredgewidth=1.8, zorder=3)
-            # Label the final point: where the story ends.
+            color = ACCENT if j == 0 else MUTED
+            style = "-" if j == 0 else ("--", "-.", ":")[j % 3]
+            marker = ["o", "s", "^", "D"][j % 4]
+            ax.plot(labels, s["values"], linestyle=style, marker=marker,
+                    linewidth=2.2 if j == 0 else 1.6, color=color, markersize=4.5,
+                    markerfacecolor="white", markeredgewidth=1.6, zorder=3)
+            # Direct labels: series name and end value at the line's end, no
+            # legend shuttle.
+            ax.annotate(s.get("name") or "", xy=(len(labels) - 1, s["values"][-1]),
+                        xytext=(4, 7), textcoords="offset points", fontsize=8, color=color)
             ax.annotate(f"{s['values'][-1]:,.0f}".rstrip("0").rstrip("."),
-                        xy=(len(labels) - 1, s["values"][-1]),
-                        xytext=(4, 2), textcoords="offset points",
-                        fontsize=9, fontweight="bold", color=color)
-        ax.grid(axis="y", alpha=0.25, linestyle="--")
-        ax.set_ylim(bottom=0)
-        if len(series) > 1 or series[0].get("name"):
-            ax.legend(frameon=False, fontsize=8.5)
+                        xy=(len(labels) - 1, s["values"][-1]), xytext=(4, -9),
+                        textcoords="offset points", fontsize=8, fontweight="bold", color=color)
     else:
         count = len(series)
         width = 0.8 / count
         xs = range(len(labels))
-        all_values = [v for s in series for v in s["values"]]
-        top = max(all_values) if all_values else 0
         for j, s in enumerate(series):
             offsets = [x + (j - (count - 1) / 2) * width for x in xs]
-            # The best value gets the accent; the rest recede.
-            colors = [ACCENT if v == top else ACCENT_LIGHT for v in s["values"]]
-            bars = ax.bar(offsets, s["values"], width * 0.9, color=colors,
-                          zorder=3, label=s.get("name"))
-            ax.bar_label(bars, fmt="{:,.0f}".format, fontsize=8,
-                         padding=2, color=INK)
+            # First series carries the accent; the rest recede.
+            color = ACCENT if j == 0 else ("#9E9E9E" if j == 1 else OI["orange"] if j == 2 else MUTED)
+            bars = ax.bar(offsets, s["values"], width * 0.9, color=color, zorder=3, label=s.get("name"))
+            ax.bar_label(bars, fmt="{:,.0f}".format, fontsize=7.5, padding=2, color=INK)
         ax.set_xticks(list(xs))
-        ax.set_xticklabels(labels, fontsize=9, color=MUTED)
-        ax.grid(axis="y", alpha=0.25, linestyle="--", zorder=0)
-        ax.set_ylim(top=top * 1.16)
-        if count > 1 or series[0].get("name"):
-            ax.legend(frameon=False, fontsize=8.5)
-    ax.set_title(c.get("title", ""), fontsize=11.5, fontweight="bold",
-                 color=INK, loc="left", pad=10)
+        ax.set_xticklabels(labels, fontsize=8.5, color=MUTED)
+        # Bars start at zero; no decorative grid - the labels are the values.
+        ax.set_ylim(bottom=0)
+    ax.set_title(c.get("title", ""), fontsize=10.5, fontweight="bold", color=INK, loc="left", pad=10)
     if kind != "pie" and c.get("yLabel"):
-        ax.set_ylabel(c["yLabel"], fontsize=9, color=MUTED)
+        ax.set_ylabel(c["yLabel"], fontsize=8.5, color=MUTED)
     if kind != "pie":
-        ax.tick_params(left=False, bottom=False)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_visible(False)
-        ax.spines["bottom"].set_color("#D5DEE9")
+        ax.tick_params(left=False, bottom=False, labelsize=8)
+        for spine in ("top", "right", "left"):
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color("#B0B0B0")
+        ax.grid(False)
     fig.tight_layout()
     fig.savefig(f"chart-{i}.png")
-print(f"CHARTS {len(charts)}")
-`.trim()
+print(f"CHARTS {len(charts)}")`.trim()
 
 /**
  * Markdown to LaTeX, deterministically. Escape first, then restore the
@@ -671,6 +669,10 @@ export function markdownToLatex(markdown: string): string {
 		if (!link) return ""
 		return `\\href{${escapeUrl(link.url)}}{${escapeLatex(link.label)}}`
 	})
+	// Acronyms in small caps inside running text (typographic brief §2): a
+	// standalone run of 2-6 capitals. Runs after escaping and before bold and
+	// links are restored, so the only uppercase runs it can touch are prose.
+	text = text.replace(/\b[A-Z]{2,6}\b/g, (match) => `\\textsc{${match}}`)
 	// Inline markers on escaped text: **bold** then *italic*.
 	text = text.replace(/\*\*([^*]+)\*\*/g, "\\textbf{$1}")
 	text = text.replace(/\*([^*\n]+)\*/g, "\\emph{$1}")
@@ -737,22 +739,35 @@ export function renderReportTex(
 			// Numbered section head: accent number, ink title, hairline rule.
 			`\\sectionhead{${index + 1}}{${escapeLatex(section.heading)}}`,
 		)
-		body.push(markdownToLatex(section.prose))
+		// Old-style figures in running prose (fontspec path); tables, stat
+		// cards and charts keep lining figures outside this group.
+		body.push("{\\prosefigures " + markdownToLatex(section.prose) + "}")
 		if (section.table) {
 			// Data tables are first-class: columns and rows escaped cell by cell,
-			// so one stray character cannot break the compile.
+			// so one stray character cannot break the compile. Booktabs rules
+			// only (no vertical lines); numeric columns right-align.
 			const { columns, rows, title } = section.table
-			const head = columns.map((column) => `\\textbf{${escapeLatex(column)}}`).join(" & ")
-			const rule = " \\hline"
-			const lines = [
-				"\\par\\vspace{5pt}",
-				`{\\small\\noindent${escapeLatex(title)}}\\\\[2pt]`,
-				`\\begin{tabular}{|${columns.map(() => "l").join("|")}|}`,
-				`\\hline ${head} ${rule}`,
-				...rows.map((row) => `${row.map((cell) => escapeLatex(cell)).join(" & ")} ${rule}`),
-				"\\end{tabular}\\par\\vspace{6pt}",
-			]
-			body.push(lines.join("\n"))
+			const align = columns
+				.map((_column, colIndex) => {
+					const cells = rows.map((row) => (row[colIndex] ?? "").trim())
+					return cells.length > 0 && cells.every((cell) => /^[\d,.]+\s*%?$/.test(cell))
+						? "r"
+						: "l"
+					})
+					.join("")
+				const head = columns.map((column) => `\\textbf{${escapeLatex(column)}}`).join(" & ")
+				const lines = [
+					"\\par\\vspace{5pt}",
+					`{\\small\\noindent${escapeLatex(title)}}\\\\[2pt]`,
+					`\\begin{tabular}{@{}${align}@{}}`,
+					"\\rptoprule",
+					`${head} \\\\[1pt]`,
+					"\\rpmidrule",
+					...rows.map((row) => `${row.map((cell) => escapeLatex(cell)).join(" & ")} \\\\`),
+					"\\rpbottomrule",
+					"\\end{tabular}\\par\\vspace{6pt}",
+				]
+				body.push(lines.join("\n"))
 		}
 		if (section.chart) {
 			const number = chartIndex++
@@ -775,16 +790,51 @@ export function renderReportTex(
 		? `\\\\[5pt]{\\large\\mdseries {\\color{accentsoft}${escapeLatex(spec.subtitle)}}}`
 		: ""
 	return [
-		"\\documentclass[11pt,a4paper]{article}",
-		"\\usepackage[utf8]{inputenc}\\usepackage[T1]{fontenc}\\usepackage{lmodern}",
-		"\\usepackage[margin=2.2cm]{geometry}\\usepackage{graphicx}\\usepackage{xcolor}\\usepackage{hyperref}\\usepackage{fancyhdr}",
-		// One palette with the CV, so the two documents read as one system.
-		"\\definecolor{accent}{RGB}{27,58,92}",
-		"\\definecolor{accentsoft}{RGB}{199,214,230}",
-		"\\definecolor{softbg}{RGB}{238,243,248}",
-		"\\definecolor{ink}{RGB}{30,34,40}",
-		"\\definecolor{muted}{RGB}{88,96,108}",
-		"\\hypersetup{colorlinks=true,linkcolor=accent,urlcolor=accent}",
+		// Typography per the evidence brief (Designing Reports for the Reading
+		// Brain): KOMA 11pt, a 28pc measure (~66 characters), constant leading
+		// ~1.26x, microtype, one Okabe-Ito accent, booktabs tables.
+		"\\documentclass[11pt]{scrartcl}",
+		"\\usepackage{iftex}",
+		"\\ifPDFTeX",
+		"\\usepackage[T1]{fontenc}",
+		"\\usepackage[utf8]{inputenc}",
+		// TeX Gyre Pagella: a generous-x-height text face present in
+		// texlive-fonts-recommended. The Libertinus/fontspec path needs
+		// texlive-xetex, which the sandbox image does not carry yet.
+		"\\IfFileExists{tgpagella.sty}{\\usepackage{tgpagella}}{\\usepackage{lmodern}}",
+		"\\newcommand{\\prosefigures}{}",
+		"\\newcommand{\\tablefigures}{}",
+		"\\else",
+		"\\usepackage{fontspec}",
+		"\\IfFontExistsTF{Libertinus Serif}{\\setmainfont{Libertinus Serif}}{\\IfFontExistsTF{TeX Gyre Pagella}{\\setmainfont{TeX Gyre Pagella}}{}}",
+		// Old-style figures in running prose; tables, headings and stat cards
+		// keep lining figures (prose is wrapped in \prosefigures below).
+		"\\newcommand{\\prosefigures}{\\addfontfeatures{Numbers=OldStyle}}",
+		"\\newcommand{\\tablefigures}{\\addfontfeatures{Numbers=Lining}}",
+		"\\fi",
+		"\\usepackage{microtype}",
+		"\\usepackage[a4paper,textwidth=28pc]{geometry}",
+		"\\linespread{1.05}",
+		"\\usepackage{xcolor}",
+		"\\definecolor{OIorange}{HTML}{E69F00}",
+		"\\definecolor{OIsky}{HTML}{56B4E9}",
+		"\\definecolor{OIgreen}{HTML}{009E73}",
+		"\\definecolor{OIblue}{HTML}{0072B2}",
+		"\\definecolor{OIvermillion}{HTML}{D55E00}",
+		"\\definecolor{OIpurple}{HTML}{CC79A7}",
+		// One accent carries all emphasis; the neutrals are grays, so the
+		// document reads in grayscale by construction.
+		"\\definecolor{accent}{HTML}{0072B2}",
+		"\\definecolor{accentsoft}{HTML}{D6E4F0}",
+		"\\definecolor{softbg}{HTML}{F4F4F4}",
+		"\\definecolor{ink}{HTML}{1A1A1A}",
+		"\\definecolor{muted}{HTML}{595959}",
+		"\\IfFileExists{booktabs.sty}{\\usepackage{booktabs}}{}",
+		"\\IfFileExists{siunitx.sty}{\\usepackage{siunitx}}{}",
+		// No orphan or widow at page breaks.
+		"\\widowpenalty=10000",
+		"\\clubpenalty=10000",
+		"\\usepackage[hidelinks]{hyperref}",
 		"\\color{ink}",
 		"\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{5pt}",
 		"\\renewcommand{\\labelitemi}{{\\color{accent}\\small\\textbullet}}",

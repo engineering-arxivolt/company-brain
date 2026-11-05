@@ -84,9 +84,26 @@ export function buildReportCommands(chartCount: number, hasCover = false): strin
 	return steps.join("\n")
 }
 
-export const REPORT_VERIFY_SCRIPT = verifyPdfLines(REPORT_PDF, REPORT_PDF).join(
-	"\n",
-)
+// Typographic pre-flight from the evidence brief: the measure (characters
+// per line) must sit in the 45-75 fluent range, median over body lines.
+// Skipped silently when pdftotext is not installed in the sandbox.
+export const REPORT_MEASURE_CHECK = [
+	"command -v pdftotext >/dev/null 2>&1 || { echo 'measure check skipped (no pdftotext)'; exit 0; }",
+	"python3 <<'PYMEASURE'",
+	"import statistics, subprocess",
+	"out = subprocess.run(['pdftotext', 'report.pdf', '-'], capture_output=True, text=True).stdout",
+	"lines = [l for l in out.splitlines() if len(l.strip()) >= 20]",
+	"if lines:",
+	"    med = statistics.median(len(l) for l in lines)",
+	"    print(f'MEASURE median={med:.0f}')",
+	"    if not (45 <= med <= 75):",
+	"        raise SystemExit(f'measure out of range: {med:.0f} (target 45-75)')",
+	"PYMEASURE",
+	"command -v pdftotext >/dev/null 2>&1 || echo 'measure check skipped (no pdftotext)'",
+].join("\n")
+
+export const REPORT_VERIFY_SCRIPT =
+	verifyPdfLines(REPORT_PDF, REPORT_PDF).join("\n") + "\n" + REPORT_MEASURE_CHECK
 
 export const REPORT_NORMALIZE_SCRIPT = [
 	"set -e",
