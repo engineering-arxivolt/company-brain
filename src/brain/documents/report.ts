@@ -43,7 +43,10 @@ export type ReportSection = {
 
 /** Phrases that mean the model described a document instead of writing one. */
 const BANNED_PATTERNS: RegExp[] = [
-	/\b(this|the)\s+(report|document|itinerary|brief|pdf|proposal|plan)\s+(includes|contains|provides|covers|outlines|features)\b/i,
+	// "plan" is deliberately absent: a document about a 90-day action plan
+	// legitimately says "this plan outlines" — that is subject matter, not
+	// self-reference (caught live on the EUDR brief).
+	/\b(this|the)\s+(report|document|itinerary|brief|pdf)\s+(includes|contains|provides|covers|outlines|features)\b/i,
 	/\b(is|are)\s+not\s+available\b/i,
 	/\bto\s+be\s+(researched|added|determined later)\b/i,
 	/\b(will|would)\s+be\s+added\s+(later|upon request)\b/i,
@@ -254,6 +257,16 @@ export type ReportPlan = {
 	/** Claims that must appear verbatim; drawn from the request itself. */
 	facts: string[]
 	searchQueries: string[]
+	/**
+	 * Art direction, decided by the planner: whether the document deserves a
+	 * cover image and what it should depict. The pipeline resolves it from the
+	 * workspace hero or a fresh Flow render.
+	 */
+	art?: {
+		coverPrompt?: string
+		/** true = the existing workspace hero fits; skip a new render. */
+		reuseExistingHero?: boolean
+	}
 }
 
 export const MAX_REPORT_SECTIONS = 12
@@ -290,13 +303,14 @@ export const SPEC_SYSTEM = [
 export const PLAN_SYSTEM = [
 	"You plan a document before it is written. You receive a topic and the asker's instruction.",
 	"You reply with ONLY a JSON object, no markdown fences, matching this schema:",
-	'{"deliverable": string, "audience": string, "sections": [{"heading": string, "mustInclude": [string]}], "tables": [{"title": string, "columns": [string]}], "facts": [string], "searchQueries": [string]}',
+	'{"deliverable": string, "audience": string, "sections": [{"heading": string, "mustInclude": [string]}], "tables": [{"title": string, "columns": [string]}], "facts": [string], "searchQueries": [string], "art": {"coverPrompt": string, "reuseExistingHero": boolean}}',
 	"",
 	"Rules:",
 	"- sections: 4 to 8, the shape the finished document needs. mustInclude lists the concrete points each section must cover.",
 	"- tables: every data table the instruction calls for (costing table, day-by-day plan, comparison, schedule). Columns must be concrete, e.g. [\"Day\", \"Location\", \"Activity\", \"Cost (EUR)\"]. If the instruction asks for a plan, schedule or costing, that is a table.",
 	"- facts: short claims that MUST appear in the finished document verbatim, copied from the instruction — deadlines, dates, quantities, currencies the asker stated. Do not invent facts here.",
 	"- searchQueries: 2 to 4 web searches that would surface the data the tables need.",
+	"- art: you are the art director. A document a client will read deserves a cover image (reports, proposals, client briefs; skip it for internal memos). coverPrompt: ONE line describing the image for an image generator — subject, setting, light, style, and never any text in the image. Set reuseExistingHero=true only when a previously generated workspace image already fits this exact topic.",
 	"- Reply with the JSON and nothing else.",
 ].join("\n")
 
@@ -355,6 +369,17 @@ export function parseReportPlan(raw: string | null | undefined): ReportPlan | nu
 				return [{ title, columns }]
 			})
 		: []
+	let art: ReportPlan["art"]
+	if (typeof source.art === "object" && source.art !== null) {
+		const artSource = source.art as Record<string, unknown>
+		const coverPrompt = clampText(artSource.coverPrompt, 240)
+		if (coverPrompt) {
+			art = {
+				coverPrompt,
+				reuseExistingHero: artSource.reuseExistingHero === true,
+			}
+		}
+	}
 	return {
 		deliverable: clampText(source.deliverable, 60) ?? "",
 		audience: clampText(source.audience, 120) ?? "",
@@ -362,6 +387,7 @@ export function parseReportPlan(raw: string | null | undefined): ReportPlan | nu
 		tables,
 		facts: strings(source.facts, 200, 8),
 		searchQueries: strings(source.searchQueries, 160, 4),
+		...(art ? { art } : {}),
 	}
 }
 
@@ -700,7 +726,10 @@ function quoteBlock(text: string): string {
 }
 
 /** The full .tex for one report. Charts come in as chart-N.png. */
-export function renderReportTex(spec: ReportSpec): string {
+export function renderReportTex(
+	spec: ReportSpec,
+	opts: { coverImage?: boolean } = {},
+): string {
 	let chartIndex = 0
 	const body: string[] = []
 	spec.sections.forEach((section, index) => {
@@ -778,6 +807,13 @@ export function renderReportTex(spec: ReportSpec): string {
 		statCards
 			? `\\noindent${statCards}\\par\\vspace{4pt}`
 			: "",
+		...(opts.coverImage
+			? [
+					"\\par\\vspace{10pt}",
+					"\\noindent\\includegraphics[width=\\linewidth]{cover.jpg}",
+					"\\par\\vspace{12pt}",
+				]
+			: []),
 		...body,
 		"\\end{document}",
 	]

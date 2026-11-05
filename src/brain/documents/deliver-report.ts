@@ -17,6 +17,8 @@ import {
 export type DeliverReportArgs = {
 	client: SandboxClient
 	spec: ReportSpec
+	/** Base64 of a cover image; presence adds the cover to the render. */
+	coverBase64?: string
 	traceId: string
 	upload: (file: {
 		fileName: string
@@ -40,11 +42,21 @@ export type DeliverReportResult =
 const REPORT_PDF = "report.pdf"
 const REPORT_UPLOAD = "report.upload.pdf"
 
-export function buildReportFiles(spec: ReportSpec): Array<{
+export function buildReportFiles(
+	spec: ReportSpec,
+	coverBase64?: string,
+): Array<{
 	path: string
 	content: string
 }> {
-	const files = [{ path: "report.tex", content: renderReportTex(spec) }]
+	const files = [
+		{ path: "report.tex", content: renderReportTex(spec, { coverImage: Boolean(coverBase64) }) },
+	]
+	if (coverBase64) {
+		// Travels as text: the sandbox writeFile carries strings, and the build
+			// command decodes it into cover.jpg before the compile.
+		files.push({ path: "cover.b64", content: coverBase64 })
+	}
 	const charts = spec.sections
 		.map((section) => section.chart)
 		.filter((chart): chart is NonNullable<typeof chart> => Boolean(chart))
@@ -56,8 +68,13 @@ export function buildReportFiles(spec: ReportSpec): Array<{
 }
 
 /** Charts first (the .tex needs their PNGs), then the compile. */
-export function buildReportCommands(chartCount: number): string {
+export function buildReportCommands(chartCount: number, hasCover = false): string {
 	const steps = ["set -e"]
+	if (hasCover) {
+		steps.push(
+			'python3 -c "import base64; open(\'cover.jpg\', \'wb\').write(base64.b64decode(open(\'cover.b64\').read()))"',
+		)
+	}
 	if (chartCount > 0) steps.push("python3 charts.py")
 	// The argument is the SOURCE .tex — passing the .pdf name makes latexmk
 	// exit 11 with "Could not find file".
@@ -84,8 +101,9 @@ export const REPORT_UPLOAD_VERIFY_SCRIPT = verifyPdfLines(
 export async function deliverReport(
 	args: DeliverReportArgs,
 ): Promise<DeliverReportResult> {
-	const files = buildReportFiles(args.spec)
+	const files = buildReportFiles(args.spec, args.coverBase64)
 	const chartCount = files.filter((file) => file.path === "charts.json").length
+	const hasCover = Boolean(args.coverBase64)
 	// Wrap the sandbox RPC so a dead session names the step it died on.
 	const run = async (
 		step: string,
@@ -124,7 +142,7 @@ export async function deliverReport(
 		}
 		const built = await run(
 			"build",
-			buildReportCommands(chartCount),
+			buildReportCommands(chartCount, hasCover),
 			args.timeoutSec ?? 180,
 		)
 		if (built.exitCode !== 0) {

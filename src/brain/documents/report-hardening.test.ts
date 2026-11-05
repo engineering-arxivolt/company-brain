@@ -1,3 +1,4 @@
+import { buildReportCommands, buildReportFiles } from "./deliver-report"
 import { describe, expect, it } from "vitest"
 import { expectedFactsFromInstruction, validateReportSpec } from "./report"
 
@@ -137,5 +138,30 @@ describe("expectedFactsFromInstruction", () => {
 		expect(facts).toContain("2026")
 		expect(facts).toContain("2027")
 		expect(facts).toContain("EUR")
+	})
+})
+describe("report cover art", () => {
+	const spec = {
+		title: "EUDR Compliance for Kenyan Coffee Exporters",
+		sections: [{ heading: "Overview", prose: "Real prose with actual content, long enough to be substantive." }],
+	}
+
+	it("writes the cover b64 and a decode step when a cover is provided", () => {
+		const files = buildReportFiles(spec, "AAAA")
+		expect(files.map((f) => f.path)).toContain("cover.b64")
+		const tex = files.find((f) => f.path === "report.tex")?.content ?? ""
+		expect(tex).toContain("cover.jpg")
+		const commands = buildReportCommands(0, true)
+		expect(commands).toContain("cover.b64")
+		expect(commands).toContain("cover.jpg")
+	})
+
+	it("adds nothing when there is no cover", () => {
+		const files = buildReportFiles(spec)
+		expect(files.map((f) => f.path)).not.toContain("cover.b64")
+		const tex = files.find((f) => f.path === "report.tex")?.content ?? ""
+		expect(tex).not.toContain("cover.jpg")
+		const commands = buildReportCommands(0, false)
+		expect(commands).not.toContain("cover.b64")
 	})
 })

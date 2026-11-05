@@ -1215,9 +1215,17 @@ export async function computeTurn(
 			/\b(make|create|generate|render|draw|produce|paint|shoot|show|give|design|redo|remake)\b/i
 		const characterTalk =
 			/\b(same|the|that|this|my|our)\s+(character|person|face|girl|boy|man|woman|guy|lady|model|mascot)\b|\b(her|him|she|he|them|they)\b/i
+		// A document request that mentions an image ("give it a cover image")
+		// is art direction for that document, not a standalone picture ask —
+		// otherwise the whole brief becomes one Flow image and the document
+		// never gets planned.
+		const wantsDocumentNotPicture =
+			/\b(report|brief|pdf|document|proposal)\b/i.test(questionText) &&
+			/\b(cover|illustration|diagram|chart|imagery|art direction)\b/i.test(questionText)
 		const wantsFlow =
 			!/\bdoodle\b/i.test(questionText) &&
 			!/\bcampaign pack\b/i.test(questionText) &&
+			!wantsDocumentNotPicture &&
 			!/\bimage prompts?\b|\bflow kit\b/i.test(questionText) &&
 			((/\bflow\b/i.test(questionText) && /\b(still|image|clip|video)\b/i.test(questionText)) ||
 				(creativeVerb.test(questionText) && pictureNoun.test(questionText)) ||
@@ -1536,9 +1544,54 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 						`[company-brain][${traceId}] report failed validation after repair, leaving the report to the model`,
 					)
 				} else {
+				// Phase 5 — art direction resolved: Jev planned a cover, so reuse the
+				// workspace hero or render a themed one in Flow first (the agent
+				// completes image jobs in about a minute; /render/complete stores
+				// the bytes as the workspace hero, from which the cover is read).
+				let coverBase64: string | undefined
+				if (plan?.art?.coverPrompt) {
+					if (plan.art.reuseExistingHero) {
+						coverBase64 = (await env.BRAIN_KV.get(`render:hero:${org.id}`)) ?? undefined
+					} else {
+						const artJob = {
+							id: crypto.randomUUID(),
+							kind: "flow" as const,
+							title: `cover image for "${spec.title}": ${plan.art.coverPrompt}`,
+							format: "16x9",
+							flow: { type: "image" as const, aspect: "16:9" },
+							channel: slackLookup.channel,
+							threadTs: slackLookup.threadTs,
+							orgId: org.id,
+							requestedBy: actor.userId,
+							status: "pending" as const,
+							createdAt: Date.now(),
+							attempts: 0,
+						}
+						await env.BRAIN_KV.put(`render:job:${artJob.id}`, JSON.stringify(artJob), {
+							expirationTtl: 60 * 60 * 24,
+						})
+						console.log(
+							`[company-brain][${traceId}] report cover queued in Flow job=${artJob.id} prompt="${plan.art.coverPrompt.slice(0, 80)}"`,
+						)
+						// Wait for the agent: image jobs finish in about a minute.
+						for (let waited = 0; waited < 180_000; waited += 10_000) {
+							await new Promise((resolve) => setTimeout(resolve, 10_000))
+							const jobRaw = await env.BRAIN_KV.get(`render:job:${artJob.id}`)
+							const status = jobRaw ? (JSON.parse(jobRaw) as { status?: string }).status : ""
+							if (status === "done" || status === "failed") break
+						}
+						coverBase64 = (await env.BRAIN_KV.get(`render:hero:${org.id}`)) ?? undefined
+						if (!coverBase64) {
+							console.warn(
+								`[company-brain][${traceId}] report cover unavailable, building without imagery`,
+							)
+						}
+					}
+				}
 				const upload = await deliverReport({
 					client: createSandboxClient(env),
 					spec,
+					coverBase64,
 					traceId,
 					upload: async (file) => {
 						const result = await uploadSlackFile(slackLookup.botToken, {
