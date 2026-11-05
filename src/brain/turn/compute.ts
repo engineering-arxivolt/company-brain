@@ -98,6 +98,7 @@ import {
 	requestTailoringPlanChecked,
 	withTimeout,
 } from "../career/tailor"
+import { contextSearch, hasContextWeb } from "@/lib/context-dev"
 import { parseCareerProfile } from "../career/profile"
 import {
 	parseReportSpec,
@@ -154,6 +155,28 @@ export async function gatherResearchNotes(
 	const seen = new Set<string>()
 	for (const queryText of queries) {
 		const searches: Array<{ name: string; run: () => Promise<DirectHit[]> }> = [
+			// context.dev first when its key is set: the operator's instruction
+			// ("For search use context.dev") made this the preferred provider,
+			// and the keyed tier does not share a rate limit with every other
+			// Worker on the internet the way the keyless path does.
+			...(hasContextWeb(env)
+				? [
+						{
+							name: "context.dev",
+							run: async () => {
+								const response = await contextSearch(env, {
+									query: queryText,
+									timeoutMS: 15_000,
+								})
+								return response.results.map((result) => ({
+									title: result.title,
+									url: result.url,
+									description: result.description,
+								}))
+							},
+						},
+					]
+				: []),
 			{
 				name: "firecrawl",
 				run: () =>
