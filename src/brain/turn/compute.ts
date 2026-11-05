@@ -101,7 +101,9 @@ import {
 import { parseCareerProfile } from "../career/profile"
 import {
 	parseReportSpec,
+	requestReportPlan,
 	requestReportSpec,
+	validateReportSpec,
 } from "../documents/report"
 import { deliverReport, renderReportDeliveryContext } from "../documents/deliver-report"
 import {
@@ -134,6 +136,7 @@ import { postSlackMessage, uploadSlackFile } from "../slack/client"
 export async function gatherResearchNotes(
 	env: Env,
 	topic: string,
+	extraQueries: string[] = [],
 ): Promise<string> {
 	const cleaned = topic
 		.replace(
@@ -145,6 +148,7 @@ export async function gatherResearchNotes(
 	const queries = [
 		cleaned.slice(0, 180),
 		`${cleaned.slice(0, 150)} statistics 2025 2026`,
+		...extraQueries.slice(0, 4),
 	]
 	const hits: Array<{ title: string; url: string; description: string }> = []
 	const seen = new Set<string>()
@@ -1447,7 +1451,13 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 			(/\bresearch\b/i.test(questionText) &&
 				/\b(report|pdf|paper|brief)\b/i.test(questionText)) ||
 			/\bdeep[- ]dive\b/i.test(questionText) ||
-			/\bpdf report\b/i.test(questionText)
+			/\bpdf report\b/i.test(questionText) ||
+			// An itinerary, schedule or proposal as a PDF is a document job too:
+			// "produce a 3-day itinerary PDF" used to slip past this gate and be
+			// answered by the model raw.
+			(/\bpdf\b/i.test(questionText) &&
+				/\b(itinerary|schedule|proposal|plan|brief)\b/i.test(questionText) &&
+				/\b(make|create|produce|generate|draft|write|research)\b/i.test(questionText))
 		let reportDelivery: {
 			title: string
 			fileName: string
@@ -1459,21 +1469,71 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 			console.log(
 				`[company-brain][${traceId}] research report pipeline engaged topic="${questionText.slice(0, 120)}"`,
 			)
+			// The gate must hold even when the pipeline fails: the sandbox family
+			// is locked for the rest of the turn (a playbook naming sandbox_*
+			// tools can no longer unlock it), so the model cannot hand-build an
+			// unvalidated report.pdf and deliver the exact document this
+			// pipeline exists to prevent.
+			toolDiscovery.lock(["sandbox"])
+			for (const name of Object.keys(tools)) {
+				if (name.startsWith("sandbox_")) delete tools[name]
+			}
 			try {
-				const notes = await gatherResearchNotes(env, questionText)
-				const planText = await withTimeout(
-					requestReportSpec(env.AI, {
-						topic: questionText,
-						instruction: questionText,
-						notes,
-					}, traceId),
-					60_000,
+				// Phase 1 — plan: what must the document contain? Code validates the
+				// plan, so the draft later has a concrete contract to fail against.
+				const plan = await withTimeout(
+					requestReportPlan(env.AI, { topic: questionText, instruction: questionText }, traceId),
+					45_000,
 					() => null,
 				)
-				const spec = parseReportSpec(planText)
+				if (plan) {
+					console.log(
+						`[company-brain][${traceId}] report plan: sections=${plan.sections.length} tables=${plan.tables.length} facts=${plan.facts.length} queries=${plan.searchQueries.length}`,
+					)
+				}
+				// Phase 2 — research, pointed at the plan's data needs.
+				const notes = await gatherResearchNotes(
+					env,
+					questionText,
+					plan ? plan.searchQueries : [],
+				)
+				// Phase 3+4 — draft, validate against the plan by code, repair once.
+				let spec: ReturnType<typeof parseReportSpec> = null
+				let failures: string[] = []
+				for (let attempt = 1; attempt <= 2; attempt += 1) {
+					const planText = await withTimeout(
+						requestReportSpec(
+							env.AI,
+							{
+								topic: questionText,
+								instruction: questionText,
+								notes,
+								plan,
+								failures: attempt > 1 ? failures : undefined,
+							},
+							traceId,
+						),
+						60_000,
+						() => null,
+					)
+					const draft = parseReportSpec(planText)
+					if (!draft) {
+						failures = ["the reply was not a valid document spec"]
+						continue
+					}
+					const verdict = validateReportSpec(draft, plan, questionText)
+					if (verdict.ok) {
+						spec = draft
+						break
+					}
+					failures = verdict.failures
+					console.warn(
+						`[company-brain][${traceId}] report validation failed (attempt ${attempt}): ${failures.join(" | ")}`,
+					)
+				}
 				if (!spec) {
 					console.warn(
-						`[company-brain][${traceId}] report spec unavailable, leaving the report to the model`,
+						`[company-brain][${traceId}] report failed validation after repair, leaving the report to the model`,
 					)
 				} else {
 				const upload = await deliverReport({

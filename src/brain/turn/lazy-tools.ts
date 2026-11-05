@@ -14,6 +14,12 @@ export type LazyToolState = {
 	enabledFamilies: () => LazyToolFamily[]
 	availableFamilies: () => LazyToolFamily[]
 	isEnabled: (family: LazyToolFamily) => boolean
+	/**
+	 * Forbid a family for the rest of the turn, even if a playbook names its
+	 * tools. The deterministic pipelines use this so a fallback model cannot
+	 * hand-build the exact artifact the pipeline just refused to deliver.
+	 */
+	lock: (families: LazyToolFamily[]) => void
 }
 
 /**
@@ -51,10 +57,20 @@ export function createLazyToolState(
 			(family) => (toolsByFamily.get(family)?.length ?? 0) > 0,
 		),
 	)
+	const locked = new Set<LazyToolFamily>()
 
 	return {
+		lock(families) {
+			for (const family of families) {
+				locked.add(family)
+				enabled.delete(family)
+			}
+		},
 		unlock(families) {
 			return [...new Set(families)].map((family) => {
+				if (locked.has(family)) {
+					return { family, status: "unavailable" as const, tools: [] }
+				}
 				const names = toolsByFamily.get(family) ?? []
 				if (!names.length) {
 					return { family, status: "unavailable" as const, tools: [] }
