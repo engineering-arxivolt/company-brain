@@ -25,6 +25,8 @@ type Args = {
 	duration?: number
 	maxCredits?: number
 	project: string
+	/** Absolute paths on this machine; Flow follows up to three. */
+	references?: string[]
 }
 
 const raw = process.argv[2] ?? "{}"
@@ -55,11 +57,27 @@ const call = async (name: string, payload: Record<string, unknown>) => {
 }
 
 try {
-	// Stills go through Flow's Agent mode (flow_agent_images), which takes plain
-	// prompts and costs nothing; clips go through flow_generate, where the
-	// credit cap applies. They are different tools with different shapes.
-	const generated =
-		args.type === "image"
+	// Stills normally go through Flow's Agent mode (flow_agent_images), which
+	// takes plain prompts and costs nothing; clips go through flow_generate,
+	// where the credit cap applies. With references the composer is the right
+	// tool for both: it takes up to three absolute paths and follows them
+	// closely, where agent mode only attaches them loosely to a whole batch.
+	const refs = args.references ?? []
+	const generated = refs.length
+		? await call("flow_generate", {
+				project: args.project,
+				scenes: [
+					{
+						prompt: args.prompt,
+						type: args.type,
+						reference_images: refs.slice(0, 3),
+						...(args.aspect ? { aspect_ratio: args.aspect } : {}),
+						...(args.duration ? { duration: args.duration } : {}),
+						max_credits: args.maxCredits ?? 12,
+					},
+				],
+			})
+		: args.type === "image"
 			? await call("flow_agent_images", {
 					project: args.project,
 					scenes: [args.prompt],

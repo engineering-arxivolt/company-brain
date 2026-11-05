@@ -72,6 +72,23 @@ async function render(job: RenderJob): Promise<{ file: string; note?: string }> 
 	// Flow jobs are not anidoodle plates: they drive Google Flow through
 	// flow-mcp on this machine, and the file lands in ~/flow-mcp-out/<project>.
 	if (job.kind === "flow") {
+		// References arrive as base64 in the job; Flow wants absolute paths on
+		// this machine, so each one is written beside the job before the call.
+		const refDir = await mkdtemp(join(tmpdir(), `flowref-${job.id.slice(0, 8)}-`))
+		const referencePaths: string[] = []
+		for (const [index, reference] of (job.references ?? []).entries()) {
+			const ext =
+				reference.mime === "image/png"
+					? ".png"
+					: reference.mime === "image/webp"
+						? ".webp"
+						: reference.mime === "image/gif"
+							? ".gif"
+							: ".jpg"
+			const path = join(refDir, `${reference.name || `ref-${index + 1}`}${ext}`)
+			await writeFile(path, Buffer.from(reference.base64, "base64"))
+			referencePaths.push(path)
+		}
 		const payload = {
 			prompt: job.title,
 			type: job.flow?.type ?? "image",
@@ -79,6 +96,7 @@ async function render(job: RenderJob): Promise<{ file: string; note?: string }> 
 			...(job.flow?.duration ? { duration: job.flow.duration } : {}),
 			maxCredits: job.flow?.maxCredits ?? 12,
 			project: `brain-${job.id.slice(0, 8)}`,
+			...(referencePaths.length ? { references: referencePaths } : {}),
 		}
 		const result = await run(
 			BUN,

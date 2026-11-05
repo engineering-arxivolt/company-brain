@@ -1193,11 +1193,20 @@ export async function computeTurn(
 		// signed-in browser on the VPS — so this queues a job the same way a
 		// doodle is queued. Stills are free; a clip spends credits and the job
 		// carries its own ceiling.
+		//
+		// Pictures already in the thread travel with the job: "make a still like
+		// this" is the whole point of having references, so a message that
+		// carries an image and asks for art does not need the word "flow".
+		const threadImages = attachmentParts
+			.filter((part): part is Extract<typeof part, { type: "image" }> => part.type === "image")
+			.slice(0, 3)
 		const wantsFlow =
-			/\bflow\b/i.test(questionText) &&
-			/\b(still|image|clip|video)\b/i.test(questionText) &&
 			!/\bdoodle\b/i.test(questionText) &&
-			!/\bcampaign pack\b/i.test(questionText)
+			!/\bcampaign pack\b/i.test(questionText) &&
+			((/\bflow\b/i.test(questionText) &&
+				/\b(still|image|clip|video)\b/i.test(questionText)) ||
+				(threadImages.length > 0 &&
+					/\b(still|image|clip|video|version|variant|art)\b/i.test(questionText)))
 		if (wantsFlow && slackLookup && !scheduledRun) {
 			const wantsClip = /\b(clip|video)\b/i.test(questionText)
 			const subject = questionText
@@ -1206,8 +1215,33 @@ export async function computeTurn(
 				.replace(/\b(using\s+)?flow(\s*mcp)?\b/gi, " ")
 				.replace(/\b(a|an|the)\s+(still|image|clip|video)\b/gi, " ")
 				.replace(/\b(still|image|clip|video)\s+(of|for|about)\b/gi, " ")
+				.replace(/\b(like|based\s+on|using|from)\s+(this|these|that|the\s+attached)\b/gi, " ")
+				.replace(/\b(the\s+)?attached\s+(image|picture|photo)s?\b/gi, " ")
 				.replace(/\s+/g, " ")
 				.trim()
+			// The images are already decoded in this turn, so the job carries
+			// their bytes; the agent turns them into files Flow can read. A
+			// reference too large to sit in a KV value is dropped rather than
+			// failing the whole job.
+			const references: Array<{ name: string; mime: string; base64: string }> = []
+			for (const [index, part] of threadImages.entries()) {
+				const data =
+					part.image instanceof Uint8Array
+						? part.image
+						: part.image instanceof URL
+							? null
+							: null
+				if (!data || data.byteLength > 4 * 1024 * 1024) continue
+				let binary = ""
+				for (let offset = 0; offset < data.length; offset += 8192) {
+					binary += String.fromCharCode(...data.subarray(offset, offset + 8192))
+				}
+				references.push({
+					name: `ref-${index + 1}`,
+					mime: part.mediaType || "image/jpeg",
+					base64: btoa(binary),
+				})
+			}
 			const job = {
 				id: crypto.randomUUID(),
 				kind: "flow" as const,
@@ -1222,6 +1256,7 @@ export async function computeTurn(
 							: "1:1",
 					...(wantsClip ? { duration: 4, maxCredits: 12 } : {}),
 				},
+				...(references.length ? { references } : {}),
 				channel: slackLookup.channel,
 				threadTs: slackLookup.threadTs,
 				orgId: org.id,
@@ -1240,8 +1275,8 @@ export async function computeTurn(
 				slackLookup.botToken,
 				slackLookup.channel,
 				wantsClip
-					? `:movie_camera: Rendering a 4s clip in Flow now (~7 credits, capped at 12) — it lands here in a couple of minutes.`
-					: ":art: Rendering a still in Flow now (stills are free) — it lands here in about a minute.",
+					? `:movie_camera: Rendering a 4s clip in Flow now${references.length ? ` from ${references.length} reference image${references.length === 1 ? "" : "s"}` : ""} (~7 credits, capped at 12) — it lands here in a couple of minutes.`
+					: `:art: Rendering a still in Flow now${references.length ? ` from ${references.length} reference image${references.length === 1 ? "" : "s"}` : ""} (stills are free) — it lands here in about a minute.`,
 				slackLookup.threadTs,
 			).catch(() => undefined)
 			// The job is the answer: the agent renders and the Worker posts the

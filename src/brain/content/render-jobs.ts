@@ -30,6 +30,13 @@ export type RenderJob = {
 		/** Credit ceiling for a clip; images cost nothing. */
 		maxCredits?: number
 	}
+	/**
+	 * Pictures from the Slack thread that Flow should treat as references: a
+	 * product shot, a mascot, a previous render. The Worker carries the bytes
+	 * because the agent cannot read Slack; the agent writes them to disk and
+	 * hands Flow absolute paths.
+	 */
+	references?: Array<{ name: string; mime: string; base64: string }>
 	/** 1x1, 9x16, 16x9 or WxH, as anidoodle understands shapes. */
 	format: string
 	/** Extra time on the canvas for loops; stills ignore it. */

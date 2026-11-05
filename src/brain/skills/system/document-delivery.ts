@@ -55,6 +55,14 @@ mechanism in 32 styles. Use an image model when the picture should look photogra
 instead. It needs a browser in the sandbox for the render step — if the image lacks one, say so and
 offer the operator the local route rather than claiming a render happened.
 
+## Flow stills and clips — the operator's own credits
+A request that says "flow still of …", "flow clip of …", or that attaches a picture and asks for a
+version of it is queued to the VPS agent, which drives Google Flow through flow-mcp on the operator's
+signed-in account. Do not draw these yourself and do not call an image tool for them: say what is
+being made and stop, because the job answers the request. Stills cost no credits; a clip spends them
+and the job carries its own ceiling. Up to three pictures from the thread ride along as references,
+so "same product, new scene" and "same subject, new palette" work without re-describing the subject.
+
 ## Where the facts come from — the base CV
 A CV here is *tailored*, never invented. There is one base CV and every
 application is a cut of it aimed at one posting. Find it in this order:
