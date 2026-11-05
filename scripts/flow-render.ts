@@ -14,6 +14,9 @@
  * being absent. A `git pull` in that checkout can reintroduce the bug — reapply
  * the guard, then `npm run build`.
  */
+import { createHash } from "node:crypto"
+import { readFileSync } from "node:fs"
+
 const FLOW_MCP = process.env.FLOW_MCP_DIR ?? "/home/ubuntu/flow-mcp"
 const SDK = `${FLOW_MCP}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js`
 const STDIO = `${FLOW_MCP}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js`
@@ -59,18 +62,61 @@ const call = async (name: string, payload: Record<string, unknown>) => {
 try {
 	// Stills normally go through Flow's Agent mode (flow_agent_images), which
 	// takes plain prompts and costs nothing; clips go through flow_generate,
-	// where the credit cap applies. With references the composer is the right
-	// tool for both: it takes up to three absolute paths and follows them
-	// closely, where agent mode only attaches them loosely to a whole batch.
+	// where the credit cap applies. A reference picture changes the plan: Flow
+	// has a character feature built for identity, so the picture is turned into
+	// a named character first and every scene then refers to that character
+	// instead of a loose image. A raw reference is only a hint; a character is
+	// the same face and outfit again — which is the point of sending one.
 	const refs = args.references ?? []
-	const generated = refs.length
+	let characterAsset: string | null = null
+	let characterNote = ""
+	if (refs.length) {
+		// The name comes from the picture's bytes, so the same picture maps to
+		// the same character every time and later jobs reuse it rather than
+		// building another lookalike.
+		const characterName = `hero-${createHash("sha256")
+			.update(readFileSync(refs[0] as string))
+			.digest("hex")
+			.slice(0, 8)}`
+		const existing = await call("flow_characters", {})
+		if (!existing.isError && existing.text.includes(characterName)) {
+			characterAsset = `asset:${characterName}`
+			characterNote = `reused character ${characterName}`
+		} else {
+			const made = await call("flow_character", {
+				name: characterName,
+				image: refs[0],
+			})
+			if (!made.isError) {
+				characterAsset = `asset:${characterName}`
+				characterNote = `built character ${characterName}`
+			} else {
+				// Character building is free but not infallible; a plain
+				// reference is still better than nothing, and the log says so.
+				console.error(
+					`flow-render: character build failed, using the raw reference: ${made.text.slice(0, 200)}`,
+				)
+				characterNote = "raw reference (character build failed)"
+			}
+		}
+	}
+	const referenceList = characterAsset
+		? [characterAsset, ...refs.slice(1, 3)]
+		: refs.slice(0, 3)
+	// Naming the character in the prompt is what makes the identity stick; Flow
+	// reads the scene text and the attached character together.
+	const prompt = characterAsset
+		? `The character ${characterAsset.slice("asset:".length)} appears exactly as in the reference picture — same face, hair, skin tone, build and clothing. Scene: ${args.prompt}`
+		: args.prompt
+	if (characterNote) console.error(`flow-render: ${characterNote}`)
+	const generated = referenceList.length
 		? await call("flow_generate", {
 				project: args.project,
 				scenes: [
 					{
-						prompt: args.prompt,
+						prompt,
 						type: args.type,
-						reference_images: refs.slice(0, 3),
+						reference_images: referenceList,
 						...(args.aspect ? { aspect_ratio: args.aspect } : {}),
 						...(args.duration ? { duration: args.duration } : {}),
 						max_credits: args.maxCredits ?? 12,

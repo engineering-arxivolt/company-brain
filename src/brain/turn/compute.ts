@@ -1209,21 +1209,32 @@ export async function computeTurn(
 					/\b(still|image|clip|video|version|variant|art)\b/i.test(questionText)))
 		if (wantsFlow && slackLookup && !scheduledRun) {
 			const wantsClip = /\b(clip|video)\b/i.test(questionText)
+			// Strip the command, keep the sentence. Shredding every "image",
+			// "like" and "this" used to leave fragments such as "as reference of
+			// them drinking from the cup", which reads as a whole new scene and
+			// loses the request entirely.
 			const subject = questionText
 				.replace(/\bplease\b/gi, " ")
-				.replace(/\b(make|create|generate|render|produce)\b/gi, " ")
-				.replace(/\b(using\s+)?flow(\s*mcp)?\b/gi, " ")
-				.replace(/\b(a|an|the)\s+(still|image|clip|video)\b/gi, " ")
-				.replace(/\b(still|image|clip|video)\s+(of|for|about)\b/gi, " ")
-				.replace(/\b(like|based\s+on|using|from)\s+(this|these|that|the\s+attached)\b/gi, " ")
-				.replace(/\b(the\s+)?attached\s+(image|picture|photo)s?\b/gi, " ")
+				.replace(/^\s*(can|could)\s+you\s+/i, "")
+				.replace(/^\s*(make|create|generate|render|produce|draw)\s+(me\s+)?/i, "")
+				.replace(/^\s*(a|an|the)\s+/i, "")
+				.replace(/^\s*(using|with|in)\s+flow(\s*mcp)?\s*[,:-]?\s*/i, "")
+				.replace(/^\s*flow(\s*mcp)?\s*[,:-]?\s*/i, "")
+				.replace(/^\s*(a|an|the)\s+(still|image|clip|video)\s+(of|for|about)?\s*/i, "")
+				.replace(/^\s*(still|image|clip|video)\s+(of|for|about)\s*/i, "")
+				.replace(/\b(the\s+)?attached\s+(image|picture|photo|reference)s?\b/gi, " ")
+				.replace(/\b(use|using|keep)\s+(them|these|this|it)\s+as\s+(a\s+)?references?\b/gi, " ")
+				.replace(/\bas\s+(a\s+)?references?\s+(of|for|to)\b/gi, " ")
 				.replace(/\s+/g, " ")
 				.trim()
+			const scenePrompt = (subject || questionText).slice(0, 300)
 			// The images are already decoded in this turn, so the job carries
 			// their bytes; the agent turns them into files Flow can read. A
 			// reference too large to sit in a KV value is dropped rather than
 			// failing the whole job.
+			const REFERENCES_MAX_BYTES = 8 * 1024 * 1024
 			const references: Array<{ name: string; mime: string; base64: string }> = []
+			let droppedReferences = 0
 			for (const [index, part] of threadImages.entries()) {
 				const data =
 					part.image instanceof Uint8Array
@@ -1231,7 +1242,10 @@ export async function computeTurn(
 						: part.image instanceof URL
 							? null
 							: null
-				if (!data || data.byteLength > 4 * 1024 * 1024) continue
+				if (!data || data.byteLength > REFERENCES_MAX_BYTES) {
+					droppedReferences += 1
+					continue
+				}
 				let binary = ""
 				for (let offset = 0; offset < data.length; offset += 8192) {
 					binary += String.fromCharCode(...data.subarray(offset, offset + 8192))
@@ -1245,7 +1259,7 @@ export async function computeTurn(
 			const job = {
 				id: crypto.randomUUID(),
 				kind: "flow" as const,
-				title: (subject || questionText).slice(0, 300),
+				title: scenePrompt,
 				format: "1x1",
 				flow: {
 					type: wantsClip ? ("video" as const) : ("image" as const),
@@ -1269,14 +1283,23 @@ export async function computeTurn(
 				expirationTtl: 60 * 60 * 24,
 			})
 			console.log(
-				`[company-brain][${traceId}] flow job queued id=${job.id} type=${job.flow.type}`,
+				`[company-brain][${traceId}] flow job queued id=${job.id} type=${job.flow.type} refs=${references.length} dropped=${droppedReferences}`,
 			)
+			// Say plainly when a picture was left behind: silently making a
+			// "reference" image with no reference is how consistency breaks.
+			const refsNote = references.length
+				? ` from ${references.length} reference image${references.length === 1 ? "" : "s"}`
+				: ""
+			const droppedNote = droppedReferences
+				? ` ${droppedReferences} attached image${droppedReferences === 1 ? " was" : "s were"} too large (over 8 MB) and could not be used as a reference.`
+				: ""
 			await postSlackMessage(
 				slackLookup.botToken,
 				slackLookup.channel,
-				wantsClip
-					? `:movie_camera: Rendering a 4s clip in Flow now${references.length ? ` from ${references.length} reference image${references.length === 1 ? "" : "s"}` : ""} (~7 credits, capped at 12) — it lands here in a couple of minutes.`
-					: `:art: Rendering a still in Flow now${references.length ? ` from ${references.length} reference image${references.length === 1 ? "" : "s"}` : ""} (stills are free) — it lands here in about a minute.`,
+				(wantsClip
+					? `:movie_camera: Rendering a 4s clip in Flow${refsNote} (~7 credits, capped at 12) — it lands here in a couple of minutes.`
+					: `:art: Rendering a still in Flow${refsNote} (stills are free) — it lands here in about a minute.`) +
+					droppedNote,
 				slackLookup.threadTs,
 			).catch(() => undefined)
 			// The job is the answer: the agent renders and the Worker posts the

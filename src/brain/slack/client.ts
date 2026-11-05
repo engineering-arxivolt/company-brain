@@ -277,12 +277,12 @@ export async function uploadSlackFile(
 		// nowhere, post a link so the artifact still reaches the conversation.
 		const landed = await slackFileDelivery(botToken, ticket.file_id, requestSignal)
 		if (landed.size !== undefined && landed.size !== args.sizeBytes) {
-			// A size mismatch is a truncated upload: the bytes on Slack's side
-			// are not the bytes we sent, and the attachment will not open.
+			// Slack re-encodes images and video during processing, so its size
+			// can differ from the bytes we sent for a perfectly good file. The
+			// digest read-back below is the real proof; this only records it.
 			console.log(
-				`[slack] artifact size mismatch channel=${args.channel} file=${ticket.file_id} stored=${landed.size} sent=${args.sizeBytes}`,
+				`[slack] artifact size differs channel=${args.channel} file=${ticket.file_id} stored=${landed.size} sent=${args.sizeBytes} (checking bytes instead)`,
 			)
-			return uploadFailure("complete_upload", "size_mismatch")
 		}
 		// Read the file back and compare digests. A viewer that shows nothing is
 		// only "the viewer" once the stored bytes are proven identical to the
