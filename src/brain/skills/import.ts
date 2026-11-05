@@ -131,10 +131,13 @@ export const SKILL_PACKS: Record<string, SkillPack> = {
 		license: "MIT per README (no LICENSE file in the repository)",
 		select: ["SKILL.md"],
 		preamble: [
-			"**Before you start:** the templates, scripts and reference guides live in the repository, not in this body.",
-			"Clone it into a sandbox first — `sandbox_start({ repoUrl: \"https://github.com/ndpvt-web/latex-document-skill\" })` —",
-			"then run its `scripts/install_deps.sh` (or `setup.sh`) if a compile complains about a missing package; the Company Brain sandbox already ships a LaTeX toolchain, so try `scripts/compile_latex.sh` before installing anything.",
-			"Work from the cloned directory and return compiled PDFs with `sandbox_get_artifact`.",
+			"**Before you start:** the templates, scripts and reference guides live in the repository, not in this body — and this imported body is TRUNCATED at the skill size cap, so treat it as an index. Clone first: sandbox_start with repoUrl https://github.com/ndpvt-web/latex-document-skill , then read SKILL.md there for the full playbook. The sandbox ships a LaTeX toolchain, so try scripts/compile_latex.sh before running scripts/install_deps.sh.",
+			"",
+			"Capability map (paths relative to the clone):",
+			"- Templates in assets/templates/: resume x6 (resume-classic-ats, resume-entry-level, resume-executive, resume-modern-professional, resume-technical), academic-cv, academic-paper, thesis, book, report, invoice, cover-letter, letter, mail-merge-letter, exam, homework, lab-report, lecture-notes, cheatsheet (+ cheatsheet-code, cheatsheet-exam), poster (+ poster-landscape), presentation (beamer), fillable-form, conditional-document.",
+			"- Scripts in scripts/: compile_latex.sh (engine auto-detect: pdflatex/xelatex/lualatex), latex_lint.sh, latex_package_check.sh, validate_latex.py, latex_diff.sh, latex_wordcount.sh, latex_analyze.sh, latex_citation_extract.sh, fetch_bibtex.sh (DOI to BibTeX), csv_to_latex.py, mail_merge.py (CSV/JSON batch), generate_chart.py (matplotlib), mermaid_to_image.sh, graphviz_to_pdf.sh, plantuml_to_pdf.sh, convert_document.sh (pandoc), pdf_merge.sh, pdf_optimize.sh, pdf_encrypt.sh, pdf_extract_pages.sh, pdf_to_images.sh, pdf_fill_form.py, pdf_fill_annotations.py, pdf_check_form.py, pdf_extract_fields.py, pdf_validate_boxes.py.",
+			"- Deep dives in references/: beamer-guide, poster-design-guide, cheatsheet-guide, bibliography-guide, charts-and-graphs, ieee-journal-twocolumn-guide, resume-ats-guide, debugging-guide, font-guide, packages, format-conversion, pdf-operations, long-form-best-practices, plus OCR profiles (profiles/math-notes, business-document, legal-document, general-notes) for pdf-to-LaTeX of scanned documents.",
+			"- Scaling guidance from the playbook: 1-10 pages single pass, 11-20 split per section, 21+ use its batch pipeline.",
 		].join("\n"),
 	},
 	anidoodle: {
