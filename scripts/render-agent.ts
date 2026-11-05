@@ -65,7 +65,9 @@ function run(command: string, args: string[], cwd: string): Promise<{ code: numb
  * Render one job. The project is a throwaway copy of the scaffolded template,
  * so a bad plate can never poison the next render.
  */
-async function render(job: RenderJob): Promise<{ file: string; note?: string }> {
+async function render(
+	job: RenderJob,
+): Promise<{ file: string; note?: string; character?: string }> {
 	if (!existsSync(PROJECT_TEMPLATE)) {
 		throw new Error(`no anidoodle project at ${PROJECT_TEMPLATE} (scaffold one first)`)
 	}
@@ -97,6 +99,7 @@ async function render(job: RenderJob): Promise<{ file: string; note?: string }> 
 			maxCredits: job.flow?.maxCredits ?? 12,
 			project: `brain-${job.id.slice(0, 8)}`,
 			...(referencePaths.length ? { references: referencePaths } : {}),
+			...(job.character ? { character: job.character } : {}),
 		}
 		const result = await run(
 			BUN,
@@ -107,11 +110,14 @@ async function render(job: RenderJob): Promise<{ file: string; note?: string }> 
 		if (result.code !== 0 || !line) {
 			throw new Error(result.output.slice(-400) || "flow render failed")
 		}
-		const parsed = JSON.parse(line) as { files?: string[] }
+		const parsed = JSON.parse(line) as { files?: string[]; character?: string }
 		const file = parsed.files?.[0]
 		if (!file) throw new Error("flow produced no file")
 		return {
 			file,
+			// The character Flow actually used travels back so the Worker can
+			// remember it for the next "same character" request.
+			...(parsed.character ? { character: parsed.character } : {}),
 			note: (job.flow?.type ?? "image") === "video" ? "flow clip" : "flow still, free",
 		}
 	}
@@ -172,7 +178,12 @@ async function render(job: RenderJob): Promise<{ file: string; note?: string }> 
 	}
 }
 
-async function complete(job: RenderJob, file: string, note?: string): Promise<void> {
+async function complete(
+	job: RenderJob,
+	file: string,
+	note?: string,
+	character?: string,
+): Promise<void> {
 	const bytes = await readFile(file)
 	const res = await fetch(`${WORKER_URL}/render/complete?token=${encodeURIComponent(TOKEN)}`, {
 		method: "POST",
@@ -184,6 +195,7 @@ async function complete(job: RenderJob, file: string, note?: string): Promise<vo
 			// Flow clip is an MP4, and Slack types the upload from the extension.
 			fileName: `${job.kind === "flow" ? "flow" : "doodle"}-${job.id.slice(0, 6)}${extname(file) || ".png"}`,
 			note,
+			...(character ? { character } : {}),
 		}),
 	})
 	if (!res.ok) throw new Error(`complete failed: ${res.status} ${await res.text()}`)
@@ -194,8 +206,8 @@ async function once(): Promise<boolean> {
 	if (!job) return false
 	console.log(`[agent] job ${job.id} kind=${job.kind} "${job.title.slice(0, 60)}"`)
 	try {
-		const { file, note } = await render(job)
-		await complete(job, file, note)
+		const { file, note, character } = await render(job)
+		await complete(job, file, note, character)
 		await rm(file, { force: true }).catch(() => undefined)
 		console.log(`[agent] job ${job.id} done${note ? ` (${note})` : ""}`)
 	} catch (error) {

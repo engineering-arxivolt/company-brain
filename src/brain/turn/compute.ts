@@ -111,6 +111,7 @@ import {
 	requestCampaignPack,
 } from "../content/campaign"
 import { insertContentDraft } from "../content/store"
+import { cleanSceneRequest } from "../content/flow-prompt"
 import {
 	buildStillPlanPrompt,
 	parseStillPlan,
@@ -1194,39 +1195,38 @@ export async function computeTurn(
 		// doodle is queued. Stills are free; a clip spends credits and the job
 		// carries its own ceiling.
 		//
-		// Pictures already in the thread travel with the job: "make a still like
-		// this" is the whole point of having references, so a message that
-		// carries an image and asks for art does not need the word "flow".
+		// Flow is the workspace's picture maker, so this is the default road for
+		// "make me a picture" rather than one option among several: the fal and
+		// runway tools on other servers are withheld from the model for exactly
+		// this reason. A creative verb plus a picture noun is enough, and so is a
+		// picture attached with any creative instruction — "using the same
+		// character have her holding a bag" never said the word "image" and used
+		// to fall through to another model.
 		const threadImages = attachmentParts
 			.filter((part): part is Extract<typeof part, { type: "image" }> => part.type === "image")
 			.slice(0, 3)
+		const pictureNoun =
+			/\b(still|image|images|picture|photo|photograph|illustration|render|art|artwork|visual|graphic|portrait|poster|shot|frame|clip|video|animation)\b/i
+		const creativeVerb =
+			/\b(make|create|generate|render|draw|produce|paint|shoot|show|give|design|redo|remake)\b/i
+		const characterTalk =
+			/\b(same|the|that|this|my|our)\s+(character|person|face|girl|boy|man|woman|guy|lady|model|mascot)\b|\b(her|him|she|he|them|they)\b/i
 		const wantsFlow =
 			!/\bdoodle\b/i.test(questionText) &&
 			!/\bcampaign pack\b/i.test(questionText) &&
-			((/\bflow\b/i.test(questionText) &&
-				/\b(still|image|clip|video)\b/i.test(questionText)) ||
+			!/\bimage prompts?\b|\bflow kit\b/i.test(questionText) &&
+			((/\bflow\b/i.test(questionText) && /\b(still|image|clip|video)\b/i.test(questionText)) ||
+				(creativeVerb.test(questionText) && pictureNoun.test(questionText)) ||
 				(threadImages.length > 0 &&
-					/\b(still|image|clip|video|version|variant|art)\b/i.test(questionText)))
+					(creativeVerb.test(questionText) ||
+						/\b(still|image|clip|video|version|variant|art)\b/i.test(questionText) ||
+						characterTalk.test(questionText))))
 		if (wantsFlow && slackLookup && !scheduledRun) {
-			const wantsClip = /\b(clip|video)\b/i.test(questionText)
-			// Strip the command, keep the sentence. Shredding every "image",
-			// "like" and "this" used to leave fragments such as "as reference of
-			// them drinking from the cup", which reads as a whole new scene and
-			// loses the request entirely.
-			const subject = questionText
-				.replace(/\bplease\b/gi, " ")
-				.replace(/^\s*(can|could)\s+you\s+/i, "")
-				.replace(/^\s*(make|create|generate|render|produce|draw)\s+(me\s+)?/i, "")
-				.replace(/^\s*(a|an|the)\s+/i, "")
-				.replace(/^\s*(using|with|in)\s+flow(\s*mcp)?\s*[,:-]?\s*/i, "")
-				.replace(/^\s*flow(\s*mcp)?\s*[,:-]?\s*/i, "")
-				.replace(/^\s*(a|an|the)\s+(still|image|clip|video)\s+(of|for|about)?\s*/i, "")
-				.replace(/^\s*(still|image|clip|video)\s+(of|for|about)\s*/i, "")
-				.replace(/\b(the\s+)?attached\s+(image|picture|photo|reference)s?\b/gi, " ")
-				.replace(/\b(use|using|keep)\s+(them|these|this|it)\s+as\s+(a\s+)?references?\b/gi, " ")
-				.replace(/\bas\s+(a\s+)?references?\s+(of|for|to)\b/gi, " ")
-				.replace(/\s+/g, " ")
-				.trim()
+			const wantsClip = /\b(clip|video|animation)\b/i.test(questionText)
+			// Strip the command, keep the sentence. The trailing fallback matters: a
+			// request that is nothing but scaffolding still gets sent as written
+			// rather than as an empty prompt.
+			const subject = cleanSceneRequest(questionText)
 			const scenePrompt = (subject || questionText).slice(0, 300)
 			// The images are already decoded in this turn, so the job carries
 			// their bytes; the agent turns them into files Flow can read. A
@@ -1256,6 +1256,13 @@ export async function computeTurn(
 					base64: btoa(binary),
 				})
 			}
+			// Continuity: once a picture has established a character, a later
+			// request that refers to "her", "him" or "the same character" keeps
+			// that character and treats the new pictures as props — the crisp
+			// packet in her hand is not a new person.
+			const knownCharacter = await env.BRAIN_KV.get(`flow:character:${org.id}`)
+			const reuseCharacter =
+				Boolean(knownCharacter) && characterTalk.test(questionText)
 			const job = {
 				id: crypto.randomUUID(),
 				kind: "flow" as const,
@@ -1271,6 +1278,7 @@ export async function computeTurn(
 					...(wantsClip ? { duration: 4, maxCredits: 12 } : {}),
 				},
 				...(references.length ? { references } : {}),
+				...(reuseCharacter && knownCharacter ? { character: knownCharacter } : {}),
 				channel: slackLookup.channel,
 				threadTs: slackLookup.threadTs,
 				orgId: org.id,
@@ -1290,6 +1298,10 @@ export async function computeTurn(
 			const refsNote = references.length
 				? ` from ${references.length} reference image${references.length === 1 ? "" : "s"}`
 				: ""
+			const characterNote =
+				"character" in job && job.character
+					? ` keeping character ${job.character}`
+					: ""
 			const droppedNote = droppedReferences
 				? ` ${droppedReferences} attached image${droppedReferences === 1 ? " was" : "s were"} too large (over 8 MB) and could not be used as a reference.`
 				: ""
@@ -1297,8 +1309,8 @@ export async function computeTurn(
 				slackLookup.botToken,
 				slackLookup.channel,
 				(wantsClip
-					? `:movie_camera: Rendering a 4s clip in Flow${refsNote} (~7 credits, capped at 12) — it lands here in a couple of minutes.`
-					: `:art: Rendering a still in Flow${refsNote} (stills are free) — it lands here in about a minute.`) +
+					? `:movie_camera: Rendering a 4s clip in Flow${refsNote}${characterNote} (~7 credits, capped at 12) — it lands here in a couple of minutes.`
+					: `:art: Rendering a still in Flow${refsNote}${characterNote} (stills are free) — it lands here in about a minute.`) +
 					droppedNote,
 				slackLookup.threadTs,
 			).catch(() => undefined)

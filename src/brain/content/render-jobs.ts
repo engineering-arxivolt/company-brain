@@ -37,6 +37,11 @@ export type RenderJob = {
 	 * hands Flow absolute paths.
 	 */
 	references?: Array<{ name: string; mime: string; base64: string }>
+	/**
+	 * Flow character to keep using, so "the same character, new scene" stays the
+	 * same person. Learned from the first picture and remembered per workspace.
+	 */
+	character?: string
 	/** 1x1, 9x16, 16x9 or WxH, as anidoodle understands shapes. */
 	format: string
 	/** Extra time on the canvas for loops; stills ignore it. */

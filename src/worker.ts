@@ -102,6 +102,8 @@ app.post("/render/complete", async (c) => {
 		base64?: string
 		fileName?: string
 		note?: string
+		/** Flow character the render used, remembered for later jobs. */
+		character?: string
 	}
 	if (!body.id || !body.base64) return c.json({ error: "id and base64 required" }, 400)
 	const raw = await c.env.BRAIN_KV.get(renderJobKey(body.id))
@@ -121,6 +123,13 @@ app.post("/render/complete", async (c) => {
 	if (job.kind === "flow" && job.flow?.type === "image") {
 		await c.env.BRAIN_KV.put(`render:hero:${job.orgId}`, body.base64, {
 			expirationTtl: 60 * 60 * 24 * 30,
+		}).catch(() => undefined)
+	}
+	// The character a picture established is remembered, so "the same
+	// character, new scene" keeps the same face on every later job.
+	if (job.kind === "flow" && body.character) {
+		await c.env.BRAIN_KV.put(`flow:character:${job.orgId}`, body.character, {
+			expirationTtl: 60 * 60 * 24 * 90,
 		}).catch(() => undefined)
 	}
 	let delivered = false

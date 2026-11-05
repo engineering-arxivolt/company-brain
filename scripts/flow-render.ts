@@ -16,6 +16,7 @@
  */
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
+import { buildFlowPrompt } from "../src/brain/content/flow-prompt"
 
 const FLOW_MCP = process.env.FLOW_MCP_DIR ?? "/home/ubuntu/flow-mcp"
 const SDK = `${FLOW_MCP}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js`
@@ -70,26 +71,29 @@ try {
 	const refs = args.references ?? []
 	let characterAsset: string | null = null
 	let characterNote = ""
-	if (refs.length) {
-		// The name comes from the picture's bytes, so the same picture maps to
-		// the same character every time and later jobs reuse it rather than
-		// building another lookalike.
-		const characterName = `hero-${createHash("sha256")
-			.update(readFileSync(refs[0] as string))
-			.digest("hex")
-			.slice(0, 8)}`
+	// A remembered character wins: the workspace already agreed who this person
+	// is, so new pictures in the request are props, not a new face.
+	const wantedCharacter =
+		args.character ??
+		(refs.length
+			? `hero-${createHash("sha256")
+					.update(readFileSync(refs[0] as string))
+					.digest("hex")
+					.slice(0, 8)}`
+			: null)
+	if (wantedCharacter) {
 		const existing = await call("flow_characters", {})
-		if (!existing.isError && existing.text.includes(characterName)) {
-			characterAsset = `asset:${characterName}`
-			characterNote = `reused character ${characterName}`
-		} else {
+		if (!existing.isError && existing.text.includes(wantedCharacter)) {
+			characterAsset = `asset:${wantedCharacter}`
+			characterNote = `reused character ${wantedCharacter}`
+		} else if (refs.length) {
 			const made = await call("flow_character", {
-				name: characterName,
+				name: wantedCharacter,
 				image: refs[0],
 			})
 			if (!made.isError) {
-				characterAsset = `asset:${characterName}`
-				characterNote = `built character ${characterName}`
+				characterAsset = `asset:${wantedCharacter}`
+				characterNote = `built character ${wantedCharacter}`
 			} else {
 				// Character building is free but not infallible; a plain
 				// reference is still better than nothing, and the log says so.
@@ -98,17 +102,26 @@ try {
 				)
 				characterNote = "raw reference (character build failed)"
 			}
+		} else {
+			characterNote = `character ${wantedCharacter} not found in this project`
 		}
 	}
 	const referenceList = characterAsset
 		? [characterAsset, ...refs.slice(1, 3)]
 		: refs.slice(0, 3)
-	// Naming the character in the prompt is what makes the identity stick; Flow
-	// reads the scene text and the attached character together.
-	const prompt = characterAsset
-		? `The character ${characterAsset.slice("asset:".length)} appears exactly as in the reference picture — same face, hair, skin tone, build and clothing. Scene: ${args.prompt}`
-		: args.prompt
+	// Flow reads a scene like a shot list, not like a chat message. The user's
+	// words are kept first and untouched — they carry the intent — and only the
+	// missing photographic decisions are filled in: framing, light, lens, mood
+	// and the negatives that stop stray text and watermarks. Anything the
+	// request already states is never restated.
+	const prompt = buildFlowPrompt(args.prompt, {
+		character: characterAsset ? characterAsset.slice("asset:".length) : undefined,
+		clip: args.type === "video",
+		aspect: args.aspect,
+		props: referenceList.length && characterAsset ? referenceList.length - 1 : 0,
+	})
 	if (characterNote) console.error(`flow-render: ${characterNote}`)
+	console.error(`flow-render: prompt "${prompt}"`)
 	const generated = referenceList.length
 		? await call("flow_generate", {
 				project: args.project,
@@ -175,7 +188,19 @@ try {
 	if (!files.length) {
 		throw new Error(`no media arrived; last status: ${lastText.slice(0, 1500)}`)
 	}
-	console.log(JSON.stringify({ ok: true, project: args.project, jobId, files }))
+	console.log(
+		JSON.stringify({
+			ok: true,
+			project: args.project,
+			jobId,
+			files,
+			// The Worker remembers this so the next "same character" request
+			// keeps the face instead of building another lookalike.
+			...(characterAsset
+				? { character: characterAsset.slice("asset:".length) }
+				: {}),
+		}),
+	)
 } finally {
 	await client.close().catch(() => undefined)
 }

@@ -1135,6 +1135,20 @@ export async function assembleTurnTools(
 				}
 			}
 			if (mcp.servers.length > 0) {
+				// Pictures are Flow's job on the VPS: the operator's own credits,
+				// their references and their characters all live there, and it
+				// beats the aggregator models they used to be billed for. Media
+				// generators on other servers are withheld outright, so a stray
+				// "make me an image" cannot quietly route somewhere else.
+				const withheld = Object.keys(mcp.tools).filter((name) =>
+					/(?:^|\.)(?:flovia_fal|flovia_runway)$/i.test(name),
+				)
+				for (const name of withheld) delete mcp.tools[name]
+				if (withheld.length) {
+					console.log(
+						`[company-brain][${traceId}] withheld media tools=${withheld.join(",")} (Flow renders pictures)`,
+					)
+				}
 				Object.assign(tools, mcp.tools)
 				hasApps = true
 				connectedAppRouting = "direct"

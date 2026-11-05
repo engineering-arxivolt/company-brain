@@ -56,12 +56,20 @@ instead. It needs a browser in the sandbox for the render step — if the image 
 offer the operator the local route rather than claiming a render happened.
 
 ## Flow stills and clips — the operator's own credits
-A request that says "flow still of …", "flow clip of …", or that attaches a picture and asks for a
-version of it is queued to the VPS agent, which drives Google Flow through flow-mcp on the operator's
-signed-in account. Do not draw these yourself and do not call an image tool for them: say what is
-being made and stop, because the job answers the request. Stills cost no credits; a clip spends them
-and the job carries its own ceiling. Up to three pictures from the thread ride along as references,
-so "same product, new scene" and "same subject, new palette" work without re-describing the subject.
+Flow is **the** picture maker for this workspace: their own account, their credits, their references and
+their characters. Never call another image or video model (no fal, runway, replicate or "generate an
+image" tool from a connected app) — those are withheld for this reason, and if one is somehow visible,
+say Flow is the route rather than using it.
+
+A request is a Flow job when it asks for a picture in any wording: "make a still of …", "flow clip of …",
+"a product shot of this", or any picture attached with a creative instruction ("using the same character
+have her holding this bag"). The words "flow" and "image" are not required. Say what is being made
+and stop: the job is the answer, and the file lands in the thread in about a minute. Stills cost no
+credits; a clip spends them and the job carries its own ceiling.
+
+Continuity: a picture attached with a person in it establishes a **character**, remembered for the
+workspace. Later requests that say "her", "him" or "the same character" reuse that character and treat
+new pictures as props (the product, the setting), so the face stays the same across a series.
 
 ## Where the facts come from — the base CV
 A CV here is *tailored*, never invented. There is one base CV and every
