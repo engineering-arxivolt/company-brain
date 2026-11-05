@@ -61,6 +61,17 @@ describe("selectSkillPaths", () => {
 		expect(selectSkillPaths(files, [])).toHaveLength(3)
 	})
 
+	it("selects a root-level SKILL.md — the single-skill repository layout", () => {
+		// latex-document-skill ships one SKILL.md at the repository root; the
+		// old matcher required a leading slash and silently imported nothing.
+		const single = [
+			{ path: "SKILL.md", type: "blob" as const },
+			{ path: "scripts/compile_latex.sh", type: "blob" as const },
+		]
+		expect(selectSkillPaths(single, undefined)).toEqual(["SKILL.md"])
+		expect(selectSkillPaths(single, ["SKILL.md"])).toEqual(["SKILL.md"])
+	})
+
 	it("selects a whole plugin by its directory", () => {
 		expect(selectSkillPaths(files, ["engineering"])).toEqual([
 			"engineering/skills/code-review/SKILL.md",
@@ -188,6 +199,37 @@ describe("fitSkillBody", () => {
 })
 
 describe("fetchSkillsFromRepo", () => {
+	it("retries unauthenticated when the attached credential is rejected", async () => {
+		// The org's GitHub connection can expire; an open-source pack must still
+		// import. First call (with the token) is 403, the anonymous retry works.
+		const calls: Array<string | undefined> = []
+		const skillBody = "---\nname: demo\ndescription: a demo skill\n---\n\nBody.\n"
+		const result = await fetchSkillsFromRepo({
+			fetchImpl: async (_input, init) => {
+				calls.push(init?.headers?.Authorization ? "authed" : "anonymous")
+				const status = init?.headers?.Authorization ? 403 : 200
+				return {
+					ok: status === 200,
+					status,
+					text: async () =>
+						status === 200
+							? calls.filter((c) => c === "anonymous").length === 1
+								? JSON.stringify({ tree: [{ path: "SKILL.md", type: "blob" }] })
+								: skillBody
+							: "rate limit",
+				}
+			},
+			repo: "ndpvt-web/latex-document-skill",
+			select: ["SKILL.md"],
+			license: "MIT",
+			token: "expired-token",
+		})
+		expect(calls[0]).toBe("authed")
+		expect(calls[1]).toBe("anonymous")
+		expect(result.skills).toHaveLength(1)
+		expect(result.skills[0]?.name).toBe("demo")
+	})
+
 	it("parses selected skills and fits them to the brain's limits", async () => {
 		const result = await fetchSkillsFromRepo({
 			fetchImpl: async () => {

@@ -71,6 +71,17 @@ Continuity: a picture attached with a person in it establishes a **character**, 
 workspace. Later requests that say "her", "him" or "the same character" reuse that character and treat
 new pictures as props (the product, the setting), so the face stays the same across a series.
 
+## LaTeX-grade documents — the latex pack
+When the ask is a document type beyond the house reports — a thesis, conference paper, poster or
+beamer deck, invoice, cheat sheet, exam, multi-language or OCR-to-LaTeX document — use the **latex**
+pack: 1. import_skills({ pack: "latex" }) — owner/admin only; imports the playbook. 2. sandbox_start({
+repoUrl: "https://github.com/ndpvt-web/latex-document-skill" }) to clone the templates, compile scripts
+and reference guides, then work from the cloned directory (its scripts/install_deps.sh covers missing
+packages; the sandbox already ships a LaTeX toolchain, so try compiling first). 3. Return compiled PDFs
+with sandbox_get_artifact, and state the checks you actually ran. The house report and campaign
+pipelines stay the default for research reports and campaign packs — the latex pack is for formats the
+house renderer does not have.
+
 ## Where the facts come from — the base CV
 A CV here is *tailored*, never invented. There is one base CV and every
 application is a cut of it aimed at one posting. Find it in this order:

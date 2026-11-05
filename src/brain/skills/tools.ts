@@ -162,10 +162,10 @@ export function createSkillTools(
 	if (ctx.userId && ctx.isAdmin) {
 		tools.import_skills = deps.tool({
 			description:
-				"Import SKILL.md playbooks from a GitHub repository into the organization's skills. Use only when the requester explicitly asks to import or install a skill pack. Two curated packs exist: `knowledge-work` (Anthropic's knowledge-work-plugins: engineering, marketing, pSEO, compliance, product, data, design, support) and `anidoodle` (code-drawn art and animation, with its engine). For any other repository pass `repo` (owner/name) and optionally `select` (plugin names, `plugin/skill` paths, or skill names) so the import stays small. Imported bodies keep attribution and are re-importable; hand-written skills with the same name are never overwritten.",
+				"Import SKILL.md playbooks from a GitHub repository into the organization's skills. Use only when the requester explicitly asks to import or install a skill pack. Three curated packs exist: `knowledge-work` (Anthropic's knowledge-work-plugins: engineering, marketing, pSEO, compliance, product, data, design, support), `anidoodle` (code-drawn art and animation, with its engine), and `latex` (a universal LaTeX document engine: theses, posters, invoices, cheat sheets, beamer decks, resumes, OCR'd notes, with compile and analysis scripts). For any other repository pass `repo` (owner/name) and optionally `select` (plugin names, `plugin/skill` paths, or skill names) so the import stays small. Imported bodies keep attribution and are re-importable; hand-written skills with the same name are never overwritten.",
 			inputSchema: deps.z.object({
 				pack: deps.z
-					.enum(["knowledge-work", "anidoodle"])
+					.enum(["knowledge-work", "anidoodle", "latex"])
 					.optional()
 					.describe("A curated pack to import."),
 				repo: deps.z

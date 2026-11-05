@@ -123,6 +123,20 @@ export const SKILL_PACKS: Record<string, SkillPack> = {
 		license: "Apache-2.0",
 		select: KNOWLEDGE_WORK_SELECT,
 	},
+	latex: {
+		repo: "ndpvt-web/latex-document-skill",
+		ref: "main",
+		// The README declares MIT but the repository ships no LICENSE file, so
+		// the attribution says exactly that instead of overstating the terms.
+		license: "MIT per README (no LICENSE file in the repository)",
+		select: ["SKILL.md"],
+		preamble: [
+			"**Before you start:** the templates, scripts and reference guides live in the repository, not in this body.",
+			"Clone it into a sandbox first — `sandbox_start({ repoUrl: \"https://github.com/ndpvt-web/latex-document-skill\" })` —",
+			"then run its `scripts/install_deps.sh` (or `setup.sh`) if a compile complains about a missing package; the Company Brain sandbox already ships a LaTeX toolchain, so try `scripts/compile_latex.sh` before installing anything.",
+			"Work from the cloned directory and return compiled PDFs with `sandbox_get_artifact`.",
+		].join("\n"),
+	},
 	anidoodle: {
 		repo: "alexgreensh/anidoodle",
 		ref: "main",
@@ -151,7 +165,9 @@ export function selectSkillPaths(
 	select: readonly string[] | undefined,
 ): string[] {
 	const skillPaths = files
-		.filter((file) => file.type === "blob" && /\/SKILL\.md$/i.test(file.path))
+		// A root-level SKILL.md is a valid single-skill layout, same as
+		// nested plugin/skill directories.
+		.filter((file) => file.type === "blob" && /(?:^|\/)SKILL\.md$/i.test(file.path))
 		.map((file) => file.path)
 	if (!select?.length) return skillPaths
 	const wanted = select
@@ -304,12 +320,33 @@ export type FetchLike = (
 	init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>
 
+/**
+ * One GitHub API read. When an attached credential is rejected (401/403 — an
+ * expired or revoked connection token), the same URL is retried
+ * unauthenticated: public repositories do not need a token, and a broken
+ * connection must not block importing an open-source pack. Private
+ * repositories still fail through, which is correct.
+ */
+async function githubRead(
+	fetchImpl: FetchLike,
+	url: string,
+	headers: Record<string, string>,
+): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+	const response = await fetchImpl(url, { headers })
+	if ((response.status === 401 || response.status === 403) && headers.Authorization) {
+		const { Authorization: _dropped, ...anonymous } = headers
+		const retry = await fetchImpl(url, { headers: anonymous })
+		if (retry.ok) return retry
+	}
+	return response
+}
+
 async function githubJson<T>(
 	fetchImpl: FetchLike,
 	url: string,
 	headers: Record<string, string>,
 ): Promise<T> {
-	const response = await fetchImpl(url, { headers })
+	const response = await githubRead(fetchImpl, url, headers)
 	if (!response.ok) {
 		throw new Error(
 			`GitHub returned ${response.status} for ${url.replace(/^https:\/\/api\.github\.com/, "")}`,
@@ -387,9 +424,10 @@ export async function fetchSkillsFromRepo(args: {
 				}
 				continue
 			}
-			const response = await args.fetchImpl(
+			const response = await githubRead(
+				args.fetchImpl,
 				`https://api.github.com/repos/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`,
-				{ headers: { ...headers, Accept: "application/vnd.github.raw" } },
+				{ ...headers, Accept: "application/vnd.github.raw" },
 			)
 			outcomes[index] = response.ok
 				? { ok: true, path, content: await response.text() }
