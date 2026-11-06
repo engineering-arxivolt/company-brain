@@ -15,6 +15,7 @@ import {
 	getFounderBrain,
 } from "../content/founder-brain"
 import { ensureGscTable, fetchGscQueries, summariseByPage, upsertGscRows } from "../content/gsc"
+import { tregSearchConsole } from "../content/gsc-treg"
 import { buildGrowthReport, renderGrowthReport } from "../content/growth-report"
 import {
 	describeAlertCandidates,
@@ -433,6 +434,7 @@ export type ContentGrowthToolArgs = {
 	deps: TurnDeps
 	env: Pick<Env, "GSC_ACCESS_TOKEN" | "GSC_SITE_URL">
 	orgId: string
+	userId?: string
 	traceId: string
 }
 
@@ -466,17 +468,29 @@ export function createContentGrowthTool(args: ContentGrowthToolArgs) {
 			if (refresh) {
 				const end = new Date()
 				const start = new Date(end.getTime() - window * 86_400_000)
-				const pulled = await fetchGscQueries({
+				const call = {
 					siteUrl: args.env.GSC_SITE_URL?.trim() || "https://www.arxivolt.com/",
-					accessToken: args.env.GSC_ACCESS_TOKEN,
 					startDate: start.toISOString().slice(0, 10),
 					endDate: end.toISOString().slice(0, 10),
+				}
+				// treg is the path the team already pays for: it serves Google on
+				// the workspace's own credential, so no second grant is needed.
+				// A token is the fallback for a deployment without treg.
+				const viaTreg = await tregSearchConsole(args.env as Env, {
+					...call,
+					orgId: args.orgId,
+					userId: args.userId,
+					traceId: args.traceId,
 				})
+				const pulled = viaTreg.ok
+					? viaTreg
+					: await fetchGscQueries({ ...call, accessToken: args.env.GSC_ACCESS_TOKEN })
 				if (pulled.ok) {
 					const written = upsertGscRows(args.agent, pulled.rows)
 					console.log(`[company-brain][${args.traceId}] growth_report refreshed rows=${written}`)
 				} else {
 					warnings.push(pulled.error)
+					if (viaTreg.ok === false) warnings.push(viaTreg.error)
 				}
 			}
 

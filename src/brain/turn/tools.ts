@@ -596,6 +596,7 @@ export async function assembleTurnTools(
 						agent,
 						env,
 						orgId: org.id,
+						userId: actor.userId ?? userId,
 						traceId,
 					}),
 					// The News Desk: stories worth posting about, filtered hard,
