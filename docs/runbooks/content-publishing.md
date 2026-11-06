@@ -25,8 +25,9 @@ company-brain:
 ```
 PUBLIC_URL                       (already set)
 ARXIVOLT_ENGINE_URL              optional, defaults to https://www.arxivolt.com
-ARXIVOLT_ENGINE_ADMIN_SECRET     same value as the engine's ADMIN_SECRET
+ARXIVOLT_ENGINE_ADMIN_SECRET     same value as the engine's ADMIN_SECRET (set, rotated 2026-11)
 POSTHOG_API_KEY                  server-side events (existing)
+GSC_ACCESS_TOKEN                 optional fallback; Search Console normally comes via treg
 ```
 ```
 npx wrangler secret put ARXIVOLT_ENGINE_ADMIN_SECRET --name company-brain
@@ -42,7 +43,7 @@ compat date, www/gate/forge custom domains). Deploy:
 
 ```bash
 npx wrangler deploy          # from the arxivolt-engine repo
-node test/publish-api.smoke.mjs   # 37 checks, no network, uses node:sqlite
+node test/publish-api.smoke.mjs   # 48 checks, no network, uses node:sqlite
 ```
 
 Verify prod after a deploy:
@@ -50,6 +51,8 @@ Verify prod after a deploy:
 curl -s -o /dev/null -w '%{http_code}\n' https://www.arxivolt.com/            # 200
 curl -s https://www.arxivolt.com/sitemap.xml | grep -c '<loc>'               # stable count
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://www.arxivolt.com/admin/articles  # 401
+# secrets are write-only — keep the value in a password manager and export it
+curl -s "https://www.arxivolt.com/admin/articles?limit=2" -H "Authorization: Bearer $ARXIVOLT_ENGINE_ADMIN_SECRET"   # 200 + rows
 ```
 
 ## Render agent (VPS side: cards, Flow stills, PDFs)
@@ -100,6 +103,8 @@ A wedged exec keeps its slot, so every later command queues behind it. That is t
 | Agent hangs on a render | child process had no timeout | `run()` kills at 180s and reports exit 124 |
 | PDF never finishes | exec left running in the container | `timeout` wrapper + max timeout 300s |
 | `ms=` missing in logs | no per-step timing | every step logs elapsed ms |
+| `Cannot read properties of null (reading 'dbSession')` from `/admin/articles` | `stmt.bind.apply(null, args)` drops the statement as `this` | `bind(...args)`; the smoke fake now throws if `bind` loses its receiver |
+| `content_growth_plan` says no Search Console data | treg not connected, or the property isn't listed for that Google account | error names which one; connect treg under Settings → Connectors |
 
 ## PostHog (pipeline + site) — wired
 
