@@ -20,6 +20,10 @@ interface Env {
 	ENCRYPTION_SECRET: string
 	/** Image generation provider: "nano" for Gemini (needs billing), else Workers AI flux. */
 	IMAGE_GEN_PROVIDER?: string
+	/** arxivolt-engine (the public site worker). Base URL defaults to www.arxivolt.com. */
+	ARXIVOLT_ENGINE_URL?: string
+	/** Shared secret for arxivolt-engine's /admin/* publishing API. */
+	ARXIVOLT_ENGINE_ADMIN_SECRET?: string
 }
 
 /**

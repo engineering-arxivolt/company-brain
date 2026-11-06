@@ -83,6 +83,17 @@ describe("buildCampaignPrompt", () => {
 		expect(prompt.system).toContain("never invented data")
 		expect(prompt.system).toContain("ONLY a JSON object")
 	})
+
+	it("prints the keyword block as one heading, not a doubled '# #'", () => {
+		const prompt = buildCampaignPrompt({
+			story: "s",
+			notes: "n",
+			keywords: [{ keyword: "ev charging", volume: 1200, difficulty: 34 }],
+		})
+		expect(prompt.user).toContain("# Preferred keywords")
+		expect(prompt.user).not.toContain("# #")
+		expect(prompt.user).toContain("ev charging — volume: 1200, difficulty: 34")
+	})
 })
 
 describe("flow kit", () => {

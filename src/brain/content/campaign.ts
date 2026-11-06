@@ -92,7 +92,7 @@ export function buildCampaignPrompt(args: {
 		: ""
 	return {
 		system: SPEC_SYSTEM,
-		user: `# The story\n\n${args.story}\n\n# Research notes\n\n${args.notes}${keywordBlock ? `\n\n# ${keywordBlock}` : ""}`,
+		user: `# The story\n\n${args.story}\n\n# Research notes\n\n${args.notes}${keywordBlock ? `\n\n${keywordBlock}` : ""}`,
 	}
 }
 
