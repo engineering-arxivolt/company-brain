@@ -1,5 +1,7 @@
 const DEFAULT_TIMEOUT_SEC = 30
-const MAX_TIMEOUT_SEC = 120
+// Long enough for a cold pdflatex/ghostscript build; short enough that a wedged
+// command cannot pin a sandbox session forever.
+const MAX_TIMEOUT_SEC = 300
 const MAX_OUTPUT_CHARS = 50_000
 const MAX_TEXT_FILE_CHARS = 80_000
 const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024

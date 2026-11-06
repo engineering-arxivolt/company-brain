@@ -64,31 +64,42 @@ app.get("/render/next", async (c) => {
 	const expected = await c.env.BRAIN_KV.get("deployment:encryption-secret")
 	if (!expected || token !== expected) return c.json({ error: "forbidden" }, 403)
 	type RenderJob = import("./brain/content/render-jobs").RenderJob
-	const { renderJobKey } = await import("./brain/content/render-jobs")
-	const list = await c.env.BRAIN_KV.list({ prefix: "render:job:", limit: 100 })
-	for (const entry of list.keys) {
-		const raw = await c.env.BRAIN_KV.get(entry.name)
-		if (!raw) continue
-		let job: RenderJob
-		try {
-			job = JSON.parse(raw) as RenderJob
-		} catch {
-			continue
+	const { renderJobKey, parseRenderJob } = await import("./brain/content/render-jobs")
+	try {
+		const list = await c.env.BRAIN_KV.list({ prefix: "render:job:", limit: 100 })
+		for (const entry of list.keys) {
+			const raw = await c.env.BRAIN_KV.get(entry.name)
+			if (!raw) continue
+			const job = parseRenderJob(raw)
+			// A value that is not a job is a bad write, not something to retry
+			// forever: drop it so one poison key cannot wedge the claim loop.
+			if (!job) {
+				console.warn(`[render] dropping unreadable job at ${entry.name}`)
+				await c.env.BRAIN_KV.delete(entry.name).catch(() => undefined)
+				continue
+			}
+			// A job left `running` by a dead agent is claimable again after two minutes.
+			const stale =
+				job.status === "running" &&
+				Date.now() - (job.startedAt ?? 0) > 120_000
+			if (job.status !== "pending" && !stale) continue
+			job.status = "running"
+			job.startedAt = Date.now()
+			job.attempts += 1
+			await c.env.BRAIN_KV.put(renderJobKey(job.id), JSON.stringify(job), {
+				expirationTtl: 60 * 60 * 24,
+			})
+			return c.json({ job })
 		}
-		// A job left `running` by a dead agent is claimable again after two minutes.
-		const stale =
-			job.status === "running" &&
-			Date.now() - (job.startedAt ?? 0) > 120_000
-		if (job.status !== "pending" && !stale) continue
-		job.status = "running"
-		job.startedAt = Date.now()
-		job.attempts += 1
-		await c.env.BRAIN_KV.put(renderJobKey(job.id), JSON.stringify(job), {
-			expirationTtl: 60 * 60 * 24,
-		})
-		return c.json({ job })
+		return c.json({ job: null })
+	} catch (error) {
+		// The agent polls every few seconds: a 500 reads as "stuck". Answer with
+		// an empty claim and keep the reason in the logs.
+		console.error(
+			`[render] claim failed: ${error instanceof Error ? error.message : String(error)}`,
+		)
+		return c.json({ job: null, warning: "claim failed; retrying" })
 	}
-	return c.json({ job: null })
 })
 
 app.post("/render/complete", async (c) => {

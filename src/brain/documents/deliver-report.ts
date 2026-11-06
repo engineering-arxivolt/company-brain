@@ -127,6 +127,7 @@ export async function deliverReport(
 		command: string,
 		timeoutSec: number,
 	): Promise<{ exitCode: number; output: string }> => {
+		const startedAt = Date.now()
 		try {
 			const result = await args.client.runCommand({
 				sandboxId: sandbox.sandboxId,
@@ -135,7 +136,7 @@ export async function deliverReport(
 				timeoutSec,
 			})
 			console.log(
-				`[company-brain][${args.traceId}] report ${step} exit=${result.exitCode} out=${result.output.slice(-120).replace(/\n/g, " | ")}`,
+				`[company-brain][${args.traceId}] report ${step} exit=${result.exitCode} ms=${Date.now() - startedAt} out=${result.output.slice(-120).replace(/\n/g, " | ")}`,
 			)
 			return result
 		} catch (error) {
@@ -157,10 +158,17 @@ export async function deliverReport(
 				content: file.content,
 			})
 		}
+		const buildScript = buildReportCommands(chartCount, hasCover)
+		await args.client.writeFile({
+			sandboxId: sandbox.sandboxId,
+			path: `${sandbox.defaultCwd}/build.sh`,
+			content: buildScript,
+		})
+		const buildTimeoutSec = Math.max(1, Math.floor(args.timeoutSec ?? 240))
 		const built = await run(
 			"build",
-			buildReportCommands(chartCount, hasCover),
-			args.timeoutSec ?? 180,
+			`timeout -k 5 ${buildTimeoutSec}s bash build.sh`,
+			buildTimeoutSec + 20,
 		)
 		if (built.exitCode !== 0) {
 			console.log(

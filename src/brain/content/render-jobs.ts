@@ -65,6 +65,37 @@ export function renderJobKey(id: string): string {
 	return `${RENDER_JOB_PREFIX}${id}`
 }
 
+/**
+ * Parse a KV value into a job, or null when it is not one.
+ *
+ * KV is shared, hand-editable storage: a stray `null`, a truncated write or an
+ * object from an older shape must never take the claim route down. A single bad
+ * value used to throw on `job.status` and make *every* claim 500 — the agent
+ * then spun forever and the queue looked stuck.
+ */
+export function parseRenderJob(raw: string | null): RenderJob | null {
+	if (!raw) return null
+	let value: unknown
+	try {
+		value = JSON.parse(raw)
+	} catch {
+		return null
+	}
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null
+	const job = value as Partial<RenderJob>
+	if (typeof job.id !== "string" || !job.id) return null
+	if (typeof job.kind !== "string") return null
+	if (job.status !== "pending" && job.status !== "running" && job.status !== "done" && job.status !== "failed") {
+		return null
+	}
+	return {
+		...job,
+		attempts: Number.isFinite(job.attempts) ? Number(job.attempts) : 0,
+		createdAt: Number.isFinite(job.createdAt) ? Number(job.createdAt) : Date.now(),
+	} as RenderJob
+}
+
+
 /** Shape (width, height) from the short format names anidoodle accepts. */
 export function renderSize(format: string): { width: number; height: number } {
 	switch (format.replace(/\s+/g, "").toLowerCase()) {

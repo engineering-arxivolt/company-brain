@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * The render agent: anidoodle on this machine, on the brain's behalf.
  *
@@ -35,7 +35,8 @@ if (!TOKEN) {
 async function claim(): Promise<RenderJob | null> {
 	const res = await fetch(`${WORKER_URL}/render/next?token=${encodeURIComponent(TOKEN)}`)
 	if (!res.ok) {
-		console.warn(`[agent] claim failed: ${res.status}`)
+		const body = await res.text().catch(() => "")
+		console.warn(`[agent] claim failed: ${res.status} ${body.slice(0, 200)}`)
 		return null
 	}
 	const body = (await res.json()) as { job: RenderJob | null }
@@ -50,14 +51,31 @@ async function reportFailure(id: string, error: string): Promise<void> {
 	}).catch(() => undefined)
 }
 
-function run(command: string, args: string[], cwd: string): Promise<{ code: number; output: string }> {
+function run(
+	command: string,
+	args: string[],
+	cwd: string,
+	timeoutMs = 180_000,
+): Promise<{ code: number; output: string }> {
 	return new Promise((resolve) => {
 		const child = spawn(command, args, { cwd })
 		let output = ""
+		let settled = false
+		const finish = (code: number, note = "") => {
+			if (settled) return
+			settled = true
+			clearTimeout(timer)
+			resolve({ code, output: output + note })
+		}
+		// A hung render is worse than a failed one: kill it and report 124 (timeout).
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL")
+			finish(124, `\n[agent] ${command} timed out after ${timeoutMs}ms`)
+		}, timeoutMs)
 		child.stdout.on("data", (chunk) => { output += String(chunk) })
 		child.stderr.on("data", (chunk) => { output += String(chunk) })
-		child.on("close", (code) => resolve({ code: code ?? 1, output }))
-		child.on("error", (error) => resolve({ code: 1, output: String(error) }))
+		child.on("close", (code) => finish(code ?? 1))
+		child.on("error", (error) => finish(1, String(error)))
 	})
 }
 
@@ -156,7 +174,7 @@ async function render(
 
 		await mkdir(join(dir, "out"), { recursive: true })
 		const out = join(dir, "out", `${name}.png`)
-		let result = await run("node", ["tools/still.mjs", name, "--out", out, "--scale", "1"], dir)
+		let result = await run(process.execPath, ["tools/still.mjs", name, "--out", out, "--scale", "1"], dir)
 
 		if (result.code !== 0 && job.kind === "plate") {
 			// The model's plate did not draw. Fall back rather than answer with
@@ -164,7 +182,7 @@ async function render(
 			console.warn(`[agent] plate failed, title card instead:\n${result.output.slice(-600)}`)
 			await writeFile(plateFile, titlePlateSource(job, name))
 			await writeFile(hostFile, hostSource(name, name))
-			result = await run("node", ["tools/still.mjs", name, "--out", out, "--scale", "1"], dir)
+			result = await run(process.execPath, ["tools/still.mjs", name, "--out", out, "--scale", "1"], dir)
 			note = "title card (the drawn plate did not render)"
 		}
 		if (result.code !== 0) {
