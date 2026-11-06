@@ -3,11 +3,13 @@ import type { BrainCostLedger } from "../billing/cost"
 import { createConfigurationTool } from "../configuration"
 import { createContentStudioTool } from "./content-studio-tool"
 import {
+	createContentAuditTool,
 	createContentGrowthTool,
 	createContentMarketTool,
 	createContentNewsTool,
 	createContentPerformanceTool,
 	createContentPlaybooksTool,
+	createContentPublishTool,
 } from "./content-ops-tools"
 import { createFounderBrainTool } from "./founder-brain-tool"
 import { buildLeaseRuntimeContext } from "../lease/store"
@@ -598,6 +600,21 @@ export async function assembleTurnTools(
 						orgId: org.id,
 						userId: actor.userId ?? userId,
 						traceId,
+					}),
+					// The publish path, guarded: the audit decides, drafts by default.
+					content_audit: createContentAuditTool({
+						deps,
+						env,
+						orgId: org.id,
+						traceId,
+						allowWrites: !actor.readOnly,
+					}),
+					content_publish: createContentPublishTool({
+						deps,
+						env,
+						orgId: org.id,
+						traceId,
+						allowWrites: !actor.readOnly,
 					}),
 					// The News Desk: stories worth posting about, filtered hard,
 					// with a decision per signal.

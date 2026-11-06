@@ -17,6 +17,12 @@ import {
 import { ensureGscTable, fetchGscQueries, summariseByPage, upsertGscRows } from "../content/gsc"
 import { tregSearchConsole } from "../content/gsc-treg"
 import { buildGrowthReport, renderGrowthReport } from "../content/growth-report"
+import { auditArticle, summariseAudit } from "../content/quality"
+import {
+	buildMetaDescription,
+	publishDeepDive,
+	slugifyTitle,
+} from "../content/sources/arxivolt-engine"
 import {
 	describeAlertCandidates,
 	listNewsBriefs,
@@ -529,6 +535,159 @@ export function createContentGrowthTool(args: ContentGrowthToolArgs) {
 				summary: renderGrowthReport(report),
 				actions: report.actions,
 				warnings,
+			}
+		},
+	})
+}
+
+export type ContentPublishToolArgs = {
+	deps: TurnDeps
+	env: Env
+	orgId: string
+	traceId: string
+	/** Read-only conversations may audit but never write to the public site. */
+	allowWrites: boolean
+}
+
+/** The one place a draft is scored, shared by the audit and publish tools. */
+function auditDraft(input: {
+	title: string
+	markdown: string
+	summary?: string
+	metaDescription?: string
+	cluster?: string
+	keyword?: string
+	faq?: { q: string; a: string }[]
+	approvedFigures?: string[]
+}) {
+	const metaDescription =
+		input.metaDescription?.trim() || buildMetaDescription(input.summary ?? "", input.title)
+	return auditArticle({
+		slug: slugifyTitle(input.title),
+		title: input.title,
+		metaDescription,
+		markdown: input.markdown,
+		faq: input.faq,
+		approvedFigures: input.approvedFigures,
+	})
+}
+
+/**
+ * Grade a draft against the publish contract without touching the site.
+ *
+ * Read-only on purpose: the operator can iterate on a draft in Slack ("is this
+ * publishable?") and get the exact blocking findings instead of a publish
+ * attempt that 422s for one fixable reason at a time.
+ */
+export function createContentAuditTool(args: ContentPublishToolArgs) {
+	const { deps } = args
+	return deps.tool({
+		description:
+			"Grade an article draft against the site's publish contract before publishing: exactly one H1, title 10-140 chars, meta description 60-180, at least 300 words, internal links, FAQ, and — the one that blocks — every money or percentage figure must be backed by a source you pass in or cited inline. Use for 'is this ready to publish?', 'check this draft', 'why did publishing fail?'. Returns PASS/FAIL plus each finding.",
+		inputSchema: deps.z.object({
+			title: deps.z.string().describe("The article headline, as it will appear on the page."),
+			markdown: deps.z.string().describe("The full article body in markdown, starting with a single '# Heading'."),
+			summary: deps.z.string().optional().describe("One-line summary; used to build the meta description."),
+			metaDescription: deps.z.string().optional().describe("Meta description override, 60-180 chars."),
+			cluster: deps.z.string().optional().describe("Cluster id (e.g. kra-obligations). Required to publish."),
+			keyword: deps.z.string().optional().describe("The single target keyword."),
+			faq: deps.z
+				.array(deps.z.object({ q: deps.z.string(), a: deps.z.string() }))
+				.optional()
+				.describe("FAQ entries; 3 or more is the house standard."),
+			approvedFigures: deps.z
+				.array(deps.z.string())
+				.optional()
+				.describe("Figures the evidence pack supports, e.g. ['KES 2,000,000', '16%']."),
+		}),
+		execute: async (input) => {
+			const audit = auditDraft(input)
+			console.log(`[company-brain][${args.traceId}] content_audit ${summariseAudit(audit)}`)
+			return {
+				ok: audit.ok,
+				summary: summariseAudit(audit),
+				findings: audit.findings,
+				words: audit.words,
+				hash: audit.hash,
+			}
+		},
+	})
+}
+
+/**
+ * Publish a finished article to arxivolt.com through the engine's admin API.
+ *
+ * Two rules keep this safe as a chat tool: it refuses anything that fails the
+ * audit, and it parks the article as a **draft** unless the caller explicitly
+ * asks for live. A draft is invisible publicly (not in the sitemap and not
+ * served), so the review step stays with the person who can see the page.
+ */
+export function createContentPublishTool(args: ContentPublishToolArgs) {
+	const { deps } = args
+	return deps.tool({
+		description:
+			"Publish a finished deep-dive article to arxivolt.com. It re-runs the publish audit first and refuses anything that fails. Defaults to a private draft (invisible, not in the sitemap); set goLive only when the operator has asked for the page to go public. Returns the URL, whether the page was fetched back and verified, and any SEO warnings.",
+		inputSchema: deps.z.object({
+			title: deps.z.string().describe("The article headline."),
+			markdown: deps.z.string().describe("The full article body in markdown, starting with a single '# Heading'."),
+			cluster: deps.z.string().describe("Cluster id the article belongs to, e.g. kra-obligations."),
+			keyword: deps.z.string().optional().describe("The single target keyword this page owns."),
+			summary: deps.z.string().optional().describe("One-line summary / deck."),
+			metaDescription: deps.z.string().optional().describe("Meta description override, 60-180 chars."),
+			faq: deps.z
+				.array(deps.z.object({ q: deps.z.string(), a: deps.z.string() }))
+				.optional()
+				.describe("FAQ entries, rendered as FAQPage schema."),
+			approvedFigures: deps.z
+				.array(deps.z.string())
+				.optional()
+				.describe("Figures the evidence pack supports, so the claim gate can pass."),
+			goLive: deps.z
+				.boolean()
+				.optional()
+				.describe("Publish publicly. Without this the article is saved as a private draft."),
+		}),
+		execute: async (input) => {
+			const audit = auditDraft(input)
+			if (!audit.ok) {
+				console.log(`[company-brain][${args.traceId}] content_publish blocked ${summariseAudit(audit)}`)
+				return {
+					ok: false,
+					blocked: "audit",
+					summary: summariseAudit(audit),
+					findings: audit.findings,
+					hint: "Fix the errors and call again. Warnings do not block.",
+				}
+			}
+			const wantsLive = input.goLive === true
+			const status = wantsLive && args.allowWrites ? "live" : "draft"
+			const result = await publishDeepDive(args.env, {
+				title: input.title,
+				markdown: input.markdown,
+				cluster: input.cluster,
+				keyword: input.keyword,
+				summary: input.summary,
+				faq: input.faq,
+				status,
+				orgId: args.orgId,
+			})
+			console.log(
+				`[company-brain][${args.traceId}] content_publish ok=${result.ok} status=${status} ` +
+					`${result.ok ? `slug=${result.slug} verified=${result.verified}` : `error="${result.error}"`}`,
+			)
+			if (!result.ok) {
+				return { ...result, audit: summariseAudit(audit), downgraded: wantsLive && status === "draft" }
+			}
+			return {
+				...result,
+				status,
+				audit: summariseAudit(audit),
+				note:
+					status === "live"
+						? "Live. In the sitemap and submitted to IndexNow."
+						: wantsLive
+							? "Saved as a draft because this conversation is read-only."
+							: "Saved as a private draft. Ask again with goLive to make it public.",
 			}
 		},
 	})
