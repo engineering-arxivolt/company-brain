@@ -70,6 +70,13 @@ describe("auditArticle", () => {
 		expect(audit.findings.map((f) => f.code)).toContain("h1")
 	})
 
+	it("accepts markdown with no H1, because the page template owns it", () => {
+		const audit = article({ markdown: `${words(320)}\n\n[a](/a) [b](/b) [c](/c)` })
+		expect(audit.h1Count).toBe(0)
+		expect(audit.findings.map((f) => f.code)).not.toContain("h1")
+		expect(audit.ok).toBe(true)
+	})
+
 	it("blocks a short article", () => {
 		const audit = article({ markdown: `# One\n\n${words(40)}\n\n[a](/a) [b](/b) [c](/c)` })
 		expect(audit.findings.find((f) => f.code === "words")?.severity).toBe("error")

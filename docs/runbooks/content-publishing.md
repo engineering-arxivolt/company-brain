@@ -130,6 +130,8 @@ A wedged exec keeps its slot, so every later command queues behind it. That is t
 | PDF never finishes | exec left running in the container | `timeout` wrapper + max timeout 300s |
 | `ms=` missing in logs | no per-step timing | every step logs elapsed ms |
 | `Cannot read properties of null (reading 'dbSession')` from `/admin/articles` | `stmt.bind.apply(null, args)` drops the statement as `this` | `bind(...args)`; the smoke fake now throws if `bind` loses its receiver |
+| PDF downloads with `200` and zero bytes | BLOB read came back empty; the empty response was then cached as `immutable` | store base64 text, decode on read, purge on upload |
+| Page has two `<h1>` | article markdown repeated the headline as `# …` on top of the template's H1 | the renderer strips a leading markdown H1; the audit allows zero or one |
 | `content_growth_plan` says no Search Console data | treg not connected, or the property isn't listed for that Google account | error names which one; connect treg under Settings → Connectors |
 
 ## PostHog (pipeline + site) — wired
@@ -152,6 +154,20 @@ JSON is never injected (asserted in `test/publish-api.smoke.mjs`).
 
 Funnel in PostHog: `seo_keyword_chosen` → `seo_article_published` → `$pageview` →
 `cta_click`, all on `slug`. If the last two are empty, the beacon is the bug, not the content.
+
+## Asset (PDF) serving: base64, not BLOB
+
+`PUT /admin/assets/:slug` stores the file as **base64 text**, and the GET decodes
+it. A BLOB column round-trips fine in D1 (`length(data)` = the right size,
+`hex(substr(data,1,4))` = `25504446`) but comes back through `.first()` as an
+empty body in the worker, so every PDF served as `200` with zero bytes. Base64
+text is proven on this worker (articles render), costs ~33% more storage and
+nothing in latency at these sizes.
+
+Assets are served `immutable, max-age=31536000`, so **an upload must purge the
+edge copy** — `purge(['/assets/' + name])` runs on every PUT. Without it a
+re-upload keeps serving the old bytes for a year, and a bad first upload is
+permanent.
 
 ## Indexing (IndexNow)
 

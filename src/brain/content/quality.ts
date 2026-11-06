@@ -116,8 +116,11 @@ export function auditArticle(input: ArticleAuditInput): ArticleAudit {
 	} else if (words > maxWords) {
 		findings.push({ code: "words_long", severity: "warning", detail: `${words} words, above ${maxWords}` })
 	}
-	if (h1Count !== 1) {
-		findings.push({ code: "h1", severity: "error", detail: `${h1Count} H1 headings, exactly 1 required` })
+	// The page template renders the headline as the H1 and strips a leading
+	// markdown H1, so the body may carry zero or one. Two H1s means the body is
+	// competing with the page title, which is the defect worth blocking.
+	if (h1Count > 1) {
+		findings.push({ code: "h1", severity: "error", detail: `${h1Count} H1 headings; the page title is the H1` })
 	}
 	if (internalLinks < minLinks) {
 		findings.push({ code: "internal_links", severity: "warning", detail: `${internalLinks} internal links, ${minLinks}+ expected` })
