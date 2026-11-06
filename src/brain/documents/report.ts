@@ -758,7 +758,7 @@ export function renderReportTex(
 				const head = columns.map((column) => `\\textbf{${escapeLatex(column)}}`).join(" & ")
 				const lines = [
 					"\\par\\vspace{5pt}",
-					`{\\small\\noindent${escapeLatex(title)}}\\\\[2pt]`,
+					`{\\small\\noindent{}${escapeLatex(title)}}\\\\[2pt]`,
 					`\\begin{tabular}{@{}${align}@{}}`,
 					"\\rptoprule",
 					`${head} \\\\[1pt]`,
@@ -829,7 +829,13 @@ export function renderReportTex(
 		"\\definecolor{softbg}{HTML}{F4F4F4}",
 		"\\definecolor{ink}{HTML}{1A1A1A}",
 		"\\definecolor{muted}{HTML}{595959}",
-		"\\IfFileExists{booktabs.sty}{\\usepackage{booktabs}}{}",
+		// booktabs gives the three rules the tables use. The \\rp* aliases are
+		// defined here because the table body emits them; without this they are
+		// undefined control sequences and the document never compiles.
+		"\\IfFileExists{booktabs.sty}{" +
+		"\\usepackage{booktabs}" +
+		"\\newcommand{\\rptoprule}{\\toprule}\\newcommand{\\rpmidrule}{\\midrule}\\newcommand{\\rpbottomrule}{\\bottomrule}" +
+		"}{\\newcommand{\\rptoprule}{\\hline}\\newcommand{\\rpmidrule}{\\hline}\\newcommand{\\rpbottomrule}{\\hline}}",
 		"\\IfFileExists{siunitx.sty}{\\usepackage{siunitx}}{}",
 		// No orphan or widow at page breaks.
 		"\\widowpenalty=10000",
@@ -840,12 +846,16 @@ export function renderReportTex(
 		"\\renewcommand{\\labelitemi}{{\\color{accent}\\small\\textbullet}}",
 		"\\newcommand{\\sectionhead}[2]{\\par\\vspace{11pt}{\\color{accent}\\large\\bfseries #1.\\hspace{7pt}#2}\\par\\vspace{2pt}{\\color{accentsoft}\\rule{\\linewidth}{1.1pt}}\\par\\vspace{5pt}}",
 		// Footer: report title left, page number right, hairline above.
-		"\\pagestyle{fancy}\\fancyhf{}",
-		`\\fancyfoot[L]{\\scriptsize\\color{muted}${escapeLatex(spec.title)}}`,
-		"\\fancyfoot[R]{\\scriptsize\\color{muted}\\thepage}",
-		"\\renewcommand{\\headrulewidth}{0pt}\\renewcommand{\\footrulewidth}{0pt}",
-		"\\renewcommand{\\footruleskip}{4pt}",
-		"\\fancyfoot[C]{\\color{accentsoft}\\rule{\\linewidth}{0.6pt}}",
+		// fancyhdr is guarded: the sandbox image carries it, but a deployment
+		// without it must degrade to a plain page rather than fail the compile.
+		"\\IfFileExists{fancyhdr.sty}{" +
+		"\\usepackage{fancyhdr}\\pagestyle{fancy}\\fancyhf{}" +
+		`\\fancyfoot[L]{\\scriptsize\\color{muted}${escapeLatex(spec.title)}}` +
+		"\\fancyfoot[R]{\\scriptsize\\color{muted}\\thepage}" +
+		"\\renewcommand{\\headrulewidth}{0pt}\\renewcommand{\\footrulewidth}{0pt}" +
+		"\\renewcommand{\\footruleskip}{4pt}" +
+		"\\fancyfoot[C]{\\color{accentsoft}\\rule{\\linewidth}{0.6pt}}" +
+		"}{}",
 		"\\begin{document}",
 		// Title band: full-width accent block, white type.
 		"\\noindent\\colorbox{accent}{%",

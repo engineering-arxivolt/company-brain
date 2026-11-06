@@ -81,6 +81,32 @@ RestartSec=5
 
 ## PDF generation (container sandbox)
 
+The PDF path was never a timeout problem. `renderReportTex` emitted LaTeX that
+could not compile, so `latexmk` exited 12 and producted no file — which the
+agent reported as a hang:
+
+| Defect | Symptom in the log | Fix |
+|---|---|---|
+| `\pagestyle{fancy}` with no `\usepackage{fancyhdr}` | `Command \headrulewidth undefined` → `Missing \begin{document}` | load fancyhdr inside `\IfFileExists`, footer degrades to plain instead of failing |
+| `\rptoprule` / `\rpmidrule` / `\rpbottomrule` used, never defined | `Undefined control sequence` at every table | define them from booktabs, with `\hline` fallback |
+| `\noindent` glued to the table title | `\noindentObligation` is one undefined control word | emit `\noindent{}` |
+| `siunitx` required | `File siunitx.sty not found` (the image does not carry it) | keep the `\IfFileExists` guard; nothing uses it |
+
+Regression guard: `src/brain/documents/report-preamble.test.ts` asserts all four.
+Verified for real by rendering a spec with `renderReportTex`, then
+`latexmk -pdf` inside the built image: exit 0, 103KB PDF.
+
+Two different sandboxes exist, and mixing them up wastes an afternoon:
+
+- **Production** — Cloudflare Containers app `company-brain-sandbox`, image from
+  `./sandbox/Dockerfile` (TeX Live 2022, latexmk, matplotlib 3.11). Check with
+  `npx wrangler containers list` → state `ready`.
+- **Local debug** — a manually started `cloudflare/sandbox:0.12.10-python`
+  container has **no TeX at all**. If you started one to poke at pdflatex, stop
+  it: its CMD is that probe, so every restart re-creates the stuck exec session.
+
+
+
 `src/brain/documents/deliver-report.ts` writes the LaTeX, then runs the build from
 `build.sh` under `timeout -k 5 240s`, so a hung `pdflatex` dies instead of pinning the
 session. Each step logs `ms=` so "slow" and "stuck" are distinguishable.
