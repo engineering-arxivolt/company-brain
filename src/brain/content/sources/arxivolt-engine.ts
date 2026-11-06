@@ -10,6 +10,7 @@
  * Failures are values, not throws, like `buffer.ts`: the caller decides whether
  * to tell the operator, retry, or fall back to a Slack-only delivery.
  */
+import { captureSeoEvent } from "@/lib/posthog"
 
 export type DeepDiveFaq = { q: string; a: string }
 
@@ -57,6 +58,8 @@ export type DeepDiveInput = {
 	force?: boolean
 	product?: string
 	vertical?: string
+	/** PostHog distinct id / group for the pipeline funnel. */
+	orgId?: string
 }
 
 export type DeepDiveResult =
@@ -267,6 +270,17 @@ export async function publishDeepDive(
 	const linkTarget = input.pdf ? `/assets/${slug}.pdf` : null
 	const markdown = withPdfLink(input.markdown, linkTarget)
 
+	// Emitted before the publish attempt so a draft that never shipped is still
+	// visible in the funnel — that gap is the one worth watching.
+	captureSeoEvent("article_drafted", {
+		distinctId: input.orgId ?? "arxivolt",
+		orgId: input.orgId,
+		slug,
+		cluster: input.cluster,
+		keyword: input.keyword,
+		words: input.markdown.split(/\s+/).filter(Boolean).length,
+	})
+
 	const published = await publishArticle(env, {
 		slug,
 		title: input.title,
@@ -284,6 +298,21 @@ export async function publishDeepDive(
 	})
 	if (!published.ok) return published
 
+	// The three pipeline events join to the site's `$pageview`/`cta_click` on the
+	// same `slug` super property, so one PostHog funnel runs keyword → draft →
+	// live page → CTA click. Word count comes from the text we actually sent, not
+	// from a later read, so a failed upload cannot inflate it.
+	const funnelProps = {
+		distinctId: input.orgId ?? "arxivolt",
+		orgId: input.orgId,
+		slug: published.slug,
+		cluster: input.cluster,
+		keyword: input.keyword,
+		words: markdown.split(/\s+/).filter(Boolean).length,
+		url: published.url,
+	}
+	captureSeoEvent("article_published", funnelProps)
+
 	let pdfUrl: string | null = null
 	if (input.pdf) {
 		const uploaded = await uploadPdf(env, published.slug, input.pdf)
@@ -295,6 +324,9 @@ export async function publishDeepDive(
 		published.status === "live"
 			? (await verifyLiveArticle(config.baseUrl, published.slug, input.title)).ok
 			: false
+	if (published.status === "live") {
+		captureSeoEvent("article_verified", { ...funnelProps, verified, pdf: Boolean(pdfUrl) })
+	}
 
 	return {
 		ok: true,

@@ -24,6 +24,10 @@ interface Env {
 	ARXIVOLT_ENGINE_URL?: string
 	/** Shared secret for arxivolt-engine's /admin/* publishing API. */
 	ARXIVOLT_ENGINE_ADMIN_SECRET?: string
+	/** Google Search Console read token (`webmasters.readonly`) for the growth loop. */
+	GSC_ACCESS_TOKEN?: string
+	/** Search Console property, e.g. `https://www.arxivolt.com/`. */
+	GSC_SITE_URL?: string
 }
 
 /**

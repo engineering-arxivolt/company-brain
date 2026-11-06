@@ -470,6 +470,23 @@ export function captureContentEvent(...args: unknown[]): void {
 	productEvent("brain_content_event", args[0])
 }
 
+/**
+ * The SEO pipeline funnel, one PostHog event per stage.
+ *
+ * These are deliberately not collapsed into `brain_content_event`: the whole
+ * point is that a keyword can be followed from the moment treg picked it to the
+ * moment the published page is verified live, and the site-side `$pageview` /
+ * `cta_click` events join on the same `slug` super property. A generic event
+ * would make that funnel unbuildable in PostHog without a custom transform.
+ *
+ * `stage` is the suffix (`keyword_chosen`, `article_drafted`, ...), so callers
+ * never spell the `seo_` prefix themselves and the naming stays consistent.
+ */
+export function captureSeoEvent(stage: string, args: unknown): void {
+	const name = `seo_${String(stage).replace(/^seo_/, "")}`
+	productEvent(name, args)
+}
+
 export function captureJourneyExited(...args: unknown[]): void {
 	productEvent("brain_journey_exited", args[0])
 }
