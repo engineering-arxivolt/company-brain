@@ -144,10 +144,13 @@ curl -s https://www.arxivolt.com/8f4c2d1e6a9b47d3a5c0e2f7b9d1486c.txt   # must r
 
 Decision model (`content/growth.ts`): `scorePage` (opportunity/decay/conversion gap),
 `scoreTopic` (volume × intent × link surface × freshness, cannibalisation = hard 0),
-bands at 0.7/0.4, and `content/growth-report.ts` builds the weekly top-5. Gates live in
-`content/quality.ts` (`auditArticle`): single H1, title 10–140, meta 60–180, ≥300 words,
-one figure = one evidence citation. System 1 triage (`content/triage.ts`) classifies
-intake, keyword intent and draft risk with a 0.7 confidence floor and a regex fallback.
+bands at 0.7/0.4, and `content/growth-report.ts` builds the weekly top-5. In the brain the
+operator asks for it in words and the `content_growth_plan` tool does the pull + scoring
+(`refresh: true` fetches 28 days first; it refuses with the token instructions when
+nothing is stored). Gates live in `content/quality.ts` (`auditArticle`): single H1,
+title 10–140, meta 60–180, ≥300 words, one figure = one evidence citation. System 1
+triage (`content/triage.ts`) classifies intake, keyword intent and draft risk with a 0.7
+confidence floor and a regex fallback.
 
 ### Blocked / one-click steps
 

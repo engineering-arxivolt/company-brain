@@ -3,6 +3,7 @@ import type { BrainCostLedger } from "../billing/cost"
 import { createConfigurationTool } from "../configuration"
 import { createContentStudioTool } from "./content-studio-tool"
 import {
+	createContentGrowthTool,
 	createContentMarketTool,
 	createContentNewsTool,
 	createContentPerformanceTool,
@@ -586,6 +587,15 @@ export async function assembleTurnTools(
 						env,
 						orgId: org.id,
 						userId: actor.userId ?? userId,
+						traceId,
+					}),
+					// The weekly decision, computed from Search Console rather than
+					// guessed: score every page, print the top five with reasons.
+					content_growth_plan: createContentGrowthTool({
+						deps,
+						agent,
+						env,
+						orgId: org.id,
 						traceId,
 					}),
 					// The News Desk: stories worth posting about, filtered hard,

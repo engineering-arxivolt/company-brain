@@ -97,7 +97,10 @@ export async function fetchGscQueries(args: GscFetchArgs): Promise<GscFetchResul
 }
 
 /** One row per (date, query, page); re-pulling a window overwrites it. */
-export type SqlAgent = { sql: (strings: TemplateStringsArray, ...values: unknown[]) => unknown }
+export type SqlValue = string | number | boolean | null
+export type SqlAgent = {
+	sql: (strings: TemplateStringsArray, ...values: SqlValue[]) => unknown
+}
 
 const schemaReady = new WeakSet<object>()
 

@@ -14,6 +14,8 @@ import {
 	founderSectionText,
 	getFounderBrain,
 } from "../content/founder-brain"
+import { ensureGscTable, fetchGscQueries, summariseByPage, upsertGscRows } from "../content/gsc"
+import { buildGrowthReport, renderGrowthReport } from "../content/growth-report"
 import {
 	describeAlertCandidates,
 	listNewsBriefs,
@@ -423,6 +425,99 @@ export type ContentMarketToolArgs = {
 	orgId: string
 	userId: string
 	traceId: string
+}
+
+
+export type ContentGrowthToolArgs = {
+	agent: CompanyBrainAgent
+	deps: TurnDeps
+	env: Pick<Env, "GSC_ACCESS_TOKEN" | "GSC_SITE_URL">
+	orgId: string
+	traceId: string
+}
+
+/**
+ * The weekly "what should we do next?" answer, computed rather than guessed.
+ *
+ * Everything here is deterministic: Search Console rows in, `scorePage` /
+ * `buildGrowthReport` out. The model's job is to explain the result and draft
+ * the work, not to rank it — which is why the tool returns the reasons
+ * alongside the score and caps the list at review capacity. When no token is
+ * configured it says so instead of reporting a quiet week.
+ */
+export function createContentGrowthTool(args: ContentGrowthToolArgs) {
+	const { deps } = args
+	return deps.tool({
+		description:
+			"Decide what to do next for the public site, from measured search data. Returns the top actions for this week (refresh a page that ranks 8-20 with a weak CTR, merge a dead page, fix the CTA on traffic that does not convert, or write a missing page), each with the numbers that justify it. Use it for 'what should we do this week?', 'where are we losing clicks?', 'what should I refresh first?'. Never guess rankings — call this.",
+		inputSchema: deps.z.object({
+			refresh: deps.z
+				.boolean()
+				.optional()
+				.describe("Pull the latest 28 days from Search Console before scoring (needs a configured token)."),
+			maxActions: deps.z.number().min(1).max(10).optional().describe("How many actions to return. Default 5."),
+			days: deps.z.number().min(7).max(90).optional().describe("Search Console window in days. Default 28."),
+		}),
+		execute: async ({ refresh, maxActions, days }) => {
+			ensureGscTable(args.agent)
+			const window = days ?? 28
+			const warnings: string[] = []
+
+			if (refresh) {
+				const end = new Date()
+				const start = new Date(end.getTime() - window * 86_400_000)
+				const pulled = await fetchGscQueries({
+					siteUrl: args.env.GSC_SITE_URL?.trim() || "https://www.arxivolt.com/",
+					accessToken: args.env.GSC_ACCESS_TOKEN,
+					startDate: start.toISOString().slice(0, 10),
+					endDate: end.toISOString().slice(0, 10),
+				})
+				if (pulled.ok) {
+					const written = upsertGscRows(args.agent, pulled.rows)
+					console.log(`[company-brain][${args.traceId}] growth_report refreshed rows=${written}`)
+				} else {
+					warnings.push(pulled.error)
+				}
+			}
+
+			const rows = args.agent.sql<{
+				date: string
+				query: string
+				page: string
+				clicks: number
+				impressions: number
+				ctr: number
+				position: number
+			}>`SELECT date, query, page, clicks, impressions, ctr, position FROM seo_gsc_query ORDER BY date DESC LIMIT 5000`
+
+			if (rows.length === 0) {
+				return {
+					ok: false,
+					error:
+						"No Search Console data yet. Set GSC_ACCESS_TOKEN (scope: webmasters.readonly) and call again with refresh: true, or wait for the first crawl of a published page.",
+					warnings,
+				}
+			}
+
+			const pages = summariseByPage(
+				rows.map((row) => ({ ...row, query: String(row.query), page: String(row.page) })),
+			)
+			const report = buildGrowthReport({ pages, maxActions: maxActions ?? 5 })
+			console.log(
+				`[company-brain][${args.traceId}] growth_report actions=${report.actions.length} considered=${report.considered} ignored=${report.ignored}`,
+			)
+			return {
+				ok: true,
+				windowDays: window,
+				pagesMeasured: pages.length,
+				considered: report.considered,
+				ignored: report.ignored,
+				summary: renderGrowthReport(report),
+				actions: report.actions,
+				warnings,
+			}
+		},
+	})
 }
 
 export function createContentMarketTool(args: ContentMarketToolArgs) {
