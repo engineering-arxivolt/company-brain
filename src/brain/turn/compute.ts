@@ -1251,18 +1251,13 @@ export async function computeTurn(
 			!/\bdoodle\b/i.test(questionText) &&
 			!/\bcampaign pack\b/i.test(questionText) &&
 			!wantsDocumentNotPicture &&
-			!/\bimage prompts?\b|\bflow kit\b/i.test(questionText) &&
-			// A true "make me a picture" ask carries a picture noun
-			// (still/image/clip/video/cover/artwork/render) plus a creative verb.
-			// A "make me a pdf|report|document" is a compile job, never a Flow job,
-			// even if an image is attached -- the cover must be generated
-			// in-sandbox or pulled from the workspace hero, never via flow-mcp.
-			((/\b(still|image|clip|video|cover|artwork|render)\b/i.test(questionText) &&
-				creativeVerb.test(questionText)) ||
-				(threadImages.length > 0 &&
-					/\b(picture|photo|image|still|render|art)\b/i.test(questionText) &&
-					!/\b(pdf|report|document|brief|proposal)\b/i.test(questionText)))
-		if (wantsFlow && slackLookup && !scheduledRun) {
+			// Image generation only on explicit picture requests: a creative verb
+			// plus a picture noun, never when document words (pdf|report|document)
+			// are present — "make me a pdf" must never route to flow-mcp.
+			(creativeVerb.test(questionText) &&
+				/\b(image|picture|photo|still|render|artwork|cover)\b/i.test(questionText) &&
+				!/\b(pdf|report|document|brief|proposal)\b/i.test(questionText))
+			if (wantsFlow && slackLookup && !scheduledRun) {
 			const wantsClip = /\b(clip|video|animation)\b/i.test(questionText)
 			// Strip the command, keep the sentence. The trailing fallback matters: a
 			// request that is nothing but scaffolding still gets sent as written
