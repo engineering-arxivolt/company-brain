@@ -107,6 +107,7 @@ import {
 	validateReportSpec,
 } from "../documents/report"
 import { deliverReport, renderReportDeliveryContext } from "../documents/deliver-report"
+import { renderSandboxedCover } from "../documents/render-cover"
 import {
 	buildCampaignFiles,
 	CAMPAIGN_BUILD_SCRIPT,
@@ -126,6 +127,7 @@ import { fetchPageDirect, searchDirect, type DirectHit } from "../tools/web/dire
 import { firecrawlSearch, firecrawlScrape } from "../tools/web/firecrawl"
 import { createSandboxClient, sandboxToolsConfigured } from "../tools/sandbox/client"
 import { acquireSandboxLease } from "../tools/sandbox/lease"
+import { isImageGenerationInProgress, waitForImageLease } from "../tools/sandbox/lease"
 import { postSlackMessage, uploadSlackFile } from "../slack/client"
 
 /**
@@ -1244,18 +1246,22 @@ export async function computeTurn(
 		// never gets planned.
 		const wantsDocumentNotPicture =
 			/\b(report|brief|pdf|document|proposal)\b/i.test(questionText) &&
-			/\b(cover|illustration|diagram|chart|imagery|art direction)\b/i.test(questionText)
+			/\b(cover|illustration|diagram|chart|imagery|art direction|visual|vignette|paint|sky|landscape|portrait)\b/i.test(questionText)
 		const wantsFlow =
 			!/\bdoodle\b/i.test(questionText) &&
 			!/\bcampaign pack\b/i.test(questionText) &&
 			!wantsDocumentNotPicture &&
 			!/\bimage prompts?\b|\bflow kit\b/i.test(questionText) &&
-			((/\bflow\b/i.test(questionText) && /\b(still|image|clip|video)\b/i.test(questionText)) ||
-				(creativeVerb.test(questionText) && pictureNoun.test(questionText)) ||
+			// A true "make me a picture" ask carries a picture noun
+			// (still/image/clip/video/cover/artwork/render) plus a creative verb.
+			// A "make me a pdf|report|document" is a compile job, never a Flow job,
+			// even if an image is attached -- the cover must be generated
+			// in-sandbox or pulled from the workspace hero, never via flow-mcp.
+			((/\b(still|image|clip|video|cover|artwork|render)\b/i.test(questionText) &&
+				creativeVerb.test(questionText)) ||
 				(threadImages.length > 0 &&
-					(creativeVerb.test(questionText) ||
-						/\b(still|image|clip|video|version|variant|art)\b/i.test(questionText) ||
-						characterTalk.test(questionText))))
+					/\b(picture|photo|image|still|render|art)\b/i.test(questionText) &&
+					!/\b(pdf|report|document|brief|proposal)\b/i.test(questionText)))
 		if (wantsFlow && slackLookup && !scheduledRun) {
 			const wantsClip = /\b(clip|video|animation)\b/i.test(questionText)
 			// Strip the command, keep the sentence. The trailing fallback matters: a
@@ -1420,7 +1426,7 @@ export async function computeTurn(
 		// so this asks the pack model for a scene plan and ships the prompt file
 		// — no sandbox, no PDF, nothing that can stall it.
 		const wantsImagePrompts =
-			/\b(image prompts?|image kit|flow kit|stills?)\b/i.test(questionText) &&
+			/\bimage prompts\b/i.test(questionText) &&
 			!/\bcampaign pack\b/i.test(questionText)
 		if (
 			wantsImagePrompts &&
@@ -1567,48 +1573,24 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 						`[company-brain][${traceId}] report failed validation after repair, leaving the report to the model`,
 					)
 				} else {
-				// Phase 5 — art direction resolved: Jev planned a cover, so reuse the
-				// workspace hero or render a themed one in Flow first (the agent
-				// completes image jobs in about a minute; /render/complete stores
-				// the bytes as the workspace hero, from which the cover is read).
+				// Phase 5 -- art direction resolved: do NOT use flow-mcp or any external
+				// image model for PDF covers. The cover must be deterministic and sandboxed.
+				// Priority: (1) reuse the workspace hero if it exists; (2) render a
+				// deterministic LaTeX/TikZ cover from the art prompt in-sandbox; (3) build
+				// without imagery.
 				let coverBase64: string | undefined
 				if (plan?.art?.coverPrompt) {
 					if (plan.art.reuseExistingHero) {
 						coverBase64 = (await env.BRAIN_KV.get(`render:hero:${org.id}`)) ?? undefined
 					} else {
-						const artJob = {
-							id: crypto.randomUUID(),
-							kind: "flow" as const,
-							title: `cover image for "${spec.title}": ${plan.art.coverPrompt}`,
-							format: "16x9",
-							flow: { type: "image" as const, aspect: "16:9" },
-							channel: slackLookup.channel,
-							threadTs: slackLookup.threadTs,
-							orgId: org.id,
-							requestedBy: actor.userId,
-							status: "pending" as const,
-							createdAt: Date.now(),
-							attempts: 0,
-						}
-						await env.BRAIN_KV.put(`render:job:${artJob.id}`, JSON.stringify(artJob), {
-							expirationTtl: 60 * 60 * 24,
-						})
-						console.log(
-							`[company-brain][${traceId}] report cover queued in Flow job=${artJob.id} prompt="${plan.art.coverPrompt.slice(0, 80)}"`,
-						)
-						// Wait for the agent: image jobs finish in about a minute.
-						for (let waited = 0; waited < 180_000; waited += 10_000) {
-							await new Promise((resolve) => setTimeout(resolve, 10_000))
-							const jobRaw = await env.BRAIN_KV.get(`render:job:${artJob.id}`)
-							const status = jobRaw ? (JSON.parse(jobRaw) as { status?: string }).status : ""
-							if (status === "done" || status === "failed") break
-						}
-						coverBase64 = (await env.BRAIN_KV.get(`render:hero:${org.id}`)) ?? undefined
-						if (!coverBase64) {
-							console.warn(
-								`[company-brain][${traceId}] report cover unavailable, building without imagery`,
-							)
-						}
+						// Render a deterministic cover in-sandbox (no external image models).
+					const coverResult = await renderSandboxedCover({
+						client: createSandboxClient(env),
+						orgId: org.id,
+						coverPrompt: plan.art.coverPrompt,
+						traceId,
+					})
+					coverBase64 = coverResult.ok ? coverResult.coverBase64 : undefined
 					}
 				}
 				const upload = await deliverReport({
