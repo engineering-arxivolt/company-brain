@@ -7,6 +7,7 @@ import {
 	deliverCareerDocuments,
 	parseVerifyOutput,
 	renderCareerDeliveryContext,
+	selectCareerDocuments,
 	trimProfile,
 } from "./deliver"
 
@@ -78,7 +79,29 @@ function stubClient(options?: {
 					`VERIFY cv.pdf pages=${pages} chars=4210 bytes=49265`,
 				)
 			}
-			return result(options?.verifyExit ?? 0, options?.verifyOutput ?? VERIFIED)
+			if (options?.verifyExit !== undefined || options?.verifyOutput !== undefined) {
+				return result(options?.verifyExit ?? 0, options?.verifyOutput ?? VERIFIED)
+			}
+			// Answer for exactly the files the command asks about, in order — a
+			// one-document build must verify one document, and a stub that always
+			// reports two would hide that.
+			const asked = [
+				...new Set(
+					[...command.matchAll(/VERIFY\s+([A-Za-z0-9._-]+\.pdf)/g)].map(
+						(match) => match[1] ?? "cv.pdf",
+					),
+				),
+			]
+			return result(
+				0,
+				asked
+					.map((name) =>
+						name.startsWith("cover-letter")
+							? `VERIFY ${name} pages=1 chars=1500 bytes=15416`
+							: `VERIFY ${name} pages=2 chars=4210 bytes=49265`,
+					)
+					.join("\n"),
+			)
 		},
 		getArtifact: async ({ path }: { path: string }) => ({
 			path,
@@ -233,6 +256,79 @@ describe("deliverCareerDocuments", () => {
 
 		expect(result).toMatchObject({ ok: false })
 		expect(uploaded).toEqual([])
+	})
+})
+
+describe("selectCareerDocuments", () => {
+	it("builds both when the ask names both", () => {
+		// The case a naive first-match gets wrong: "cv" matches, so the letter
+		// disappears — and the asker gets one file where they asked for two.
+		expect(selectCareerDocuments("make me a CV and a cover letter")).toEqual([
+			"cv",
+			"cover-letter",
+		])
+	})
+
+	it("builds only the CV when only the CV is named", () => {
+		expect(selectCareerDocuments("just the CV please")).toEqual(["cv"])
+		expect(selectCareerDocuments("tailor my résumé to this posting")).toEqual(["cv"])
+		expect(selectCareerDocuments("rebuild my resume")).toEqual(["cv"])
+	})
+
+	it("builds only the letter when only the letter is named", () => {
+		expect(selectCareerDocuments("write the cover letter for this role")).toEqual([
+			"cover-letter",
+		])
+		expect(selectCareerDocuments("covering letter only")).toEqual(["cover-letter"])
+	})
+
+	it("defaults to both when the ask names neither", () => {
+		// Reached on a retry ("again") or a skill-driven turn.
+		expect(selectCareerDocuments("yes please")).toEqual(["cv", "cover-letter"])
+	})
+})
+
+describe("deliverCareerDocuments — one document at a time", () => {
+	it("skips the cover letter entirely when only the CV is asked for", async () => {
+		const { client, written, commands } = stubClient()
+		const uploaded: string[] = []
+		const result = await deliverCareerDocuments({
+			client,
+			profileMarkdown,
+			jobText,
+			traceId: "t1",
+			documents: ["cv"],
+			upload: async (file) => {
+				uploaded.push(file.fileName)
+				return { ok: true }
+			},
+		})
+
+		expect(result.ok).toBe(true)
+		expect(uploaded).toEqual(["cv.pdf"])
+		expect(written.some((path) => path.endsWith("cover-letter.tex"))).toBe(false)
+		expect(commands.filter((c) => c.includes("cover-letter"))).toEqual([])
+	})
+
+	it("never writes or compiles the CV when only the letter is asked for", async () => {
+		const { client, written, commands } = stubClient()
+		const uploaded: string[] = []
+		const result = await deliverCareerDocuments({
+			client,
+			profileMarkdown,
+			jobText,
+			traceId: "t1",
+			documents: ["cover-letter"],
+			upload: async (file) => {
+				uploaded.push(file.fileName)
+				return { ok: true }
+			},
+		})
+
+		expect(result.ok).toBe(true)
+		expect(uploaded).toEqual(["cover-letter.pdf"])
+		expect(written.some((path) => path.endsWith("cv.tex"))).toBe(false)
+		expect(commands.filter((c) => c.includes("cv.tex"))).toEqual([])
 	})
 })
 

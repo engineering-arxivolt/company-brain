@@ -94,6 +94,7 @@ import {
 	channelRefFromMessage,
 	deliverCareerDocuments,
 	renderCareerDeliveryContext,
+	selectCareerDocuments,
 } from "../career/deliver"
 import {
 	requestTailoringPlanChecked,
@@ -881,12 +882,16 @@ export async function computeTurn(
 			// the compile chain here and a campaign render cannot run at once
 			// without the platform killing one of their sessions.
 			const careerLease = await acquireSandboxLease(env, `builds:${org.id}`)
+			// Which documents the asker named: "just the CV" should not cost a
+			// cover-letter compile, and "both" must not collapse to one.
+			const questionedDocs = selectCareerDocuments(question ?? "")
 			const built = await deliverCareerDocuments({
 				client: createSandboxClient(env),
 				profileMarkdown: baseCv,
 				jobText,
 				traceId,
 				tailoring,
+				documents: questionedDocs,
 				upload: async (file) => {
 					const upload = await uploadSlackFile(slackLookup.botToken, {
 						channel: deliveryChannel,
@@ -910,6 +915,14 @@ export async function computeTurn(
 			if (built.ok) {
 				careerDelivery = { documents: built.documents }
 				documentDelivery.markDelivered(built.documents[0]?.fileName ?? "cv.pdf")
+				// Hand the container back now that the bytes are delivered: the
+				// sandbox is billed per instance and nothing here needs the
+				// workspace again. Best-effort — a failed cleanup must not turn a
+				// delivered document into an error.
+				const cleanup = createSandboxClient(env).destroySandbox?.({
+					sandboxId: built.sandboxId,
+				})
+				void cleanup?.catch(() => undefined)
 				// The documents exist, so the sandbox has nothing left to do. It
 				// was not a hypothetical: a live turn rebuilt its own .tex after
 				// the real files were already delivered, and those extra uploads

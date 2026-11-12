@@ -199,9 +199,13 @@ export function createCloudflareSandboxClient(
 				}
 			}
 			// cd inside the command so a missing directory is an ordinary error.
+			const execOptions: { timeout: number; signal?: AbortSignal } = {
+				timeout: timeoutSec * 1000,
+			}
+			if (args.signal) execOptions.signal = args.signal
 			const result = await sandboxFor(env, args.sandboxId).exec(
 				`cd ${shellQuote(absolute(cwd))} && ${command.command}`,
-				{ timeout: timeoutSec * 1000 },
+				execOptions,
 			)
 			const combined = [result.stdout, result.stderr]
 				.filter((part) => part.length > 0)
@@ -342,7 +346,15 @@ export function createCloudflareSandboxClient(
 			}
 		},
 
-		async getArtifact(args) {
+		async destroySandbox(args: { sandboxId: string }): Promise<void> {
+		try {
+			await sandboxFor(env, args.sandboxId).destroy()
+		} catch {
+			// Best effort: if the sandbox is already gone, nothing to do.
+		}
+	},
+
+	async getArtifact(args) {
 			const out = await client.getArtifactStream(args)
 			const content = await new Response(out.content).arrayBuffer()
 			return {

@@ -1,5 +1,6 @@
 import type { SandboxClient } from "../tools/sandbox/client"
 import { renderCoverLetterTex } from "./cover-letter"
+import { withoutAccents } from "./document-ask"
 import { parseJobPosting } from "./job-posting"
 import { parseCareerProfile, type CareerProfile } from "./profile"
 import { renderResumeTex } from "./render"
@@ -27,6 +28,8 @@ export type DeliverCareerDocumentsArgs = {
 	profileMarkdown: string
 	jobText: string
 	traceId: string
+	/** Which documents to build. Defaults to both ("cv" and "cover-letter"). */
+	documents?: CareerDocumentKind[]
 	/** Uploads one file and reports whether Slack accepted it. */
 	upload: (file: {
 		fileName: string
@@ -58,11 +61,41 @@ export function verifyPdfLines(readPath: string, reportAs: string): string[] {
 	]
 }
 
+/** The two documents this pipeline builds. */
+export type CareerDocumentKind = "cv" | "cover-letter"
+
+const PDF_FOR: Record<CareerDocumentKind, string> = {
+	cv: "cv.pdf",
+	"cover-letter": "cover-letter.pdf",
+}
+
 const SOURCE_PDFS = ["cv.pdf", "cover-letter.pdf"]
 
-export const PDF_VERIFY_SCRIPT = [
-	...SOURCE_PDFS.flatMap((name) => verifyPdfLines(name, name)),
-].join("\n")
+/**
+ * Which documents an ask actually names.
+ *
+ * "Just the CV" and "just the cover letter" are ordinary asks, and building the
+ * other file is wasted compile time and an extra attachment to explain. Naming
+ * both is also ordinary — and the case a naive `if` gets wrong, because "cv and
+ * a cover letter" matches both tests and then falls out of the first branch.
+ */
+export function selectCareerDocuments(question: string): CareerDocumentKind[] {
+	const text = withoutAccents(question.toLowerCase())
+	const wantsCv = /\bcvs?\b/.test(text) || /\bresumes?\b/.test(text) || /curriculum vitae/.test(text)
+	const wantsLetter = /\bcover(?:ing)? letters?\b/.test(text)
+	if (wantsCv && wantsLetter) return ["cv", "cover-letter"]
+	if (wantsCv) return ["cv"]
+	if (wantsLetter) return ["cover-letter"]
+	// Neither named: the ask came from the pattern or a skill, so build both.
+	return ["cv", "cover-letter"]
+}
+
+/** The verification gates for a chosen set, in delivery order. */
+export function pdfVerifyScript(files: readonly string[]): string {
+	return files.flatMap((name) => verifyPdfLines(name, name)).join("\n")
+}
+
+export const PDF_VERIFY_SCRIPT = pdfVerifyScript(SOURCE_PDFS)
 
 /**
  * Ghostscript rewrite before the file leaves the sandbox.
@@ -72,13 +105,17 @@ export const PDF_VERIFY_SCRIPT = [
  * every viewer, thumbnailer and mobile client accepts) with embedded fonts, and
  * cuts the size by ~4x.
  */
-export const PDF_NORMALIZE_SCRIPT = [
-	"set -e",
-	...SOURCE_PDFS.map(
-		(name) =>
-			`gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dEmbedAllFonts=true -sOutputFile="${uploadName(name)}" "${name}"`,
-	),
-].join("\n")
+export function pdfNormalizeScript(files: readonly string[]): string {
+	return [
+		"set -e",
+		...files.map(
+			(name) =>
+				`gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dEmbedAllFonts=true -sOutputFile="${uploadName(name)}" "${name}"`,
+		),
+	].join("\n")
+}
+
+export const PDF_NORMALIZE_SCRIPT = pdfNormalizeScript(SOURCE_PDFS)
 
 export function uploadName(fileName: string): string {
 	return fileName.replace(/\.pdf$/i, ".upload.pdf")
@@ -213,6 +250,15 @@ export async function deliverCareerDocuments(
 	// it gets here, so the renderer can trust it.
 	const tailored = applyTailoring(base, args.tailoring)
 
+	// Which documents this turn asked for. Both by default; a caller that names
+	// one skips the other's compile entirely.
+	const wantedDocs: CareerDocumentKind[] = args.documents?.length
+		? args.documents
+		: ["cv", "cover-letter"]
+	const wantedPdfs = wantedDocs.map((kind) => PDF_FOR[kind])
+	const wantsCv = wantedDocs.includes("cv")
+	const wantsLetter = wantedDocs.includes("cover-letter")
+
 	const sandbox = await args.client.createSandbox({
 		goal: "career documents (CV + cover letter)",
 	})
@@ -279,8 +325,10 @@ export async function deliverCareerDocuments(
 		trimProfile(base, tighter),
 		base,
 	]
-	let cvProfile: CareerProfile | null = null
-	for (const variant of variants) {
+	// A cover-letter-only ask still needs a profile to write the letter from, but
+	// no CV render and no page fitting: the loop below simply has nothing to try.
+	let cvProfile: CareerProfile | null = wantsCv ? null : tailored
+	for (const variant of wantsCv ? variants : []) {
 		await args.client.writeFile({
 			sandboxId: sandbox.sandboxId,
 			path: `${sandbox.defaultCwd}/cv.tex`,
@@ -335,16 +383,18 @@ export async function deliverCareerDocuments(
 		return { ok: false, error: "the CV would not fit on two pages" }
 	}
 
-	const files = [
-		{
-			path: "cover-letter.tex",
-			content: renderCoverLetterTex(
-				cvProfile,
-				posting,
-				args.tailoring?.coverLetterParagraphs,
-			),
-		},
-	]
+	const files = wantsLetter
+		? [
+				{
+					path: "cover-letter.tex",
+					content: renderCoverLetterTex(
+						cvProfile,
+						posting,
+						args.tailoring?.coverLetterParagraphs,
+					),
+				},
+			]
+		: []
 	for (const file of files) {
 		await args.client.writeFile({
 			sandboxId: sandbox.sandboxId,
@@ -353,12 +403,15 @@ export async function deliverCareerDocuments(
 		})
 	}
 
-	const compiled = await args.client.runCommand({
-		sandboxId: sandbox.sandboxId,
-		cwd: sandbox.defaultCwd,
-		command: "latexmk -pdf -interaction=nonstopmode cover-letter.tex > cover-letter.build.log 2>&1",
-		timeoutSec: args.timeoutSec ?? 120,
-	})
+	const compiled = files.length
+		? await args.client.runCommand({
+				sandboxId: sandbox.sandboxId,
+				cwd: sandbox.defaultCwd,
+				command:
+					"latexmk -pdf -interaction=nonstopmode cover-letter.tex > cover-letter.build.log 2>&1",
+				timeoutSec: args.timeoutSec ?? 120,
+			})
+		: { exitCode: 0, output: "" }
 	if (compiled.exitCode !== 0) {
 		console.log(
 			`[company-brain][${args.traceId}] career cover letter build failed exit=${compiled.exitCode} output=${compiled.output.slice(-400)}`,
@@ -372,11 +425,11 @@ export async function deliverCareerDocuments(
 	const verified = await args.client.runCommand({
 		sandboxId: sandbox.sandboxId,
 		cwd: sandbox.defaultCwd,
-		command: PDF_VERIFY_SCRIPT,
+		command: pdfVerifyScript(wantedPdfs),
 		timeoutSec: 60,
 	})
 	const checked = parseVerifyOutput(verified.output)
-	if (verified.exitCode !== 0 || checked.length !== 2) {
+	if (verified.exitCode !== 0 || checked.length !== wantedPdfs.length) {
 		console.log(
 			`[company-brain][${args.traceId}] career build verification failed exit=${verified.exitCode} output=${verified.output.slice(-400)}`,
 		)
@@ -389,7 +442,7 @@ export async function deliverCareerDocuments(
 	const normalized = await args.client.runCommand({
 		sandboxId: sandbox.sandboxId,
 		cwd: sandbox.defaultCwd,
-		command: PDF_NORMALIZE_SCRIPT,
+		command: pdfNormalizeScript(wantedPdfs),
 		timeoutSec: 120,
 	})
 	if (normalized.exitCode !== 0) {
@@ -401,13 +454,13 @@ export async function deliverCareerDocuments(
 	const uploadCheck = await args.client.runCommand({
 		sandboxId: sandbox.sandboxId,
 		cwd: sandbox.defaultCwd,
-		command: SOURCE_PDFS.map((name) =>
-			verifyPdfLines(uploadName(name), name).join("\n"),
-		).join("\n"),
+		command: wantedPdfs
+			.map((name) => verifyPdfLines(uploadName(name), name).join("\n"))
+			.join("\n"),
 		timeoutSec: 60,
 	})
 	const uploadable = parseVerifyOutput(uploadCheck.output)
-	if (uploadCheck.exitCode !== 0 || uploadable.length !== 2) {
+	if (uploadCheck.exitCode !== 0 || uploadable.length !== wantedPdfs.length) {
 		console.log(
 			`[company-brain][${args.traceId}] career build upload verification failed exit=${uploadCheck.exitCode} output=${uploadCheck.output.slice(-400)}`,
 		)

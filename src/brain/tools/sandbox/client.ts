@@ -24,6 +24,7 @@ export type SandboxClient = {
 		command: string
 		cwd: string
 		timeoutSec?: number
+		signal?: AbortSignal
 	}): Promise<{
 		exitCode: number
 		output: string
@@ -107,6 +108,13 @@ export type SandboxClient = {
 		sizeBytes: number
 		content: ReadableStream<Uint8Array>
 	}>
+	/**
+	 * Free the sandbox once its artifacts are in hand. Optional because not
+	 * every backend exposes a delete call (Daytona does not, and its sandboxes
+	 * expire on their own); the Cloudflare container is billed per instance, so
+	 * the caller that used it should hand it back.
+	 */
+	destroySandbox?(args: { sandboxId: string }): Promise<void>
 	isSandboxRunning(sandboxId: string): Promise<boolean>
 }
 
