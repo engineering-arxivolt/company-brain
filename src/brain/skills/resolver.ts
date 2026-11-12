@@ -1,5 +1,6 @@
 import type { CompanyBrainAgent } from "../turn/agent"
 import { recordDecision } from "../turn/decision-log"
+import { shouldSuppress, skillQuality } from "../slack/answer-quality"
 import {
 	isTypeSafeConfigured,
 	querySystemOne,
@@ -114,6 +115,22 @@ export async function resolveSkillsWithJev(args: {
 		const chosenSkill = skillBySafeKey.get(chosenKey)
 		if (!chosenSkill) {
 			decided(NONE_OF_THE_ABOVE, `Chosen key ${chosenKey} did not map to a visible skill.`)
+			return null
+		}
+
+		// Closed loop: the team's own 👍/👎 on the answers this playbook wrote.
+		// A playbook with enough votes and a clearly negative score is not
+		// preloaded — the normal index still exposes it, so the model can load it
+		// deliberately, but it stops being forced into the prompt.
+		const feedback = skillQuality(agent, chosenKey)
+		if (shouldSuppress(feedback)) {
+			console.log(
+				`[company-brain][${traceId ?? "turn"}] Jev skill preload suppressed key=${chosenKey} score=${feedback?.score?.toFixed(2)} samples=${feedback?.samples}`,
+			)
+			decided(
+				NONE_OF_THE_ABOVE,
+				`Skipped ${chosenSkill.name}: ${feedback?.positive}/${feedback?.samples} positive reactions over the last 30 days.`,
+			)
 			return null
 		}
 

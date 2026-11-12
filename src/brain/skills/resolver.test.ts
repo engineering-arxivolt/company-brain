@@ -2,13 +2,23 @@ import { describe, expect, it, vi } from "vitest"
 import { resolveSkillsWithJev } from "./resolver"
 import type { RuntimeSkill } from "./store"
 
-/** Captures brain_decision_log inserts so tests can assert what was recorded. */
-function fakeAgentWithSql() {
+/**
+ * Captures brain_decision_log inserts so tests can assert what was recorded.
+ *
+ * Only INSERTs count: the resolver also *reads* (the quality join selects from
+ * brain_decision_log), and a test double that counted reads as decisions would
+ * report a decision nobody made.
+ */
+function fakeAgentWithSql(options?: { qualityRows?: Array<Record<string, string>> }) {
 	const decisions: unknown[][] = []
 	const agent = {
 		sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
-			if (strings.join("?").includes("brain_decision_log")) {
+			const query = strings.join("?")
+			if (query.includes("INSERT") && query.includes("brain_decision_log")) {
 				decisions.push(values)
+			}
+			if (query.includes("brain_answer_feedback")) {
+				return options?.qualityRows ?? []
 			}
 			return []
 		},
@@ -88,6 +98,53 @@ describe("resolveSkillsWithJev", () => {
 			expect(values).toContain("skill_selection")
 			expect(values).toContain("incident-triage")
 			expect(values).toContain("jev:jev-1.13.0")
+		} finally {
+			globalThis.fetch = originalFetch
+		}
+	})
+
+	it("stops preloading a playbook the team keeps down-voting", async () => {
+		// Three thumbs-down on answers this playbook wrote. The vote rows come
+		// from the quality join; the rest of the path is a confident JEV pick.
+		const mockJevResponse = {
+			model: "jev-1.13.0",
+			answers: {
+				matched_skill: {
+					type: "choice",
+					choice: "skill_0_incident_triage",
+					confidence: 0.94,
+					probabilities: { skill_0_incident_triage: 0.94 },
+				},
+			},
+		}
+		const originalFetch = globalThis.fetch
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => mockJevResponse,
+		} as any)
+		try {
+			const { agent, decisions } = fakeAgentWithSql({
+				qualityRows: [
+					{ kind: "negative", decision_kind: "skill_selection", choice: "skill_0_incident_triage" },
+					{ kind: "negative", decision_kind: "skill_selection", choice: "skill_0_incident_triage" },
+					{ kind: "negative", decision_kind: "skill_selection", choice: "skill_0_incident_triage" },
+				],
+			})
+			const result = await resolveSkillsWithJev({
+				env: { TYPESAFE_API_KEY: "test-key" } as any,
+				agent,
+				orgId: "org_1",
+				question: "Prod database latency spiked and errors are increasing",
+				visibleSkills: sampleSkills,
+				traceId: "test-trace",
+			})
+
+			expect(result).toBeNull()
+			// The skip is recorded with its reason, so the inspector can explain it.
+			expect(decisions).toHaveLength(1)
+			const values = decisions[0] ?? []
+			expect(values).toContain("none_of_the_above")
+			expect(values.join(" ")).toContain("positive reactions")
 		} finally {
 			globalThis.fetch = originalFetch
 		}

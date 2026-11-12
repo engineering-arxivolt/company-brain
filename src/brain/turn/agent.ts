@@ -479,6 +479,23 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		return (await this.loadImpl()).inspectTurn(this, args)
 	}
 
+	// The nightly dream: consolidate what this org remembers. The scheduled
+	// callback re-arms itself; `runDreamNow` is the admin trigger and never
+	// touches the schedule.
+	async runDream(payload: { reason?: string } = {}): Promise<void> {
+		return (await this.loadImpl()).runDream(this, payload)
+	}
+
+	async runDreamNow(args: { apply?: boolean } = {}) {
+		return (await this.loadImpl()).runDreamNow(this, args)
+	}
+
+	// Reaction scores per route/model/playbook. Runs here because the join is
+	// between this DO's feedback table and its decision log.
+	async answerQuality() {
+		return (await this.loadImpl()).answerQuality(this)
+	}
+
 	async getWorkspacePrompt(): Promise<string | null> {
 		return (await this.loadImpl()).getWorkspacePrompt(this)
 	}

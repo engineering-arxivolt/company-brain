@@ -13,6 +13,11 @@ export const DECISION_KINDS = [
 	 * recomputing anything (src/brain/turn/turn-inspection.ts).
 	 */
 	"turn_route",
+	/**
+	 * A nightly consolidation pass: what it scanned, what it planned, and what
+	 * it removed (src/brain/memory/dream.ts).
+	 */
+	"dream",
 ] as const
 
 const MAX_REPLAY_ROWS = 200

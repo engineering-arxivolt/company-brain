@@ -1,5 +1,9 @@
 import type { SandboxClient } from "../tools/sandbox/client"
 import { parseVerifyOutput, verifyPdfLines } from "../career/deliver"
+import {
+	ghostscriptNormalize,
+	uploadArtifact,
+} from "./pdf-pipeline"
 export { verifyPdfLines }
 import {
 	CHART_SCRIPT,
@@ -105,10 +109,9 @@ export const REPORT_MEASURE_CHECK = [
 export const REPORT_VERIFY_SCRIPT =
 	verifyPdfLines(REPORT_PDF, REPORT_PDF).join("\n") + "\n" + REPORT_MEASURE_CHECK
 
-export const REPORT_NORMALIZE_SCRIPT = [
-	"set -e",
-	`gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dEmbedAllFonts=true -sOutputFile="${REPORT_UPLOAD}" "${REPORT_PDF}"`,
-].join("\n")
+export const REPORT_NORMALIZE_SCRIPT = ["set -e", ghostscriptNormalize(REPORT_PDF, REPORT_UPLOAD)].join(
+	"\n",
+)
 
 export const REPORT_UPLOAD_VERIFY_SCRIPT = verifyPdfLines(
 	REPORT_UPLOAD,
@@ -217,31 +220,25 @@ export async function deliverReport(
 			)
 			return { ok: false, error: "the normalized PDF did not pass verification" }
 		}
-		const artifact = await args.client.getArtifact({
+		const uploaded = await uploadArtifact({
+			client: args.client,
 			sandboxId: sandbox.sandboxId,
-			path: `${sandbox.defaultCwd}/${REPORT_UPLOAD}`,
-		})
-		const upload = await args.upload({
+			cwd: sandbox.defaultCwd,
+			path: REPORT_UPLOAD,
 			fileName: REPORT_PDF,
-			content: artifact.content,
-			sizeBytes: artifact.sizeBytes,
+			upload: args.upload,
 		})
-		if (!upload.ok) {
-			return {
-				ok: false,
-				error: `Slack rejected ${REPORT_PDF}: ${upload.error ?? "unknown"}`,
-			}
-		}
+		if (!uploaded.ok) return { ok: false, error: uploaded.error }
 		const document = uploadable[0]
 		console.log(
-			`[company-brain][${args.traceId}] research report delivered ${REPORT_PDF}(${document?.pages}p,${artifact.sizeBytes}B,charts=${renderedCharts})`,
+			`[company-brain][${args.traceId}] research report delivered ${REPORT_PDF}(${document?.pages}p,${uploaded.sizeBytes}B,charts=${renderedCharts})`,
 		)
 		return {
 			ok: true,
 			sandboxId: sandbox.sandboxId,
 			fileName: REPORT_PDF,
 			pages: document?.pages ?? 0,
-			sizeBytes: artifact.sizeBytes,
+			sizeBytes: uploaded.sizeBytes,
 			charts: renderedCharts,
 		}
 	} catch (error) {

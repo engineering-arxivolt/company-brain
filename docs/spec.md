@@ -39,6 +39,9 @@ The current implementation is Cloudflare-first: a Hono route receives Slack HTTP
 | List-price fallback rates | `src/brain/billing/model-prices.ts` |
 | Turn inspector (one turn explained) | `src/brain/turn/turn-inspection.ts`, `src/routes/turns.ts`, `web/components/turn-inspector.tsx` |
 | Route vocabulary + golden turns | `src/brain/turn/route.ts`, `src/brain/turn/flow-routing.ts`, `evals/turns.jsonl` |
+| Nightly consolidation (dream) | `src/brain/memory/dream.ts`, `src/brain/memory/consolidate.ts`, `src/brain/memory/dream-schedule.ts` |
+| Answer feedback → playbook quality | `src/brain/slack/answer-quality.ts`, `src/brain/skills/resolver.ts` |
+| Shared PDF pipeline (rewrite + upload) | `src/brain/documents/pdf-pipeline.ts` |
 
 ## Runtime Architecture
 
@@ -56,12 +59,17 @@ The `CompanyBrainAgent` class extends `Agent<Env, CompanyBrainState>` from the `
 - `brain_thread_turn(thread_key, turn_id, revision, status, asker_user, original_question, latest_instruction, updated_at)` so the active Slack-thread turn can be stopped, superseded, resumed after approval, or marked stale before late async side effects run.
 - `brain_bot_thread(team_id, channel, thread_ts, updated_at)` so the bot can keep responding inside threads it has already joined, even when Slack thread reads are temporarily unavailable.
 
-There is **no scheduled consolidation job**. An earlier version of this
-document described a daily `dream` callback at `0 3 * * *`; the field
-`dreamScheduled` still exists on the agent state but is never read, and no
-`scheduled()` handler is exported anywhere in `src/`. Memory consolidation
-(dedupe, contradiction resolution, decay) is roadmap, not behaviour — write it
-as a real cron + DO alarm before claiming it here.
+**Nightly consolidation (the dream).** Each org's Durable Object arms its own
+alarm for 03:00 UTC (`src/brain/memory/dream-schedule.ts`), re-arming after
+every run, so no worker-level cron or tenant enumeration is involved. The pass
+reads the shared brain container, plans with pure code
+(`src/brain/memory/consolidate.ts`: exact-after-normalisation duplicates →
+newest copy wins; notes older than 180 days → stale) and **deletes nothing
+unless both the run and the deployment agree**: `POST /brain/dream` takes
+`apply`, and `DREAM_APPLY` must be `"on"` in `wrangler.jsonc`. It ships as
+`"off"`, so every run today reports the plan it would have applied. Each run is
+recorded as a `dream` decision under trace `dream:<date>`, which is what the turn
+inspector shows.
 
 ## Feature Gating
 

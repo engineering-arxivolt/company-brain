@@ -3,11 +3,13 @@ import type { AppContext } from "@/types"
 import { brainAutomationsRoutes } from "./automations"
 import { brainCompanySummaryRoutes } from "./company-summary"
 import { brainDecisionsRoutes } from "./decisions"
+import { brainDreamRoutes } from "./dream"
 import { brainGraphRoutes } from "./graph"
 import { brainMemoriesRoutes } from "./memories"
 import { brainMcpConnectionsRoutes } from "./mcp-connections"
 import { brainModelsRoutes } from "./models"
 import { brainOverviewRoutes } from "./overview"
+import { brainQualityRoutes } from "./quality"
 import { brainResearchRoutes } from "./research"
 import { brainSettingsRoutes } from "./settings"
 import { brainSkillsRoutes } from "./skills"
@@ -28,9 +30,11 @@ export const brainRoutes = new Hono<AppContext>()
 	.route("/research", brainResearchRoutes)
 	.route("/models", brainModelsRoutes)
 	.route("/decisions", brainDecisionsRoutes)
+	.route("/dream", brainDreamRoutes)
 	.route("/turns", brainTurnRoutes)
 	.route("/settings", brainSettingsRoutes)
 	.route("/overview", brainOverviewRoutes)
+	.route("/quality", brainQualityRoutes)
 	.route("/graph", brainGraphRoutes)
 	.route("/memories", brainMemoriesRoutes)
 	.route("/trial", brainTrialRoutes)

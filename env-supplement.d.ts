@@ -18,6 +18,11 @@ interface Env {
 	SLACK_SIGNING_SECRET?: string
 	/** Generated at first boot and kept in KV; encrypts tokens at rest. */
 	ENCRYPTION_SECRET: string
+	/**
+	 * "on" lets a dream run delete memories. Off (or unset) means every run —
+	 * scheduled or manual — only reports the plan it would have applied.
+	 */
+	DREAM_APPLY?: string
 	/** Image generation provider: "nano" for Gemini (needs billing), else Workers AI flux. */
 	IMAGE_GEN_PROVIDER?: string
 	/** arxivolt-engine (the public site worker). Base URL defaults to www.arxivolt.com. */

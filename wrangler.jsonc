@@ -34,6 +34,9 @@
 		"CONTAINER_SANDBOX": "on",
 		// The sandbox SDK's RPC transport; artifact downloads stream over it.
 		"SANDBOX_TRANSPORT": "rpc",
+		// "off" keeps the nightly dream read-only: it reports the plan it would
+		// apply and deletes nothing. Flip to "on" once the reports look sane.
+		"DREAM_APPLY": "off",
 		// OpenAI-compatible endpoint for the free models. This only applies to the
 		// chat-completions models in the registry; OpenAI's own models still go to
 		// api.openai.com. Point it elsewhere (e.g. Workers AI) to switch providers.

@@ -1,4 +1,9 @@
 import type { SandboxClient } from "../tools/sandbox/client"
+import {
+	pdfNormalizeScript,
+	uploadArtifact,
+	uploadName,
+} from "../documents/pdf-pipeline"
 import { renderCoverLetterTex } from "./cover-letter"
 import { withoutAccents } from "./document-ask"
 import { parseJobPosting } from "./job-posting"
@@ -98,28 +103,16 @@ export function pdfVerifyScript(files: readonly string[]): string {
 export const PDF_VERIFY_SCRIPT = pdfVerifyScript(SOURCE_PDFS)
 
 /**
- * Ghostscript rewrite before the file leaves the sandbox.
- *
- * The compiled PDFs are unusual to a preview service: PDF 1.5 with Type 1
- * subsets. `pdfwrite` rewrites them as a single compressed PDF 1.4 (the version
- * every viewer, thumbnailer and mobile client accepts) with embedded fonts, and
- * cuts the size by ~4x.
+ * The Ghostscript rewrite lives in ../documents/pdf-pipeline now — the report
+ * pipeline had its own copy of the same command, and that is exactly the drift
+ * this re-export exists to stop. Kept exported here because this is where the
+ * career pipeline's callers look for it.
  */
-export function pdfNormalizeScript(files: readonly string[]): string {
-	return [
-		"set -e",
-		...files.map(
-			(name) =>
-				`gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=/ebook -dEmbedAllFonts=true -sOutputFile="${uploadName(name)}" "${name}"`,
-		),
-	].join("\n")
-}
+export { pdfNormalizeScript } from "../documents/pdf-pipeline"
 
 export const PDF_NORMALIZE_SCRIPT = pdfNormalizeScript(SOURCE_PDFS)
 
-export function uploadName(fileName: string): string {
-	return fileName.replace(/\.pdf$/i, ".upload.pdf")
-}
+export { uploadName } from "../documents/pdf-pipeline"
 
 /**
  * A channel the asker named, if they named one.
@@ -469,27 +462,22 @@ export async function deliverCareerDocuments(
 
 	const documents: CareerDocument[] = []
 	for (const file of uploadable) {
-		// Bytes, not a stream: the upload carries an exact content-length, so
-		// Slack cannot store a short body (which is what a "black" attachment
-		// usually is — a valid PDF nobody wrote completely).
-		const artifact = await args.client.getArtifact({
+		// Fetch-then-upload lives in ../documents/pdf-pipeline: the report
+		// pipeline needs the same two steps and the same failure text.
+		const uploaded = await uploadArtifact({
+			client: args.client,
 			sandboxId: sandbox.sandboxId,
-			path: `${sandbox.defaultCwd}/${uploadName(file.fileName)}`,
-		})
-		const upload = await args.upload({
+			cwd: sandbox.defaultCwd,
+			path: uploadName(file.fileName),
 			fileName: file.fileName,
-			content: artifact.content,
-			sizeBytes: artifact.sizeBytes,
+			upload: args.upload,
 		})
-		if (!upload.ok) {
-			return {
-				ok: false,
-				error: `Slack rejected ${file.fileName}: ${upload.error ?? "unknown"}`,
-			}
+		if (!uploaded.ok) {
+			return { ok: false, error: uploaded.error }
 		}
 		documents.push({
-			fileName: file.fileName,
-			sizeBytes: artifact.sizeBytes,
+			fileName: uploaded.fileName,
+			sizeBytes: uploaded.sizeBytes,
 			pages: file.pages,
 		})
 	}

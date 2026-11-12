@@ -5,6 +5,15 @@ import {
 import { ensureLeaseTables, revokeLeasesForConnection } from "../lease/store"
 import type { LeaseEscalationPayload, SlackLeaseDecision } from "../lease/types"
 import { clearBrainProfileSync } from "../memory/profile-sync"
+import {
+	runDream as runDreamTurn,
+	shouldApplyDream,
+	type DreamReport,
+} from "../memory/dream"
+import {
+	ensureDreamScheduleTable,
+	ensureDreamScheduled,
+} from "../memory/dream-schedule"
 import { ensureBrainMemoryTagTable } from "../memory/tags"
 import {
 	runContentDraftInteraction,
@@ -152,6 +161,74 @@ export {
 } from "./research"
 export { getDecisions } from "./decision-log"
 export { inspectTurn } from "./turn-inspection"
+export { answerQuality } from "../slack/answer-quality"
+
+import { recordDecision } from "./decision-log"
+
+/**
+ * The dream's two entry points.
+ *
+ * `runDream` is the scheduled callback: it runs the pass and re-arms tomorrow's
+ * alarm. `runDreamNow` is the admin trigger behind `POST /brain/dream` and
+ * deliberately does *not* touch the schedule — a manual dry run must not shift
+ * the nightly clock.
+ *
+ * Deleting anything needs both the caller's `apply` and `DREAM_APPLY=on` in the
+ * deployment: the plan is worth reading for a while before it is worth trusting.
+ */
+async function dreamPass(
+	agent: CompanyBrainAgent,
+	options: { requestedApply: boolean; rearm: boolean },
+): Promise<DreamReport> {
+	const env = brainAgent(agent).env
+	const apply = shouldApplyDream(env.DREAM_APPLY, options.requestedApply)
+	const traceId = `dream:${new Date().toISOString().slice(0, 10)}`
+	const report = await runDreamTurn({
+		env,
+		orgId: agent.name,
+		apply,
+		traceId,
+	})
+	recordDecision(agent, {
+		traceId,
+		orgId: agent.name,
+		kind: "dream",
+		subject: report.containerTag,
+		choice: report.applied ? "applied" : "planned",
+		reason: `scanned=${report.scanned} distinct=${report.distinct} duplicates=${report.duplicateNotes} stale=${report.staleNotes} deleted=${report.deleted}`,
+		source: "dream",
+	})
+	if (options.rearm) {
+		await ensureDreamScheduled(agent, { force: true }).catch((error) => {
+			console.warn(`[company-brain][${traceId}] dream re-arm failed:`, error)
+		})
+	}
+	return report
+}
+
+export async function runDream(
+	agent: CompanyBrainAgent,
+	payload: { reason?: string } = {},
+): Promise<void> {
+	await dreamPass(agent, { requestedApply: true, rearm: true }).catch(
+		async (error) => {
+			// A failed dream is tomorrow's problem: it must never wedge the alarm
+			// chain, so the failure is logged and the next run is still armed.
+			console.error("[company-brain] dream failed:", error)
+			await ensureDreamScheduled(agent, { force: true }).catch(() => undefined)
+		},
+	)
+}
+
+export async function runDreamNow(
+	agent: CompanyBrainAgent,
+	args: { apply?: boolean } = {},
+): Promise<DreamReport> {
+	return dreamPass(agent, {
+		requestedApply: args.apply === true,
+		rearm: false,
+	})
+}
 
 import type { Schedule } from "agents"
 import { flushBrainTelemetry } from "../observability"
@@ -229,6 +306,7 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 	ensureWorkspacePromptTable(agent)
 	ensurePesacastTables(agent)
 	ensureInvoicesTable(agent)
+	ensureDreamScheduleTable(agent)
 	await recoverPassiveReactionQueue(agent)
 	agent.sql`
 		CREATE TABLE IF NOT EXISTS brain_user_seen (
@@ -260,6 +338,13 @@ export async function onStart(agent: CompanyBrainAgent): Promise<void> {
 		.catch((error) => {
 			console.warn("[company-brain] settled fiber cleanup failed:", error)
 		})
+	// Arm the nightly dream if this org does not already have one pending.
+	// Idempotent by the row in brain_dream_schedule, because this runs on every
+	// wake: without it the consolidation would only happen in months with a
+	// deploy.
+	await ensureDreamScheduled(agent).catch((error) => {
+		console.warn("[company-brain] dream schedule failed:", error)
+	})
 }
 
 /**
