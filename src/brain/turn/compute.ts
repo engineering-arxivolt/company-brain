@@ -952,6 +952,22 @@ export async function computeTurn(
 		console.log(
 			`[company-brain][${traceId}] route primary=${turnRoutes.primary ?? "model"} matched=${turnRoutes.matched.join(",") || "none"} flow=${turnRoutes.flow.reason}`,
 		)
+		// Durable copy of the same line, so the turn inspector (and anyone reading
+		// /decisions later) sees what this turn believed rather than what today's
+		// routing code would say about it.
+		recordDecision(agent, {
+			traceId,
+			orgId: org.id,
+			kind: "turn_route",
+			subject: "route",
+			choice: turnRoutes.primary ?? "model",
+			reason: `flow=${turnRoutes.flow.reason}`,
+			alternatives: Object.fromEntries(
+				turnRoutes.matched.map((route) => [route, 1]),
+			),
+			source: "rules",
+			actor: actor.userId,
+		})
 		// "Run a content campaign" belongs to the content studio — it drafts,
 		// reviews and pushes through Buffer. The deterministic pack is for the
 		// explicit ask: "campaign pack on X".

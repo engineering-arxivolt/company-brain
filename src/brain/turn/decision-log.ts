@@ -2,10 +2,17 @@ import { createHash } from "node:crypto"
 import { captureBrainDecision } from "../observability"
 import type { CompanyBrainAgent } from "./agent"
 
+/** Kinds of decision the brain records. */
 export const DECISION_KINDS = [
 	"model_selection",
 	"skill_selection",
 	"mcp_effect",
+	/**
+	 * Which deterministic route claimed the message, recorded once at the top of
+	 * the turn so the turn inspector can answer "why did it do that" without
+	 * recomputing anything (src/brain/turn/turn-inspection.ts).
+	 */
+	"turn_route",
 ] as const
 
 const MAX_REPLAY_ROWS = 200

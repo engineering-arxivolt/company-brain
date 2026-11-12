@@ -13,6 +13,7 @@ import { brainSettingsRoutes } from "./settings"
 import { brainSkillsRoutes } from "./skills"
 import { slackRoutes } from "./slack"
 import { brainTrialRoutes } from "./trial"
+import { brainTurnRoutes } from "./turns"
 import { brainWorkspacePromptRoutes } from "./workspace-prompt"
 import { webhookRoutes } from "./webhooks"
 
@@ -27,6 +28,7 @@ export const brainRoutes = new Hono<AppContext>()
 	.route("/research", brainResearchRoutes)
 	.route("/models", brainModelsRoutes)
 	.route("/decisions", brainDecisionsRoutes)
+	.route("/turns", brainTurnRoutes)
 	.route("/settings", brainSettingsRoutes)
 	.route("/overview", brainOverviewRoutes)
 	.route("/graph", brainGraphRoutes)

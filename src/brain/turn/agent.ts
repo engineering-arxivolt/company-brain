@@ -472,6 +472,13 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		return (await this.loadImpl()).getDecisions(this, args)
 	}
 
+	// One turn, explained: the same decisions folded into route / model /
+	// playbook / tool effects for the turn inspector. Runs here because the
+	// decision log lives in this DO's SQL.
+	async inspectTurn(args: { orgId: string; traceId: string }) {
+		return (await this.loadImpl()).inspectTurn(this, args)
+	}
+
 	async getWorkspacePrompt(): Promise<string | null> {
 		return (await this.loadImpl()).getWorkspacePrompt(this)
 	}

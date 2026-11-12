@@ -151,6 +151,7 @@ export {
 	syncResearchCardIfDone,
 } from "./research"
 export { getDecisions } from "./decision-log"
+export { inspectTurn } from "./turn-inspection"
 
 import type { Schedule } from "agents"
 import { flushBrainTelemetry } from "../observability"

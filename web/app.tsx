@@ -9,6 +9,7 @@ import { ErrorBoundary } from "@/components/error-boundary"
 import { GraphView } from "@/components/memory-graph/graph-view"
 import { SlackHandoff } from "@/components/onboarding-brain/slack-handoff"
 import { SignIn } from "@/components/sign-in"
+import { TurnInspector } from "@/components/turn-inspector"
 import { useAuth } from "@lib/auth-context"
 import { useViewMode } from "@lib/view-mode-context"
 import { cn } from "@lib/utils"
@@ -98,6 +99,11 @@ export function App() {
 								<Route path="/configure/*?">
 									<div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 pt-2! md:p-6">
 										<ConfigureView />
+									</div>
+								</Route>
+								<Route path="/inspect">
+									<div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4 pt-2! md:p-6">
+										<TurnInspector />
 									</div>
 								</Route>
 								<Route>
