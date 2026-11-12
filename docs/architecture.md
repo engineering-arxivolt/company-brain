@@ -105,7 +105,8 @@ Optional **Code Mode** / sandbox paths live under `tools/mcp` and `tools/sandbox
 
 - Full triage grammar → [slack.md](./slack.md)
 - Every DO method / model choice table → [agent.md](./agent.md)
-- Analytics event schemas → `docs/product/product-analytics.md`
+- Analytics event schemas → the `capture*` helpers in `src/compat/lib/posthog/index.ts`
+  (there is no product-analytics doc yet; this line used to point at one that was never written)
 
 ## Code anchors
 

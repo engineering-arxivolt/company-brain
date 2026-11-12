@@ -15,33 +15,34 @@ The current implementation is Cloudflare-first: a Hono route receives Slack HTTP
 
 | Area | File |
 | --- | --- |
-| Worker entry and exports | `apps/api/worker.ts` |
-| Route mounting and feature flag | `apps/api/src/cloud-extras.ts` |
-| Slack HTTP routes | `apps/api/src/routes/brain/slack/index.ts` |
-| Per-org model and reasoning API | `apps/api/src/routes/brain/models.ts` |
-| Model profile resolution | `apps/api/src/lib/brain/turn/model-profile.ts` |
-| MCP connections API | `apps/api/src/routes/brain/mcp-connections.ts` |
-| MCP connect button UI | `apps/api/src/lib/brain/slack/mcp-connect.ts` |
-| Turn orchestration | `apps/api/src/lib/brain/slack/turn.ts` |
-| Per-thread turn control / steering | `apps/api/src/lib/brain/slack/turn-control.ts` |
-| Passive thread triage | `apps/api/src/lib/brain/slack/triage.ts` |
-| Smart chime-in | `apps/api/src/lib/brain/slack/chime.ts`, `chime-cooldown.ts` |
-| Public-channel rollout | `apps/api/src/lib/brain/slack/public-channel-rollout.ts` |
-| Seven-day Slack history documents | `apps/api/src/lib/brain/slack/history-document.ts` |
-| Channel theme and introduction generation | `apps/api/src/lib/brain/slack/channel-introduction.ts` |
-| Organization-shared tool corroboration | `apps/api/src/lib/brain/slack/connected-tool-crosscheck.ts` |
-| Channel history lookup | `apps/api/src/lib/brain/slack/channel-lookup.ts` |
-| MCP catalog/connect/runtime tools | `apps/api/src/lib/brain/tools/mcp/` |
-| Web search and page extraction | `apps/api/src/lib/brain/tools/web/` (Context.dev client: `apps/api/src/lib/context-dev/`) |
-| Slack workspace schema | `packages/db/schema/slack.ts` |
-| Worker bindings | `apps/api/wrangler.jsonc` |
-| LLM cost ledger + charge | `apps/api/src/lib/brain/billing/cost.ts` |
-| List-price fallback rates | `apps/api/src/lib/brain/billing/model-prices.ts` |
-| `sm_operations` credit rate | `apps/api/src/lib/payments/meter-rates.ts` |
+| Worker entry and exports | `src/worker.ts` |
+| Route mounting | `src/routes/index.ts` |
+| Slack HTTP routes | `src/routes/slack/index.ts` |
+| Per-org model and reasoning API | `src/routes/models.ts` |
+| Model profile resolution | `src/brain/turn/model-profile.ts` |
+| MCP connections API | `src/routes/mcp-connections.ts` |
+| MCP connect button UI | `src/brain/slack/mcp-connect.ts` |
+| Turn orchestration | `src/brain/slack/turn.ts` |
+| Per-thread turn control / steering | `src/brain/slack/turn-control.ts` |
+| Passive thread triage | `src/brain/slack/triage.ts` |
+| Smart chime-in | `src/brain/slack/chime.ts`, `src/brain/slack/chime-budget.ts` |
+| Public-channel rollout | `src/brain/slack/public-channel-rollout.ts` |
+| Seven-day Slack history documents | `src/brain/slack/history-document.ts` |
+| Channel theme and introduction generation | `src/brain/slack/channel-introduction.ts` |
+| Organization-shared tool corroboration | `src/brain/slack/connected-tool-crosscheck.ts` |
+| Channel history lookup | `src/brain/slack/channel-lookup.ts` |
+| MCP catalog/connect/runtime tools | `src/brain/tools/mcp/` |
+| Web search and page extraction | `src/brain/tools/web/` (Context.dev client: `src/compat/lib/context-dev/`) |
+| Slack workspace schema | `src/db/schema/slack.ts` |
+| Worker bindings | `wrangler.jsonc` |
+| LLM cost ledger + charge | `src/brain/billing/cost.ts` |
+| List-price fallback rates | `src/brain/billing/model-prices.ts` |
+| Turn inspector (one turn explained) | `src/brain/turn/turn-inspection.ts`, `src/routes/turns.ts`, `web/components/turn-inspector.tsx` |
+| Route vocabulary + golden turns | `src/brain/turn/route.ts`, `src/brain/turn/flow-routing.ts`, `evals/turns.jsonl` |
 
 ## Runtime Architecture
 
-The Cloudflare Worker exports `CompanyBrainAgent` from `apps/api/worker.ts`. Wrangler binds it as the `COMPANY_BRAIN_AGENT` Durable Object namespace. The Slack route obtains an org-specific instance with:
+The Cloudflare Worker exports `CompanyBrainAgent` from `src/worker.ts`. Wrangler binds it as the `COMPANY_BRAIN_AGENT` Durable Object namespace. The Slack route obtains an org-specific instance with:
 
 ```ts
 getAgentByName(c.env.COMPANY_BRAIN_AGENT, ws.orgId)
@@ -55,7 +56,12 @@ The `CompanyBrainAgent` class extends `Agent<Env, CompanyBrainState>` from the `
 - `brain_thread_turn(thread_key, turn_id, revision, status, asker_user, original_question, latest_instruction, updated_at)` so the active Slack-thread turn can be stopped, superseded, resumed after approval, or marked stale before late async side effects run.
 - `brain_bot_thread(team_id, channel, thread_ts, updated_at)` so the bot can keep responding inside threads it has already joined, even when Slack thread reads are temporarily unavailable.
 
-It also schedules a daily `dream` callback at `0 3 * * *`; the current implementation logs the tick.
+There is **no scheduled consolidation job**. An earlier version of this
+document described a daily `dream` callback at `0 3 * * *`; the field
+`dreamScheduled` still exists on the agent state but is never read, and no
+`scheduled()` handler is exported anywhere in `src/`. Memory consolidation
+(dedupe, contradiction resolution, decay) is roadmap, not behaviour — write it
+as a real cron + DO alarm before claiming it here.
 
 ## Feature Gating
 
@@ -514,7 +520,7 @@ The routing decision is binary:
 - `ANSWER` means Company Brain can add clear, non-obvious value: a useful fact, correction, connection, implication, or next step. It does **not** imply a tool call or a long response. Triage never writes the response; the main turn decides whether to answer directly, search Company Brain memory, use live tools, or investigate more deeply.
 - `PASS` means complete Slack silence: no message and no reaction. Use it for redundant or obvious restatements, answers already present in visible context, unsupported or speculative contributions, social chatter, human-directed asks, link-only or ambient FYIs, and low-signal content. Every final pass carries a bounded reason for logs and traces only; the reason is never posted to Slack.
 
-Implementation: `apps/api/src/lib/brain/slack/triage.ts`, using the configured Triage model and effort with separate thread and channel prompts. The default is `claude-haiku-4.5` at low effort. The result contract records both the route and its provenance:
+Implementation: `src/brain/slack/triage.ts`, using the configured Triage model and effort with separate thread and channel prompts. The default is `claude-haiku-4.5` at low effort. The result contract records both the route and its provenance:
 
 ```ts
 type TriageDecision = "answer" | "pass"
@@ -902,11 +908,11 @@ If a DM or private-channel sender cannot be mapped to an active Supermemory orga
 
 Company Brain exposes visible skills through an `<available_skills>` runtime index containing their names and routing descriptions. The model calls `load_skill` with an exact name only when a listed skill is relevant, and the tool returns the full Markdown body. Personal and organization skills are stored in the organization Durable Object; a viewer's personal skill wins when it shares a normalized name with an organization skill.
 
-Code-owned system skills live under `apps/api/src/lib/brain/skills/system/`. They use the same runtime index and `load_skill` interface as stored skills, but they have no database row, owner, editing route, or usage-counter write. System skills win normalized-name collisions so the body loaded for an indexed system name cannot be shadowed by stored content. A pre-existing stored skill with the same name remains persisted and editable but is hidden from the runtime index until its owner renames it; frontend visibility and reserved-name handling are deferred. The built-in `Supermemory Docs` skill routes public questions about Supermemory products and capabilities to current official documentation through `search_web`; its complete body is loaded only on relevant turns.
+Code-owned system skills live under `src/brain/skills/system/`. They use the same runtime index and `load_skill` interface as stored skills, but they have no database row, owner, editing route, or usage-counter write. System skills win normalized-name collisions so the body loaded for an indexed system name cannot be shadowed by stored content. A pre-existing stored skill with the same name remains persisted and editable but is hidden from the runtime index until its owner renames it; frontend visibility and reserved-name handling are deferred. The built-in `Supermemory Docs` skill routes public questions about Supermemory products and capabilities to current official documentation through `search_web`; its complete body is loaded only on relevant turns.
 
 ## MCP Tool Integration
 
-MCP integration lives under `apps/api/src/lib/brain/tools/mcp/`.
+MCP integration lives under `src/brain/tools/mcp/`.
 
 `assembleTurnTools` calls `createMcpRuntimeTools` for the current actor. Slack turns set `personalConnectionsOnly: true`, so only the asker's personal MCP connections are available; org-shared connections are not used for Slack actions.
 
@@ -933,7 +939,7 @@ Consent currently requests exact identity and `gmail.readonly` scopes with PKCE 
 
 The currently advertised tools are the read-only `gmail.search_messages`, `gmail.get_message`, and `gmail.get_thread`. Reads use bounded responses and may retry one transient 429/5xx failure. Message and thread reads decode inline MIME bodies and fetch externally stored text/HTML bodies up to the configured safety limit; long threads retain the newest 100 messages in chronological order. The approval-gated `gmail.send_email` implementation remains dormant: it is excluded from discovery and rejected at execution until the send capability and OAuth scope are re-enabled after approval. When enabled, it accepts exactly one plain-text or HTML body, validates To/Cc recipients and MIME constraints before approval, and calls Gmail only after the Slack requester approves a card showing the recipients, subject, and bounded body preview. Bcc is not supported because hidden recipients cannot be safely verified in the shared Slack approval card.
 
-The user prompt includes `<mcp_catalog>` with connectable catalog apps from `apps/api/src/lib/brain/tools/mcp/catalog.ts`, marking slugs that are already connected. Beyond the catalog, `search_mcp_directory` searches the wider MCP directory in `apps/api/src/lib/brain/tools/mcp/directory.json`, served to the connectors UI at `GET /brain/mcp-connections/directory` so both read one source. It returns the top matches with `totalMatches` and `truncated`, so a capped result is never read as the complete set. Entries needing a preregistered OAuth client are withheld from the agent unless the catalog carries credentials for them, since connecting those by URL always fails. If the model returns `connect` for a catalog or directory slug, Slack posts the MCP connect button. If an app is already connected, the prompt tells the model to use MCP discovery instead of asking to connect again.
+The user prompt includes `<mcp_catalog>` with connectable catalog apps from `src/brain/tools/mcp/catalog.ts`, marking slugs that are already connected. Beyond the catalog, `search_mcp_directory` searches the wider MCP directory in `src/brain/tools/mcp/directory.json`, served to the connectors UI at `GET /brain/mcp-connections/directory` so both read one source. It returns the top matches with `totalMatches` and `truncated`, so a capped result is never read as the complete set. Entries needing a preregistered OAuth client are withheld from the agent unless the catalog carries credentials for them, since connecting those by URL always fails. If the model returns `connect` for a catalog or directory slug, Slack posts the MCP connect button. If an app is already connected, the prompt tells the model to use MCP discovery instead of asking to connect again.
 
 Staff users with `@supermemory.com` email addresses can add custom OAuth MCP server URLs from the Company Brain connections UI. Custom servers are personal-only in v1, reuse the generic OAuth/DCR storage path, and are still enforced server-side in `brain/mcp-connections`: non-staff users cannot start custom connects, custom shared connects are rejected, and catalog slugs cannot be repointed to arbitrary URLs. Custom URLs must use public hosts (and HTTPS outside development); the connect, callback, and runtime transport paths use the same guarded fetch so discovered OAuth endpoints cannot redirect token/registration traffic to localhost, private IPs, link-local, metadata service hosts, or IPv4-mapped IPv6 private addresses.
 
@@ -1041,7 +1047,7 @@ The system has several defensive layers:
 
 ## Observability
 
-The worker is wrapped with Sentry in `apps/api/worker.ts`, and Company Brain emits PostHog AI observability for main turns, tool spans, and `company_brain_triage` generations. Triage capture uses the same trace id handed to an admitted main turn and records final `triage_result`, `triage_decision_source`, pass-only bounded `triage_reason`, source/context fields, model/provider, latency, prompt, and context size.
+The worker is wrapped with Sentry in `src/worker.ts`, and Company Brain emits PostHog AI observability for main turns, tool spans, and `company_brain_triage` generations. Triage capture uses the same trace id handed to an admitted main turn and records final `triage_result`, `triage_decision_source`, pass-only bounded `triage_reason`, source/context fields, model/provider, latency, prompt, and context size.
 
 Triage telemetry is strictly best-effort and is scheduled through the Company Brain Durable Object's `waitUntil` only after routing is fixed. It does not delay returning the selected `ANSWER` or `PASS`. Capture/import failure produces no replacement span and only a safe local `triage_telemetry_failed` warning. Parse and generation failures use only the bounded `$ai_error` categories documented in [Triage](#triage), never raw provider errors, prompts, Slack text, or generated output.
 
@@ -1108,5 +1114,5 @@ When modifying this bot, keep these boundaries intact:
 - MCP connection and runtime tool behavior belongs under `tools/mcp/`.
 - Content Studio behavior belongs under `src/brain/content/` (store, plan, voice, buffer, cards, generate, interactions); scheduling only routes `kind: "content"` payloads there.
 - Memory search/write shape should stay aligned with the prompts in `prompts.ts`.
-- New persisted Slack install fields should be added to `packages/db/schema/slack.ts` and the `upsertWorkspace` call together.
+- New persisted Slack install fields should be added to `src/db/schema/slack.ts` and the `upsertWorkspace` call together.
 - Any new event type should be added to `types.ts` and then handled in `runTurn`.
