@@ -1,4 +1,4 @@
-import { CAREER_DOCUMENT_PATTERN } from "../career/document-ask"
+import { CAREER_DOCUMENT_PATTERN, withoutAccents } from "../career/document-ask"
 
 /**
  * When a message becomes a Flow job, and — the point of this file — when it
@@ -44,16 +44,6 @@ import { CAREER_DOCUMENT_PATTERN } from "../career/document-ask"
  */
 export const DOCUMENT_ASK_PATTERN =
 	/\b(curriculum vitae|cover letters?|covering letters?|cover[- ]notes?|application letters?|job applications?|pdf|report|documents?|brief|proposal)\b/i
-
-/**
- * The message with its accents removed: "résumé" → "resume".
- *
- * Slack users type both spellings, and a pattern that only knows one of them
- * silently lets the other through — which is how a document ask becomes art.
- */
-function withoutAccents(text: string): string {
-	return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-}
 
 /**
  * Phrases where "cover" is stationery, not artwork. Removed before the picture

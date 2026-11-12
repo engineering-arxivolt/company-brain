@@ -1,0 +1,53 @@
+name: ci
+
+# Nothing enforced these before, and it showed: a commit landed that silently
+# dropped a routing exclusion (409f1be), and broken work sat uncommitted in the
+# tree long enough to be mistaken for the code. Three cheap gates now run on
+# every push and pull request — types, tests, and the golden turns.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: types, tests, evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # The worker and the web app are separate TypeScript projects; both have
+      # been clean, so both are held to it.
+      - name: Typecheck (worker)
+        run: npx tsc --noEmit
+
+      - name: Typecheck (web)
+        run: npx tsc --noEmit -p web
+
+      # Full suite under Node, which is what most of these tests were written
+      # against. test/workers-shim.ts stands in for the workerd-only modules.
+      - name: Tests
+        run: npx vitest run
+
+      # The golden turns, in the human-readable form. Same fixtures as the
+      # vitest mirror above, so a routing regression names the case that broke.
+      - name: Golden turns
+        run: bun run evals

@@ -11,6 +11,15 @@ const src = (p: string) => fileURLToPath(new URL(`./src/${p}`, import.meta.url))
 export default defineConfig({
 	resolve: {
 		alias: [
+			// Workerd-only module, imported at module scope by @cloudflare/codemode.
+			// Node's ESM loader will not resolve the `cloudflare:` scheme, so tests
+			// that touch Code Mode could not even be collected.
+			{
+				find: /^cloudflare:workers$/,
+				replacement: fileURLToPath(
+					new URL("./test/workers-shim.ts", import.meta.url),
+				),
+			},
 			{ find: /^@\/lib\/brain\/(.*)$/, replacement: `${src("brain")}/$1` },
 			{ find: /^@\/routes\/brain\/(.*)$/, replacement: `${src("routes")}/$1` },
 			{ find: /^@\/lib\/(.*)$/, replacement: `${src("compat/lib")}/$1` },
@@ -33,5 +42,13 @@ export default defineConfig({
 			{ find: "@repo/db/schema", replacement: src("db/schema/index.ts") },
 			{ find: "@repo/db", replacement: src("db/index.ts") },
 		],
+	},
+	test: {
+		/**
+		 * Dependencies are externalised for Node by default, which means Node
+		 * loads them and the alias above never sees `cloudflare:workers`. Inline
+		 * the packages that carry that import so vite resolves them instead.
+		 */
+		server: { deps: { inline: ["@cloudflare/codemode"] } },
 	},
 })

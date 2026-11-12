@@ -24,3 +24,19 @@
  * keeps "resumed" from reading as "resume".
  */
 export const CAREER_DOCUMENT_PATTERN = /\b(cvs?|r[eé]sum[eé]s?|cover letters?)(?![a-z])/i
+
+/**
+ * The message with its accents removed: "résumé" → "resume".
+ *
+ * Two encodings of the same word ("résumé" precomposed, or "e" + combining
+ * acute) should not be two different answers. Used by every reader of the
+ * vocabulary, so the Flow gate and the career pipeline agree on the spelling.
+ */
+export function withoutAccents(text: string): string {
+	return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+}
+
+/** Does this message ask for a CV or a cover letter? */
+export function isCareerDocumentAsk(text: string): boolean {
+	return CAREER_DOCUMENT_PATTERN.test(withoutAccents(text))
+}

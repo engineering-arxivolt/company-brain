@@ -6,11 +6,11 @@ import {
 } from "../billing/cost"
 import { getCompanyContext } from "../memory/company-context"
 import {
-	CAREER_DOCUMENT_PATTERN,
 	ensureCareerProfileMemory,
 	readCareerProfileSource,
 	renderBaseCvContext,
 } from "../memory/career-profile"
+import { isCareerDocumentAsk } from "../career/document-ask"
 import {
 	loadInteractionStyleProfile,
 	renderInteractionStyle,
@@ -89,7 +89,7 @@ import {
 } from "./loop"
 import { toolFamiliesForSkill } from "./lazy-tools"
 import { createDocumentDeliveryGuard } from "./document-delivery"
-import { decideFlowRouting } from "./flow-routing"
+import { classifyTurn, matchesTurnRoute } from "./route"
 import {
 	channelRefFromMessage,
 	deliverCareerDocuments,
@@ -785,7 +785,7 @@ export async function computeTurn(
 		// a thread that mentioned a CV an hour ago is not this request.
 		const careerContext = `${question ?? ""}\n${(threadText ?? "").slice(-2_000)}`
 		const asksForCareerDocument =
-			CAREER_DOCUMENT_PATTERN.test(careerContext) ||
+			isCareerDocumentAsk(careerContext) ||
 			(jevSkillSelection?.preloadedSkills ?? []).some(
 				(skill) => skill.id === DOCUMENT_DELIVERY_SKILL.id,
 			)
@@ -816,7 +816,7 @@ export async function computeTurn(
 		// the same thread — otherwise "ok" and "thanks" each post another copy
 		// of the same two PDFs.
 		const wantsCareerBuild =
-			CAREER_DOCUMENT_PATTERN.test(question ?? "") ||
+			isCareerDocumentAsk(question ?? "") ||
 			/\b(rebuild|retry|regenerate|again|fix (?:it|the pdf))\b/i.test(question ?? "")
 		if (
 			wantsCareerBuild &&
@@ -943,10 +943,19 @@ export async function computeTurn(
 		// ask produces the social card, the one-page brief, and a pending
 		// content draft the operator can push through the existing flow.
 		const questionText = question ?? ""
+		// One line per turn that says which deterministic route claimed it.
+		// `primary` runs first (TURN_ROUTES order); `matched` is everything that
+		// claims the message, and more than one is how a turn does two jobs. This
+		// replaces the per-gate "pipeline engaged" archaeology: a wrong route is
+		// now a log query instead of an incident review.
+		const turnRoutes = classifyTurn(questionText)
+		console.log(
+			`[company-brain][${traceId}] route primary=${turnRoutes.primary ?? "model"} matched=${turnRoutes.matched.join(",") || "none"} flow=${turnRoutes.flow.reason}`,
+		)
 		// "Run a content campaign" belongs to the content studio — it drafts,
 		// reviews and pushes through Buffer. The deterministic pack is for the
 		// explicit ask: "campaign pack on X".
-		const wantsCampaign = /\bcampaign pack\b/i.test(questionText)
+		const wantsCampaign = matchesTurnRoute("campaign", questionText)
 		let campaignDraft: { id: string; hook: string } | null = null
 		if (wantsCampaign && slackLookup && !scheduledRun && env.AI && actor.userId) {
 			if (!documentDelivery.required) documentDelivery.require()
@@ -1244,16 +1253,7 @@ export async function computeTurn(
 			/\b(same|the|that|this|my|our)\s+(character|person|face|girl|boy|man|woman|guy|lady|model|mascot)\b|\b(her|him|she|he|them|they)\b/i
 		// The gate: a document ask is never a picture ask, and "cover" stops
 		// meaning artwork the moment it is followed by "letter".
-		const flowRouting = decideFlowRouting(questionText)
-		// A picture ask the gate refused (a CV that also asks for its cover
-		// letter, an image-prompts request) gets a log line: the turn carries
-		// on without art by design, and "no picture appeared" must not read
-		// like a render that failed.
-		if (!flowRouting.queue && flowRouting.blockedPicture) {
-			console.log(
-				`[company-brain][${traceId}] flow skipped reason=${flowRouting.reason}`,
-			)
-		}
+		const flowRouting = turnRoutes.flow
 		if (flowRouting.queue && slackLookup && !scheduledRun) {
 			const wantsClip = flowRouting.clip
 			// Strip the command, keep the sentence. The trailing fallback matters: a
@@ -1371,9 +1371,9 @@ export async function computeTurn(
 		// on the VPS renders it and the Worker posts the picture into this
 		// thread. No document is required from the model's own turn.
 		const wantsDoodle =
-			/\b(doodle|anidoodle)\b/i.test(questionText) &&
-			!/\bcampaign pack\b/i.test(questionText) &&
-			!/\bimage prompts?\b/i.test(questionText)
+			matchesTurnRoute("doodle", questionText) &&
+			!matchesTurnRoute("campaign", questionText) &&
+			!matchesTurnRoute("image-prompts", questionText)
 		if (wantsDoodle && slackLookup && !scheduledRun) {
 			const subject = questionText
 				.replace(/\b(please|can you|could you|for me)\b/gi, " ")
@@ -1418,8 +1418,8 @@ export async function computeTurn(
 		// so this asks the pack model for a scene plan and ships the prompt file
 		// — no sandbox, no PDF, nothing that can stall it.
 		const wantsImagePrompts =
-			/\bimage prompts\b/i.test(questionText) &&
-			!/\bcampaign pack\b/i.test(questionText)
+			matchesTurnRoute("image-prompts", questionText) &&
+			!matchesTurnRoute("campaign", questionText)
 		if (
 			wantsImagePrompts &&
 			slackLookup &&
@@ -1476,17 +1476,7 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 		// Same philosophy as the career documents: the model judges, the code
 		// renders. The research notes come from the keyless search path, so a
 		// report works even with no search provider key set.
-		const wantsResearchReport =
-			(/\bresearch\b/i.test(questionText) &&
-				/\b(report|pdf|paper|brief)\b/i.test(questionText)) ||
-			/\bdeep[- ]dive\b/i.test(questionText) ||
-			/\bpdf report\b/i.test(questionText) ||
-			// An itinerary, schedule or proposal as a PDF is a document job too:
-			// "produce a 3-day itinerary PDF" used to slip past this gate and be
-			// answered by the model raw.
-			(/\bpdf\b/i.test(questionText) &&
-				/\b(itinerary|schedule|proposal|plan|brief)\b/i.test(questionText) &&
-				/\b(make|create|produce|generate|draft|write|research)\b/i.test(questionText))
+		const wantsResearchReport = matchesTurnRoute("research-report", questionText)
 		let reportDelivery: {
 			title: string
 			fileName: string
