@@ -89,6 +89,7 @@ import {
 } from "./loop"
 import { toolFamiliesForSkill } from "./lazy-tools"
 import { createDocumentDeliveryGuard } from "./document-delivery"
+import { decideFlowRouting } from "./flow-routing"
 import {
 	channelRefFromMessage,
 	deliverCareerDocuments,
@@ -1227,38 +1228,34 @@ export async function computeTurn(
 		// Flow is the workspace's picture maker, so this is the default road for
 		// "make me a picture" rather than one option among several: the fal and
 		// runway tools on other servers are withheld from the model for exactly
-		// this reason. A creative verb plus a picture noun is enough, and so is a
-		// picture attached with any creative instruction — "using the same
-		// character have her holding a bag" never said the word "image" and used
-		// to fall through to another model.
+		// this reason.
+		//
+		// *Whether* a message gets here is decided in flow-routing.ts, not
+		// inline. A queued job ends the turn — the job is the answer — so a
+		// document ask that slipped through was answered with art while its
+		// PDFs were never built: "make me a CV and a cover letter" did exactly
+		// that, because "cover" reads as a picture noun. The gate keeps
+		// documents with the document pipeline, and being a function makes the
+		// decision testable instead of a regex nobody dares touch.
 		const threadImages = attachmentParts
 			.filter((part): part is Extract<typeof part, { type: "image" }> => part.type === "image")
 			.slice(0, 3)
-		const pictureNoun =
-			/\b(still|image|images|picture|photo|photograph|illustration|render|art|artwork|visual|graphic|portrait|poster|shot|frame|clip|video|animation)\b/i
-		const creativeVerb =
-			/\b(make|create|generate|render|draw|produce|paint|shoot|show|give|design|redo|remake)\b/i
 		const characterTalk =
 			/\b(same|the|that|this|my|our)\s+(character|person|face|girl|boy|man|woman|guy|lady|model|mascot)\b|\b(her|him|she|he|them|they)\b/i
-		// A document request that mentions an image ("give it a cover image")
-		// is art direction for that document, not a standalone picture ask —
-		// otherwise the whole brief becomes one Flow image and the document
-		// never gets planned.
-		const wantsDocumentNotPicture =
-			/\b(report|brief|pdf|document|proposal)\b/i.test(questionText) &&
-			/\b(cover|illustration|diagram|chart|imagery|art direction|visual|vignette|paint|sky|landscape|portrait)\b/i.test(questionText)
-		const wantsFlow =
-			!/\bdoodle\b/i.test(questionText) &&
-			!/\bcampaign pack\b/i.test(questionText) &&
-			!wantsDocumentNotPicture &&
-			// Image generation only on explicit picture requests: a creative verb
-			// plus a picture noun, never when document words (pdf|report|document)
-			// are present — "make me a pdf" must never route to flow-mcp.
-			(creativeVerb.test(questionText) &&
-				/\b(image|picture|photo|still|render|artwork|cover)\b/i.test(questionText) &&
-				!/\b(pdf|report|document|brief|proposal)\b/i.test(questionText))
-			if (wantsFlow && slackLookup && !scheduledRun) {
-			const wantsClip = /\b(clip|video|animation)\b/i.test(questionText)
+		// The gate: a document ask is never a picture ask, and "cover" stops
+		// meaning artwork the moment it is followed by "letter".
+		const flowRouting = decideFlowRouting(questionText)
+		// A picture ask the gate refused (a CV that also asks for its cover
+		// letter, an image-prompts request) gets a log line: the turn carries
+		// on without art by design, and "no picture appeared" must not read
+		// like a render that failed.
+		if (!flowRouting.queue && flowRouting.blockedPicture) {
+			console.log(
+				`[company-brain][${traceId}] flow skipped reason=${flowRouting.reason}`,
+			)
+		}
+		if (flowRouting.queue && slackLookup && !scheduledRun) {
+			const wantsClip = flowRouting.clip
 			// Strip the command, keep the sentence. The trailing fallback matters: a
 			// request that is nothing but scaffolding still gets sent as written
 			// rather than as an empty prompt.

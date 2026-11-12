@@ -22,11 +22,14 @@ import { addMemorySingle } from "@/routes/memories/handler-effect"
 export const CAREER_PROFILE_TYPE = "career_profile"
 
 /**
- * A request that is really asking for a CV or cover letter. Shared by the turn
- * (whether to attach the base CV to the prompt) and by search_company_brain
- * (whether to return it as a result), so the two cannot drift apart.
+ * A request that is really asking for a CV or cover letter.
+ *
+ * The vocabulary itself lives in ../career/document-ask.ts so the Flow gate can
+ * share it: anything the career pipeline treats as a CV ask must never be
+ * answered with a Flow picture. Re-exported here because this module is where
+ * callers already look for it.
  */
-export const CAREER_DOCUMENT_PATTERN = /\b(cv|resume|resumé|cover letter)\b/i
+export { CAREER_DOCUMENT_PATTERN } from "../career/document-ask"
 
 /** KV key holding one user's base CV text. */
 export function careerProfileKey(userId: string): string {
