@@ -49,17 +49,19 @@ export function shouldApplyDream(
 	return requested && flag === "on"
 }
 
-function toCandidate(document: {
+export function toCandidate(document: {
 	id: string
 	content: string | null
 	title: string | null
 	createdAt: string
+	customId?: string | null
 }, fallback: number): ConsolidationDoc {
 	const parsed = Date.parse(document.createdAt)
 	return {
 		id: document.id,
 		content: document.content ?? document.title ?? "",
 		createdAt: Number.isFinite(parsed) ? parsed : fallback,
+		customId: document.customId ?? null,
 	}
 }
 

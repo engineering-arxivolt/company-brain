@@ -17,14 +17,33 @@ export type AddMemorySingleParams = {
 	isFullReplace?: boolean
 	/** Keep brain tags already on the document instead of re-deriving them. */
 	preserveBrainTags?: boolean
-	/** "instant" asks supermemory to extract memories without waiting. */
-	dreaming?: string | boolean
+	/**
+	 * There is deliberately no `dreaming` flag here.
+	 *
+	 * It used to be one — `"instant"` on interactive writes, `"dynamic"` for
+	 * channel history — except the field was accepted by this type and never
+	 * passed to supermemory, so every call site read as if consolidation were
+	 * configured per write when nothing was happening at all. supermemory 4.25.4
+	 * has no such request parameter: dreaming is a property of the workspace,
+	 * configured in supermemory itself, and its progress surfaces back as
+	 * `dreamingStatus` on memories.
+	 *
+	 * What the brain does about that: it does not pretend to control dreaming.
+	 * `taskType` decides what supermemory makes of the document, and the nightly
+	 * pass in `src/brain/memory/dream.ts` is our own safety net for the part we
+	 * *can* see (documents nobody reads any more), never a replacement for it.
+	 */
 	requestParams: {
 		content: string
 		customId?: string
 		containerTag?: string
 		containerTags?: string[]
 		metadata?: Record<string, string | number | boolean | string[] | null>
+		/**
+		 * What supermemory should extract. The brain writes facts, so the default
+		 * is `"memory"`; a full document (channel history, a report) says
+		 * `"superrag"` instead.
+		 */
 		taskType?: "memory" | "superrag"
 	}
 }
@@ -82,9 +101,9 @@ export function addMemorySingle(
 						? { customId: requestParams.customId }
 						: {}),
 					...(containerTags ? { containerTags } : {}),
-					...(requestParams.taskType
-						? { taskType: requestParams.taskType }
-						: {}),
+					// Facts are what the brain writes and what it searches; the
+					// document-shaped callers say "superrag" for themselves.
+					taskType: requestParams.taskType ?? "memory",
 					...(flattenMetadata(requestParams.metadata)
 						? { metadata: flattenMetadata(requestParams.metadata) }
 						: {}),

@@ -349,7 +349,6 @@ export async function observeInteractionStyle(
 					},
 					taskType: "memory",
 				},
-				dreaming: "instant",
 				preserveBrainTags: true,
 			}).pipe(Effect.provide(makeAppLayer({ env }))),
 		)

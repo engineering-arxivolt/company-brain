@@ -368,7 +368,10 @@ export async function assembleTurnTools(
 				traceId,
 				focus_tags,
 				slackLookup?.memoryContainerTags,
-				{ threshold: 0.15 },
+				// The model asked for this explicitly, so pay for ordering: rerank
+				// puts the answer's best source first instead of whatever vector
+				// distance happened to win.
+				{ threshold: 0.15, rerank: true },
 			)
 			const formatted = formatBrainResults(brain.results, {
 				filterByScore: true,

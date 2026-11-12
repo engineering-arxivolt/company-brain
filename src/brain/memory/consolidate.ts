@@ -22,6 +22,8 @@ export type ConsolidationDoc = {
 	content: string
 	/** Epoch ms. */
 	createdAt: number
+	/** The brain's own handle for a document it generated, when it has one. */
+	customId?: string | null
 }
 
 export type ConsolidationDuplicate = {
@@ -42,6 +44,29 @@ export type ConsolidationPlan = {
 
 /** A note older than this has stopped being current unless re-written. */
 export const DEFAULT_STALE_AFTER_DAYS = 180
+
+/**
+ * customId prefixes for documents the brain generated rather than collected.
+ *
+ * This distinction is the whole reason the stale rule is allowed to delete at
+ * all. A transcript or a research card is *derived*: it is rebuilt on the next
+ * run, so ageing it out costs nothing. A fact somebody said in Slack is not —
+ * supermemory may still be deriving memories from it, and `dreamingStatus`
+ * progress lives on supermemory's side where we cannot see per-document state.
+ * So duplicates (identical content, provably redundant) can be cleaned up for
+ * any document, and *stale* only ever applies to these.
+ */
+const BRAIN_GENERATED_PREFIXES = [
+	"company-brain-channel-observe:",
+	"company-brain-research:",
+	"career_profile_",
+	"company-brain-history:",
+]
+
+export function isBrainGenerated(customId: string | null | undefined): boolean {
+	if (!customId) return false
+	return BRAIN_GENERATED_PREFIXES.some((prefix) => customId.startsWith(prefix))
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -93,11 +118,13 @@ export function planConsolidation(
 	}
 
 	// Only notes that survive de-duplication can be stale — no point ageing a
-	// copy that is about to be deleted.
+	// copy that is about to be deleted. And only the brain's own derived
+	// documents: a human fact is never aged out behind the asker's back.
 	const dropped = new Set(duplicates.flatMap((entry) => entry.drop))
 	const stale = docs
 		.filter((doc) => !dropped.has(doc.id))
 		.filter((doc) => factKey(doc.content).length > 0)
+		.filter((doc) => isBrainGenerated(doc.customId))
 		.map((doc) => ({ id: doc.id, ageDays: Math.max(0, Math.floor((options.now - doc.createdAt) / DAY_MS)) }))
 		.filter((entry) => entry.ageDays * DAY_MS >= staleAfterMs)
 

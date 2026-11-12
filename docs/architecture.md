@@ -71,7 +71,17 @@ Container tags (`apps/api/src/lib/spaces/provisioning.ts`, `memory/writeback.ts`
 
 **Read** (`memory/read-scope.ts`): always `sm_org_shared` + current scope tag. **DM also reads every private-channel container the asker can access** (membership table).
 
-**Search** (`memory/search-brain.ts`): hybrid, `limit: 40` per container, threshold `0.3`, batch concurrency 6, dedupe by id, return top 40.
+**Search** (`memory/search-brain.ts`): hybrid, `limit: 40` per container, threshold `0.3`, batch concurrency 6, dedupe by id, return top 40. `rerank` is off by default and **on for an explicit `search_company_brain`** — ordering is that call's whole product, and the asker is waiting on it.
+
+### What we ask supermemory to do
+
+| Lever | How we use it |
+|---|---|
+| `taskType` | `"memory"` for everything the brain writes (facts); `"superrag"` for the seven-day channel history documents, which are retrieved from rather than mined for facts. Defaulted in `compat/routes/memories/handler-effect.ts`. |
+| `customId` | Deterministic per ingest (`slackMemoryCustomId(date, key, content)`), so the same note written twice on the same day replaces instead of accumulating. Different wording is a new document — that is paraphrase, and it is supermemory's job, not ours. |
+| `rerank` | Explicit searches only (`search_company_brain`), for the ordering. Ambient turn-time searches stay cheap. |
+| `containerTags` | One container per write, scoped by Slack surface (table above). |
+| dreaming | **Not ours.** supermemory 4.25.4 has no per-write dreaming parameter; it is a workspace setting and its progress comes back as `dreamingStatus` on memories. The brain does not set it and no longer pretends to — the nightly pass in `memory/dream.ts` is a separate, auditable safety net (duplicate documents; stale *derived* documents only). |
 
 Also used elsewhere: `sm_org_shared_inbox`, `sm_agent_self` (not the default Slack write path).
 

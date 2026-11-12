@@ -26,6 +26,14 @@ export type BrainSearchOptions = {
 	threshold?: number
 	/** Per-container candidate limit. */
 	limit?: number
+	/**
+	 * Ask supermemory to rerank the hits against the query.
+	 *
+	 * Off for the ambient paths (a turn that searches while thinking cannot
+	 * afford it) and on for an explicit `search_company_brain`, where ordering is
+	 * the product and the asker is waiting for exactly this answer.
+	 */
+	rerank?: boolean
 }
 
 export async function searchBrain(
@@ -83,7 +91,7 @@ export async function searchBrain(
 			limit: perContainerLimit,
 			threshold,
 			include,
-			rerank: false,
+			rerank: options.rerank ?? false,
 			aggregate: false,
 			rewriteQuery: false,
 			searchMode: "hybrid",

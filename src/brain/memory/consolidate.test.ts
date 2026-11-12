@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
 	DEFAULT_STALE_AFTER_DAYS,
 	factKey,
+	isBrainGenerated,
 	msUntilNextDream,
 	planConsolidation,
 } from "./consolidate"
@@ -9,8 +10,8 @@ import {
 const DAY = 24 * 60 * 60 * 1000
 const NOW = Date.UTC(2026, 10, 12) // 2026-11-12
 
-function doc(id: string, content: string, ageDays: number) {
-	return { id, content, createdAt: NOW - ageDays * DAY }
+function doc(id: string, content: string, ageDays: number, customId?: string) {
+	return { id, content, createdAt: NOW - ageDays * DAY, customId: customId ?? null }
 }
 
 describe("factKey", () => {
@@ -72,12 +73,28 @@ describe("planConsolidation", () => {
 		expect(plan.distinct).toBe(2)
 	})
 
-	it("marks old notes stale, and leaves fresh ones alone", () => {
+	it("marks old derived documents stale, and leaves fresh ones alone", () => {
 		const plan = planConsolidation(
-			[doc("fresh", "Pricing approved", 10), doc("old", "Pricing under review", 400)],
+			[
+				doc("fresh", "Pricing approved", 10, "company-brain-research:fresh"),
+				doc("old", "Pricing under review", 400, "company-brain-research:old"),
+			],
 			{ now: NOW },
 		)
 		expect(plan.stale).toEqual([{ id: "old", ageDays: 400 }])
+	})
+
+	it("never ages out a fact somebody said, however old it is", () => {
+		// supermemory is still deriving memories from these documents; ageing
+		// them out behind the asker's back is not ours to do.
+		const plan = planConsolidation(
+			[
+				doc("fact", "Deploy is on Thursday", 400),
+				doc("session", "Session note from the offsite", 900, "company-brain-channel-observe:x"),
+			],
+			{ now: NOW },
+		)
+		expect(plan.stale).toEqual([{ id: "session", ageDays: 900 }])
 	})
 
 	it("does not age a copy it is about to delete", () => {
@@ -90,10 +107,10 @@ describe("planConsolidation", () => {
 	})
 
 	it("honours a custom staleness window", () => {
-		const plan = planConsolidation([doc("a", "Thirty days on", 30)], {
-			now: NOW,
-			staleAfterDays: 14,
-		})
+		const plan = planConsolidation(
+			[doc("a", "Thirty days on", 30, "company-brain-research:a")],
+			{ now: NOW, staleAfterDays: 14 },
+		)
 		expect(plan.stale).toEqual([{ id: "a", ageDays: 30 }])
 		expect(DEFAULT_STALE_AFTER_DAYS).toBe(180)
 	})
@@ -113,6 +130,20 @@ describe("planConsolidation", () => {
 			stale: [],
 			distinct: 0,
 		})
+	})
+})
+
+describe("isBrainGenerated", () => {
+	it("knows the documents the brain derives and rebuilds", () => {
+		expect(isBrainGenerated("company-brain-research:abc")).toBe(true)
+		expect(isBrainGenerated("company-brain-channel-observe:eng:1")).toBe(true)
+		expect(isBrainGenerated("career_profile_U123")).toBe(true)
+	})
+
+	it("does not claim a fact somebody wrote", () => {
+		expect(isBrainGenerated(null)).toBe(false)
+		expect(isBrainGenerated(undefined)).toBe(false)
+		expect(isBrainGenerated("slack:2026-11-12:deploy")).toBe(false)
 	})
 })
 

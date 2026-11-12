@@ -1496,9 +1496,11 @@ async function submitDocument(
 					string,
 					string | number | boolean | string[]
 				>,
+				// Seven days of channel transcript is a document to retrieve from,
+				// not a fact to extract — so superrag, not the memory default.
+				taskType: "superrag",
 			},
 			isFullReplace: true,
-			dreaming: "dynamic",
 			preserveBrainTags: true,
 		}).pipe(Effect.provide(makeAppLayer({ env }))),
 	)

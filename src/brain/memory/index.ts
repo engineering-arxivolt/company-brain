@@ -118,7 +118,6 @@ export async function writeMemory(
 			containerTag: request.containerTag,
 			metadata: request.metadata,
 		},
-		dreaming: "instant",
 		preserveBrainTags: true,
 	})
 
