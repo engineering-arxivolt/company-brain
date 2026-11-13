@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect"
+import type Supermemory from "supermemory"
 import { describe, expect, it } from "vitest"
 import { VectorDBService } from "../../services/vectordb"
 import { addMemorySingle } from "./handler-effect"
@@ -22,12 +23,12 @@ function fakeClient() {
 			},
 		},
 	}
-	return { client: client as unknown as VectorDBService, calls }
+	return { client: client as unknown as Supermemory, calls }
 }
 
 async function write(
 	requestParams: Parameters<typeof addMemorySingle>[0]["requestParams"],
-	client: VectorDBService,
+	client: Supermemory,
 ) {
 	return Effect.runPromise(
 		Effect.provideService(

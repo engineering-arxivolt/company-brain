@@ -1,5 +1,6 @@
 import { Hono } from "hono"
 import type { AppContext } from "@/types"
+import { brainAuditRoutes } from "./audit"
 import { brainAutomationsRoutes } from "./automations"
 import { brainCompanySummaryRoutes } from "./company-summary"
 import { brainDecisionsRoutes } from "./decisions"
@@ -26,6 +27,7 @@ export const brainRoutes = new Hono<AppContext>()
 	.route("/mcp-connections", brainMcpConnectionsRoutes)
 	.route("/company-summary", brainCompanySummaryRoutes)
 	.route("/automations", brainAutomationsRoutes)
+	.route("/audit", brainAuditRoutes)
 	.route("/skills", brainSkillsRoutes)
 	.route("/research", brainResearchRoutes)
 	.route("/models", brainModelsRoutes)

@@ -496,6 +496,12 @@ export class CompanyBrainAgent extends Agent<Env, CompanyBrainState> {
 		return (await this.loadImpl()).answerQuality(this)
 	}
 
+	// Operational audit: stuck jobs, paused turns, live sandbox sessions, spend.
+	// Runs in the DO because none of that SQL is reachable from outside it.
+	async auditBrain() {
+		return (await this.loadImpl()).auditBrain(this)
+	}
+
 	async getWorkspacePrompt(): Promise<string | null> {
 		return (await this.loadImpl()).getWorkspacePrompt(this)
 	}

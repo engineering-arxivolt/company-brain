@@ -163,6 +163,16 @@ export { getDecisions } from "./decision-log"
 export { inspectTurn } from "./turn-inspection"
 export { answerQuality } from "../slack/answer-quality"
 
+import { auditBrain as auditBrainImpl, type BrainAudit } from "./audit"
+
+/**
+ * Operational audit, wired to this DO's env so the route can call it over RPC.
+ * Everything it reports lives in this object's SQL or the org's KV.
+ */
+export async function auditBrain(agent: CompanyBrainAgent): Promise<BrainAudit> {
+	return auditBrainImpl(agent, { env: brainAgent(agent).env })
+}
+
 import { recordDecision } from "./decision-log"
 
 /**

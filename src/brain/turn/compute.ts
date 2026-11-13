@@ -90,6 +90,7 @@ import {
 import { toolFamiliesForSkill } from "./lazy-tools"
 import { createDocumentDeliveryGuard } from "./document-delivery"
 import { classifyTurn, matchesTurnRoute } from "./route"
+import { recordTurnCost } from "./turn-cost"
 import {
 	channelRefFromMessage,
 	deliverCareerDocuments,
@@ -2390,6 +2391,9 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 		finishFailedTurn(error)
 		throw error
 	} finally {
+		// Persist what the turn cost before the ledger goes out of scope: the
+		// charge path sends it away, and until now nothing kept a queryable copy.
+		recordTurnCost(agent, { traceId, entries: costLedger.breakdown() })
 		let chargedOps = 0
 		const charge = async (): Promise<void> => {
 			chargedOps += await scheduleChargeBrainLlmCost({
