@@ -5,6 +5,7 @@ import {
 	uploadName,
 } from "../documents/pdf-pipeline"
 import { renderCoverLetterTex } from "./cover-letter"
+import { describeCommandFailure, describePageCeiling } from "../documents/build-diagnostics"
 import { withoutAccents } from "./document-ask"
 import { parseJobPosting } from "./job-posting"
 import { parseCareerProfile, type CareerProfile } from "./profile"
@@ -47,7 +48,13 @@ export type DeliverCareerDocumentsArgs = {
 }
 
 export type DeliverCareerDocumentsResult =
-	| { ok: true; sandboxId: string; documents: CareerDocument[] }
+	| {
+			ok: true
+			sandboxId: string
+			documents: CareerDocument[]
+			/** Wall-clock ms spent in the sandbox; the cost row records it. */
+			sandboxMs: number
+	  }
 	| { ok: false; error: string }
 
 /**
@@ -320,6 +327,8 @@ export async function deliverCareerDocuments(
 	]
 	// A cover-letter-only ask still needs a profile to write the letter from, but
 	// no CV render and no page fitting: the loop below simply has nothing to try.
+	const sandboxStartedAt = Date.now()
+	let lastPagesSeen = 0
 	let cvProfile: CareerProfile | null = wantsCv ? null : tailored
 	for (const variant of wantsCv ? variants : []) {
 		await args.client.writeFile({
@@ -343,7 +352,11 @@ export async function deliverCareerDocuments(
 			)
 			return {
 				ok: false,
-				error: `latexmk failed (exit ${compiled.exitCode})`,
+				error: describeCommandFailure({
+				what: "the CV build",
+				exitCode: compiled.exitCode,
+				timeoutSec: args.timeoutSec ?? 120,
+			}),
 			}
 		}
 		const checked = await args.client.runCommand({
@@ -354,6 +367,7 @@ export async function deliverCareerDocuments(
 		})
 		const parsed = parseVerifyOutput(checked.output)
 		const pages = parsed[0]?.pages ?? 0
+		lastPagesSeen = pages
 		if (checked.exitCode !== 0 || pages < 1) {
 			// A PDF that does not verify is broken regardless of how it was
 			// trimmed — never upload it.
@@ -373,7 +387,10 @@ export async function deliverCareerDocuments(
 		)
 	}
 	if (!cvProfile) {
-		return { ok: false, error: "the CV would not fit on two pages" }
+		return {
+			ok: false,
+			error: describePageCeiling({ what: "a CV", maxPages: 2, lastPages: lastPagesSeen }),
+		}
 	}
 
 	const files = wantsLetter
@@ -411,7 +428,11 @@ export async function deliverCareerDocuments(
 		)
 		return {
 			ok: false,
-			error: `latexmk failed (exit ${compiled.exitCode})`,
+			error: describeCommandFailure({
+				what: "the cover-letter build",
+				exitCode: compiled.exitCode,
+				timeoutSec: args.timeoutSec ?? 120,
+			}),
 		}
 	}
 
@@ -491,5 +512,8 @@ export async function deliverCareerDocuments(
 		ok: true,
 		sandboxId: sandbox.sandboxId,
 		documents,
+		// Container time is the real marginal cost of a document build and it was
+		// invisible; the caller adds it to the turn's cost row.
+		sandboxMs: Date.now() - sandboxStartedAt,
 	}
 }

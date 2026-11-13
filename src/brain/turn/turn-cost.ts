@@ -28,9 +28,19 @@ export function ensureTurnCostTable(agent: CompanyBrainAgent): void {
 			cache_write_tokens INTEGER NOT NULL,
 			models TEXT NOT NULL,
 			entries_json TEXT,
-			created_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL,
+			sandbox_ms INTEGER NOT NULL DEFAULT 0
 		)
 	`
+	// The table shipped before container time was metered; add the column for
+	// rows that predate it without losing them.
+	try {
+		agent.sql`
+			ALTER TABLE brain_turn_cost ADD COLUMN sandbox_ms INTEGER NOT NULL DEFAULT 0
+		`
+	} catch {
+		// Already there.
+	}
 	agent.sql`
 		CREATE INDEX IF NOT EXISTS brain_turn_cost_recent
 		ON brain_turn_cost (created_at)
@@ -40,6 +50,8 @@ export function ensureTurnCostTable(agent: CompanyBrainAgent): void {
 export type TurnCostTotals = {
 	turns: number
 	usd: number
+	/** Container wall-clock, the dominant marginal cost of a document build. */
+	sandboxMs: number
 	inputTokens: number
 	outputTokens: number
 	cacheReadTokens: number
@@ -49,6 +61,7 @@ export type TurnCostTotals = {
 const EMPTY_TOTALS: TurnCostTotals = {
 	turns: 0,
 	usd: 0,
+	sandboxMs: 0,
 	inputTokens: 0,
 	outputTokens: 0,
 	cacheReadTokens: 0,
@@ -62,8 +75,15 @@ const EMPTY_TOTALS: TurnCostTotals = {
  * summed regardless of source, because a charge is a charge whether the
  * provider told us or we priced it from the list.
  */
-export function turnCostTotals(entries: readonly BrainCostEntry[]): TurnCostTotals {
-	const totals = { ...EMPTY_TOTALS, turns: entries.length ? 1 : 0 }
+export function turnCostTotals(
+	entries: readonly BrainCostEntry[],
+	sandboxMs = 0,
+): TurnCostTotals {
+	const totals = {
+		...EMPTY_TOTALS,
+		turns: entries.length ? 1 : 0,
+		sandboxMs: Number.isFinite(sandboxMs) && sandboxMs > 0 ? sandboxMs : 0,
+	}
 	for (const entry of entries) {
 		totals.usd += Number.isFinite(entry.usd) ? entry.usd : 0
 		totals.inputTokens += entry.usage.inputTokens ?? 0
@@ -89,21 +109,28 @@ export function billableModels(entries: readonly BrainCostEntry[]): string[] {
 /** Persist one turn's cost. Returns false when it could not be stored. */
 export function recordTurnCost(
 	agent: CompanyBrainAgent,
-	args: { traceId: string; entries: readonly BrainCostEntry[]; now?: number },
+	args: {
+		traceId: string
+		entries: readonly BrainCostEntry[]
+		/** Container time this turn spent, summed across its builds. */
+		sandboxMs?: number
+		now?: number
+	},
 ): boolean {
 	if (!args.entries.length) return false
 	try {
 		ensureTurnCostTable(agent)
-		const totals = turnCostTotals(args.entries)
+		const totals = turnCostTotals(args.entries, args.sandboxMs)
 		agent.sql`
 			INSERT INTO brain_turn_cost (
 				trace_id, usd, input_tokens, output_tokens, cache_read_tokens,
-				cache_write_tokens, models, entries_json, created_at
+				cache_write_tokens, models, entries_json, created_at, sandbox_ms
 			) VALUES (
 				${args.traceId}, ${totals.usd}, ${totals.inputTokens},
 				${totals.outputTokens}, ${totals.cacheReadTokens},
 				${totals.cacheWriteTokens}, ${billableModels(args.entries).join(",")},
-				${JSON.stringify(args.entries)}, ${args.now ?? Date.now()}
+				${JSON.stringify(args.entries)}, ${args.now ?? Date.now()},
+				${totals.sandboxMs}
 			)
 			ON CONFLICT(trace_id) DO UPDATE SET
 				usd = excluded.usd,
@@ -113,7 +140,8 @@ export function recordTurnCost(
 				cache_write_tokens = excluded.cache_write_tokens,
 				models = excluded.models,
 				entries_json = excluded.entries_json,
-				created_at = excluded.created_at
+				created_at = excluded.created_at,
+				sandbox_ms = excluded.sandbox_ms
 		`
 		return true
 	} catch (error) {
@@ -127,6 +155,7 @@ export function recordTurnCost(
 
 export type TurnCostRow = {
 	usd: number
+	sandbox_ms?: number | null
 	input_tokens: number
 	output_tokens: number
 	cache_read_tokens: number
@@ -139,6 +168,7 @@ export function sumCostRows(rows: readonly TurnCostRow[]): TurnCostTotals {
 	for (const row of rows) {
 		totals.turns += 1
 		totals.usd += Number.isFinite(row.usd) ? row.usd : 0
+		totals.sandboxMs += row.sandbox_ms ?? 0
 		totals.inputTokens += row.input_tokens ?? 0
 		totals.outputTokens += row.output_tokens ?? 0
 		totals.cacheReadTokens += row.cache_read_tokens ?? 0
@@ -160,7 +190,8 @@ export function turnCostSummary(
 	try {
 		ensureTurnCostTable(agent)
 		const rows = agent.sql<TurnCostRow>`
-			SELECT usd, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+			SELECT usd, input_tokens, output_tokens, cache_read_tokens,
+				cache_write_tokens, sandbox_ms
 			FROM brain_turn_cost
 			WHERE created_at >= ${since}
 		`

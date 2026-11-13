@@ -393,6 +393,9 @@ export async function computeTurn(
 		actor: userId,
 	})
 	const costLedger = new BrainCostLedger()
+	// Container wall-clock this turn spent building documents. Declared out here
+	// because the billing settle block (below runTurn) records it.
+	let sandboxMsTotal = 0
 	// Pacing clock: when the person last saw a message, and whether they've heard
 	// anything at all. Reset when the model posts, so silence during long tool
 	// work can be measured/nudged (and a missing opener prompted).
@@ -915,6 +918,7 @@ export async function computeTurn(
 				.finally(() => careerLease.release())
 			if (built.ok) {
 				careerDelivery = { documents: built.documents }
+				sandboxMsTotal += built.sandboxMs
 				documentDelivery.markDelivered(built.documents[0]?.fileName ?? "cv.pdf")
 				// Hand the container back now that the bytes are delivered: the
 				// sandbox is billed per instance and nothing here needs the
@@ -1628,6 +1632,7 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 						error: error instanceof Error ? error.message : String(error),
 					}))
 					if (upload.ok) {
+						sandboxMsTotal += upload.sandboxMs
 						reportDelivery = {
 							title: spec.title,
 							fileName: upload.fileName,
@@ -2393,7 +2398,11 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 	} finally {
 		// Persist what the turn cost before the ledger goes out of scope: the
 		// charge path sends it away, and until now nothing kept a queryable copy.
-		recordTurnCost(agent, { traceId, entries: costLedger.breakdown() })
+		recordTurnCost(agent, {
+			traceId,
+			entries: costLedger.breakdown(),
+			sandboxMs: sandboxMsTotal,
+		})
 		let chargedOps = 0
 		const charge = async (): Promise<void> => {
 			chargedOps += await scheduleChargeBrainLlmCost({

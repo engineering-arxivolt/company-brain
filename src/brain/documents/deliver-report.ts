@@ -1,5 +1,6 @@
 import type { SandboxClient } from "../tools/sandbox/client"
 import { parseVerifyOutput, verifyPdfLines } from "../career/deliver"
+import { COMMAND_LIMIT_SEC, describeCommandFailure } from "./build-diagnostics"
 import {
 	ghostscriptNormalize,
 	uploadArtifact,
@@ -40,6 +41,8 @@ export type DeliverReportResult =
 			pages: number
 			sizeBytes: number
 			charts: number
+			/** Wall-clock ms spent in the sandbox; the cost row records it. */
+			sandboxMs: number
 	  }
 	| { ok: false; error: string }
 
@@ -153,6 +156,7 @@ export async function deliverReport(
 	const sandbox = await args.client.createSandbox({
 		goal: "research report PDF",
 	})
+	const sandboxStartedAt = Date.now()
 	try {
 		for (const file of files) {
 			await args.client.writeFile({
@@ -167,7 +171,13 @@ export async function deliverReport(
 			path: `${sandbox.defaultCwd}/build.sh`,
 			content: buildScript,
 		})
-		const buildTimeoutSec = Math.max(1, Math.floor(args.timeoutSec ?? 240))
+		// The sandbox kills a command at its ceiling; our own `timeout` must fire a
+	// little before that so the failure is a clean exit 124 we can name, not a
+	// dead session. 20s of headroom under the ceiling.
+	const buildTimeoutSec = Math.max(
+		30,
+		Math.floor(args.timeoutSec ?? COMMAND_LIMIT_SEC - 20),
+	)
 		const built = await run(
 			"build",
 			`timeout -k 5 ${buildTimeoutSec}s bash build.sh`,
@@ -177,7 +187,14 @@ export async function deliverReport(
 			console.log(
 				`[company-brain][${args.traceId}] report build failed exit=${built.exitCode} output=${built.output.slice(-500)}`,
 			)
-			return { ok: false, error: "the report did not compile" }
+			return {
+				ok: false,
+				error: describeCommandFailure({
+				what: "the report build",
+				exitCode: built.exitCode,
+				timeoutSec: buildTimeoutSec,
+			}),
+		}
 		}
 		// Every chart the spec promised must exist as a PNG, or the .tex will
 		// fail on a missing includegraphics and half a report ships.
@@ -236,6 +253,7 @@ export async function deliverReport(
 		return {
 			ok: true,
 			sandboxId: sandbox.sandboxId,
+			sandboxMs: Date.now() - sandboxStartedAt,
 			fileName: REPORT_PDF,
 			pages: document?.pages ?? 0,
 			sizeBytes: uploaded.sizeBytes,

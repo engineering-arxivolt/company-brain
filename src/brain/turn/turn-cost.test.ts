@@ -33,6 +33,7 @@ describe("turnCostTotals", () => {
 		expect(turnCostTotals([])).toEqual({
 			turns: 0,
 			usd: 0,
+			sandboxMs: 0,
 			inputTokens: 0,
 			outputTokens: 0,
 			cacheReadTokens: 0,
@@ -43,6 +44,15 @@ describe("turnCostTotals", () => {
 	it("ignores a non-finite price instead of turning the total into NaN", () => {
 		const totals = turnCostTotals([entry("m", Number.NaN)])
 		expect(totals.usd).toBe(0)
+	})
+	it("carries container time through, because that is what a document costs", () => {
+		const totals = turnCostTotals([entry("claude-sonnet-5", 0.02)], 184_000)
+		expect(totals.sandboxMs).toBe(184_000)
+	})
+
+	it("ignores a nonsense container duration", () => {
+		expect(turnCostTotals([entry("m", 0.01)], Number.NaN).sandboxMs).toBe(0)
+		expect(turnCostTotals([entry("m", 0.01)], -5).sandboxMs).toBe(0)
 	})
 })
 

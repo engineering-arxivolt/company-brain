@@ -1,4 +1,9 @@
 import type { SandboxClient } from "../tools/sandbox/client"
+import {
+	ARTIFACT_LIMIT_BYTES,
+	describeArtifactFailure,
+	isArtifactLimitError,
+} from "./build-diagnostics"
 
 /**
  * The part every document pipeline was writing twice.
@@ -71,10 +76,36 @@ export async function uploadArtifact(args: {
 	fileName: string
 	upload: ArtifactUploader
 }): Promise<UploadedArtifact> {
-	const artifact = await args.client.getArtifact({
-		sandboxId: args.sandboxId,
-		path: `${args.cwd}/${args.path}`,
-	})
+	let artifact: Awaited<ReturnType<SandboxClient["getArtifact"]>>
+	try {
+		artifact = await args.client.getArtifact({
+			sandboxId: args.sandboxId,
+			path: `${args.cwd}/${args.path}`,
+		})
+	} catch (error) {
+		// The cap is enforced while the bytes stream, so the failure arrives here
+		// as a stream error. Say which limit it was instead of "upload failed".
+		if (isArtifactLimitError(error)) {
+			return {
+				ok: false,
+				fileName: args.fileName,
+				error: describeArtifactFailure({ limitBytes: ARTIFACT_LIMIT_BYTES }),
+			}
+		}
+		throw error
+	}
+	if (artifact.sizeBytes > ARTIFACT_LIMIT_BYTES) {
+		// Belt and braces: a client that reports the size without enforcing the
+		// cap still must not hand Slack a file we promised not to send.
+		return {
+			ok: false,
+			fileName: args.fileName,
+			error: describeArtifactFailure({
+				sizeBytes: artifact.sizeBytes,
+				limitBytes: ARTIFACT_LIMIT_BYTES,
+			}),
+		}
+	}
 	const upload = await args.upload({
 		fileName: args.fileName,
 		content: artifact.content,
