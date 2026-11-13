@@ -48,6 +48,24 @@ function isBrokenSlackReply(reply: string): boolean {
 
 // A malformed reply must never reach Slack. Semantic quality is observed in
 // PostHog and does not affect runtime delivery.
+/**
+ * Remove the sentence that narrates drafting, keep the rest.
+ *
+ * `DRAFTING_SELF_TALK` exists to stop "let me write the JSON" leaking into a
+ * reply, but rejecting the *whole* turn over one such sentence threw away real
+ * answers: a small model that says "Let me write the LaTeX file. The PDF will
+ * have six sections…" had both sentences discarded, the turn read as empty, and
+ * the asker got the canned apology instead.
+ */
+export function stripDraftingSelfTalk(text: string): string {
+	return text
+		.split(/(?<=[.!?])\s+|\n+/)
+		.filter((sentence) => !DRAFTING_SELF_TALK.test(sentence))
+		.join(" ")
+		.replace(/\s+/g, " ")
+		.trim()
+}
+
 export function isPublishableSlackReply(sanitized: string): boolean {
 	return Boolean(sanitized.trim()) && !isBrokenSlackReply(sanitized)
 }

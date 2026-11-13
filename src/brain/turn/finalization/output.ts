@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai"
 import {
 	isPublishableSlackReply,
 	sanitizeSlackReply,
+	stripDraftingSelfTalk,
 } from "../../observability/reply-quality"
 import type { TurnTerminalProposal } from "../terminal"
 
@@ -37,13 +38,21 @@ export async function selectTurnReply(args: {
 	result: TurnReplyResult
 	terminalProposal?: TurnTerminalProposal
 }): Promise<{ reply: string; source: TurnReplySource }> {
+	/** Candidates that had text but were not publishable as written. */
+	const rejected: string[] = []
+	const consider = (text: string): string => {
+		const reply = publishable(text)
+		if (!reply && text.trim()) rejected.push(text.trim())
+		return reply
+	}
+
 	if (args.terminalProposal) {
-		const reply = publishable(args.terminalProposal.reply)
+		const reply = consider(args.terminalProposal.reply)
 		if (reply) return { reply, source: "terminal" }
 	}
 
 	try {
-		const reply = publishable(await args.result.text)
+		const reply = consider(await args.result.text)
 		if (reply) return { reply, source: "text" }
 	} catch {
 		// The response transcript below is the deterministic recovery source.
@@ -52,12 +61,33 @@ export async function selectTurnReply(args: {
 	try {
 		const { messages } = await args.result.response
 		const reply = assistantDrafts(messages)
-			.map(publishable)
+			.map(consider)
 			.filter(Boolean)
 			.sort((left, right) => right.length - left.length)[0]
 		if (reply) return { reply, source: "response" }
 	} catch {
-		// The caller owns the final empty-reply fallback.
+		// The salvage below and the caller's empty-reply fallback own the rest.
+	}
+
+	// Last resort: a candidate rejected only for one drafting sentence still says
+	// something to the asker. Strip that sentence rather than erasing the turn.
+	const recovered = rejected
+		.map((text) => sanitizeSlackReply(stripDraftingSelfTalk(text)))
+		.filter((text) => isPublishableSlackReply(text))
+		.sort((left, right) => right.length - left.length)[0]
+	if (recovered) {
+		console.warn(
+			`[company-brain] reply recovered by stripping drafting self-talk chars=${recovered.length} rejected=${rejected.length}`,
+		)
+		return { reply: recovered, source: "response" }
+	}
+	if (rejected.length) {
+		// Nothing usable, but say what was thrown away — otherwise the canned
+		// apology is the only trace of it.
+		const longest = [...rejected].sort((left, right) => right.length - left.length)[0] ?? ""
+		console.warn(
+			`[company-brain] reply empty: ${rejected.length} candidate(s) rejected, longest="${longest.slice(0, 120).replace(/\s+/g, " ")}"`,
+		)
 	}
 
 	return { reply: "", source: "empty" }

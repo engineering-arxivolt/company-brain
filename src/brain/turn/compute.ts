@@ -2330,6 +2330,14 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 			connect = null
 		}
 		if (!reply.trim()) {
+			// The canned apology is the only trace of an empty turn, and it hid the
+			// cause for a live failure: "sorry, I couldn't put together an answer"
+			// looked like a model refusal when it is really "the model returned no
+			// text". Name the state that produced it, so the next occurrence is
+			// diagnosed from logs instead of inferred from the reply wording.
+			console.warn(
+				`[company-brain][${traceId}] empty reply: no text from the model steps=${state.budget.steps.used}/${state.budget.steps.limit} toolCalls=${toolTrace.length} nativeCalls=${state.nativeCalls.length} salvaged=${salvaged} choices=${lastProviderOutputChoices.length}`,
+			)
 			telemetry.recordCannedAnswer()
 			reply = EMPTY_REPLY
 			// A canned reply never celebrates: drop any proposed flourish.
