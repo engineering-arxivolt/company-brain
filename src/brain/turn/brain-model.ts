@@ -616,8 +616,18 @@ async function attemptChain<T>(
 	const unavailable: string[] = []
 	for (const model of chain) {
 		const candidate = model as unknown as LanguageModelV3
+		const attemptStartedAt = Date.now()
 		try {
-			return { result: await call(candidate) }
+			const result = await call(candidate)
+			// Name the hop that answered. Without this line the only trace of the
+			// chain was its construction, so "which model actually wrote this?"
+			// could not be answered from logs at all — and a turn that fails deep
+			// in a chain of free models looks identical to one served by the
+			// configured model.
+			console.log(
+				`[company-brain] model hop answered id=${candidate.provider}/${candidate.modelId} ms=${Date.now() - attemptStartedAt}`,
+			)
+			return { result }
 		} catch (err) {
 			const failure = classifyPoolFailure(err)
 			if (!failure) {
