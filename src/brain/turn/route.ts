@@ -35,10 +35,32 @@ const CAMPAIGN_PATTERN = /\bcampaign pack\b/i
 const DOODLE_PATTERN = /\b(doodle|anidoodle)\b/i
 const IMAGE_PROMPTS_PATTERN = /\bimage prompts?\b/i
 
+/** A document the asker wants written, rather than one they already have. */
+const DOCUMENT_NOUN =
+	/\b(pdf|document|report|brief|proposal|summary|overview|write[- ]?up|whitepaper|one[- ]?pager|dossier)\b/i
+const CREATE_VERB =
+	/\b(make|create|produce|generate|draft|write|compile|build|prepare|put together)\b/i
+/** Refers to something that already exists, so it is not a fresh document job. */
+const EXISTING_ARTIFACT =
+	/\b(?:that|this|the)\s+(?:file|pdf|doc|document|deck|invoice|attachment)\b|\b(?:uploaded|attached|sent|received)\b/i
+/**
+ * Art direction for a document is the model's job, not the report pipeline's —
+ * pinned by the `report-with-cover-image` eval, which stays route-free.
+ */
+const ART_DIRECTION =
+	/\b(?:cover image|cover art|artwork|illustration|illustrations|poster|banner|graphic|graphics|visual|visuals)\b/i
+
 /**
  * Research report, including the second clause: an itinerary, schedule or
  * proposal asked for as a PDF is a document job too. "Produce a 3-day
  * itinerary PDF" used to slip past this gate and be answered by the model raw.
+ *
+ * The third clause is the same lesson one level up: any ask to *create a
+ * document* is a document job. "Make a PDF of the whole company" matched no
+ * route, so `primary` was null, a free-tier hop freestyled the whole thing
+ * (trace LJiY175QSZF7irA5LfKCac: five tool calls, four steps, not one word of
+ * text) and the asker got the canned empty-reply apology — while the report
+ * pipeline that renders and delivers a PDF never ran.
  */
 function matchesResearchReport(text: string): boolean {
 	return (
@@ -47,7 +69,11 @@ function matchesResearchReport(text: string): boolean {
 		/\bpdf report\b/i.test(text) ||
 		(/\bpdf\b/i.test(text) &&
 			/\b(itinerary|schedule|proposal|plan|brief)\b/i.test(text) &&
-			/\b(make|create|produce|generate|draft|write|research)\b/i.test(text))
+			/\b(make|create|produce|generate|draft|write|research)\b/i.test(text)) ||
+		(CREATE_VERB.test(text) &&
+			DOCUMENT_NOUN.test(text) &&
+			!EXISTING_ARTIFACT.test(text) &&
+			!ART_DIRECTION.test(text))
 	)
 }
 
