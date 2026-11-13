@@ -159,6 +159,23 @@ async function buildOpenRouterTierConfig(env: Env): Promise<ModelTierConfig> {
 	}
 
 	free.sort(sortByContext)
+	// Capability before context length. Sorting only by context let any small
+	// model with a big window lead every main turn — `particle-ai/particle-1:free`
+	// did, and turns ended with no answer at all (or on "lemme pull our threads").
+	// The curated large free ids lead; everything else keeps the old ordering.
+	const freePriority = new Map(
+		[
+			"nvidia/nemotron-3-super-120b-a12b:free",
+			"minimax/minimax-m3.1-flash:free",
+			"google/gemma-4-31b-it:free",
+		].map((id, index) => [id, index]),
+	)
+	free.sort(
+		(a, b) =>
+			(freePriority.get(a) ?? Number.MAX_SAFE_INTEGER) -
+				(freePriority.get(b) ?? Number.MAX_SAFE_INTEGER) ||
+			sortByContext(a, b),
+	)
 	cheap.sort(sortByContext)
 	premium.sort(sortByContext)
 
