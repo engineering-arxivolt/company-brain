@@ -32,7 +32,11 @@ describe("selectTurnReply", () => {
 		const selected = await selectTurnReply({
 			result: result("Let me write the JSON."),
 		})
-		expect(selected).toEqual({ reply: "", source: "empty" })
+		expect(selected).toEqual({
+			reply: "",
+			source: "empty",
+			narrationOnly: true,
+		})
 	})
 
 	it("keeps the largest usable assistant draft", async () => {

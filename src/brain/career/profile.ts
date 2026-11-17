@@ -105,6 +105,144 @@ export function parseCareerProfile(markdown: string): CareerProfile {
 	}
 }
 
+/**
+ * How a person names one entry: "Software Developer — AdanianLabs".
+ *
+ * The CV has two entries titled "Software Developer", so a title alone is not an
+ * identity. Every message and rejection that names an entry uses this label.
+ */
+export function entryLabel(entry: ResumeEntry): string {
+	return entry.organisation
+		? `${entry.title} — ${entry.organisation}`
+		: entry.title
+}
+
+/** Case/dash/space-insensitive comparison key for titles and employers. */
+function labelKey(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/[–—]/g, "-")
+		.replace(/\s+/g, " ")
+		.trim()
+}
+
+/**
+ * Every entry a label could mean, most specific reading first.
+ *
+ * A model (or a person) can name an entry by its full heading, by its title, or
+ * by the employer alone — "change the Nathan Digital dates" is the normal way to
+ * ask, and it must resolve even though the title is "Frontend Developer". When a
+ * title is shared by two jobs the caller gets both candidates and has to choose;
+ * guessing would silently edit the wrong employer.
+ */
+export function matchExperienceEntries(
+	profile: CareerProfile,
+	label: string,
+): ResumeEntry[] {
+	const wanted = labelKey(label)
+	if (!wanted) return []
+	const exact = (value: string) => labelKey(value) === wanted
+	const combined = profile.experience.filter((entry) =>
+		exact(entryLabel(entry)),
+	)
+	if (combined.length) return combined
+	const byTitle = profile.experience.filter((entry) => exact(entry.title))
+	if (byTitle.length) return byTitle
+	const byEmployer = profile.experience.filter(
+		(entry) => entry.organisation && exact(entry.organisation),
+	)
+	if (byEmployer.length) return byEmployer
+	return profile.experience.filter((entry) =>
+		[entry.title, entry.organisation]
+			.filter(Boolean)
+			.map(labelKey)
+			.some((field) => field.includes(wanted) || wanted.includes(field)),
+	)
+}
+
+/**
+ * The one entry a label means, or why it does not mean exactly one.
+ *
+ * `findExperienceEntry` is the lenient form tailoring uses (first match); an edit
+ * must never be lenient, because the wrong match is a wrong fact on the page.
+ */
+export type ExperienceMatch =
+	| { ok: true; entry: ResumeEntry }
+	| { ok: false; reason: "none" | "ambiguous"; candidates: ResumeEntry[] }
+
+export function resolveExperienceEntry(
+	profile: CareerProfile,
+	label: string,
+): ExperienceMatch {
+	const matches = matchExperienceEntries(profile, label)
+	const [only] = matches
+	if (only && matches.length === 1) return { ok: true, entry: only }
+	if (!matches.length) return { ok: false, reason: "none", candidates: [] }
+	return { ok: false, reason: "ambiguous", candidates: matches }
+}
+
+/** First match — the tailoring path, which falls back to the base CV anyway. */
+export function findExperienceEntry(
+	profile: CareerProfile,
+	title: string,
+): ResumeEntry | undefined {
+	return matchExperienceEntries(profile, title)[0]
+}
+
+/**
+ * The base CV's own Markdown, written back out.
+ *
+ * This is the inverse of `parseCareerProfile`, and it exists so an edit can be
+ * persisted without inventing a second storage format: the Markdown *is* the
+ * document, LaTeX is one rendering of it. A working CV (base + confirmed edits,
+ * or the profile the last PDF was rendered from) round-trips through
+ * parse → render → parse unchanged, which is what makes an edit a small patch
+ * in code instead of a model rewriting the whole file.
+ */
+export function renderCareerProfileMarkdown(profile: CareerProfile): string {
+	const contact = [
+		profile.contact.location ? `- Location: ${profile.contact.location}` : "",
+		profile.contact.email ? `- Email: ${profile.contact.email}` : "",
+		profile.contact.phone ? `- Phone: ${profile.contact.phone}` : "",
+		...profile.contact.links.map((link) => `- ${link.label}: ${link.url}`),
+		profile.contact.availability.length
+			? `- Availability: ${profile.contact.availability.join("; ")}`
+			: "",
+	].filter(Boolean)
+
+	const experience = profile.experience.flatMap((entry) => [
+		`**${entry.title}${entry.organisation ? ` — ${entry.organisation}` : ""}** (${entry.period})`,
+		...entry.details.map((detail) => `- ${detail}`),
+	])
+
+	const projects = profile.projects.flatMap((project) => [
+		`**${project.name}** (${[project.period, project.stack].filter(Boolean).join("; ")})`,
+		project.detail,
+	])
+
+	const skills = profile.skills.map(
+		(group) => `- **${group.group}:** ${group.items.join(", ")}`,
+	)
+
+	const bullets = (items: string[]) => items.map((item) => `- ${item}`)
+
+	const sections: string[] = [
+		`# Base CV${profile.name ? ` — ${profile.name}` : ""}`,
+	]
+	const section = (heading: string, body: string[]) => {
+		if (body.length) sections.push(`## ${heading}`, body.join("\n"))
+	}
+	section("Contact", contact)
+	section("Professional summary", profile.summary ? [profile.summary] : [])
+	section("Experience", experience)
+	section("Key projects", projects)
+	section("Education", bullets(profile.education))
+	section("Certifications", bullets(profile.certifications))
+	section("Skills", skills)
+	section("References", bullets(profile.references))
+	return `${sections.join("\n\n")}\n`
+}
+
 export function splitSections(markdown: string): Record<string, string> {
 	const sections: Record<string, string> = {}
 	let heading = ""

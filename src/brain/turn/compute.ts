@@ -7,10 +7,39 @@ import {
 import { getCompanyContext } from "../memory/company-context"
 import {
 	ensureCareerProfileMemory,
+	careerProfileDigest,
 	readCareerProfileSource,
 	renderBaseCvContext,
 } from "../memory/career-profile"
 import { isCareerDocumentAsk } from "../career/document-ask"
+import {
+	type CareerDraft,
+	editTargetMarkdown,
+	readCareerDraft,
+	resolveWorkingCv,
+	writeCareerDraft,
+} from "../career/draft"
+import {
+	careerOptionsAsk,
+	optionAsEdit,
+	optionPick,
+	parseBulletOptions,
+	pendingOptionsFresh,
+	renderBulletOptions,
+	renderOptionsKept,
+	requestBulletOptions,
+	toPendingOptions,
+} from "../career/options"
+import { parseJobPosting, postingBrief } from "../career/job-posting"
+import {
+	type CvEditOutcome,
+	applyCvEdits,
+	careerEditInstruction,
+	isFactEdit,
+	parseCvEditPlan,
+	renderCareerEditContext,
+	requestCvEditPlan,
+} from "../career/edit"
 import {
 	loadInteractionStyleProfile,
 	renderInteractionStyle,
@@ -79,6 +108,7 @@ import {
 	settleTurn,
 	type TurnFinalizationAdapter,
 } from "./finalization"
+import { resolveNarrationOnlyOutput } from "./finalization/narration"
 import {
 	applyProgressPacingPolicy,
 	applyTimeBudgetPolicy,
@@ -94,15 +124,17 @@ import { recordTurnCost } from "./turn-cost"
 import {
 	channelRefFromMessage,
 	deliverCareerDocuments,
+	editedDocuments,
 	renderCareerDeliveryContext,
 	selectCareerDocuments,
 } from "../career/deliver"
 import {
+	type TailoringPlan,
 	requestTailoringPlanChecked,
 	withTimeout,
 } from "../career/tailor"
 import { contextSearch, hasContextWeb } from "@/lib/context-dev"
-import { parseCareerProfile } from "../career/profile"
+import { entryLabel, parseCareerProfile, renderCareerProfileMarkdown } from "../career/profile"
 import {
 	parseReportSpec,
 	requestReportPlan,
@@ -794,37 +826,69 @@ export async function computeTurn(
 			(jevSkillSelection?.preloadedSkills ?? []).some(
 				(skill) => skill.id === DOCUMENT_DELIVERY_SKILL.id,
 			)
-		// Read the base CV straight from where it is published and hand it to
-		// the model. Semantic search does not reliably surface one long document
-		// (measured: a seeded 6.5KB CV never scored above 0.67, so turns spent
-		// their whole budget searching for it), and the company-context path
-		// already shows the right shape: deterministic read, not a search.
-		const baseCv =
+		// Read the CV this turn works on. The published base is the operator's
+		// statement of the facts; a draft carries the corrections the asker has
+		// confirmed since, so "change the date" survives into the next build
+		// instead of being re-derived away. Semantic search is the wrong
+		// retrieval for one long document (measured: a seeded 6.5KB CV never
+		// scored above 0.67), so this is a deterministic read.
+		const publishedCv =
 			asksForCareerDocument && actor.userId
 				? await readCareerProfileSource(env, actor.userId)
 				: null
+		const careerDraft =
+			publishedCv && actor.userId
+				? await readCareerDraft(env, actor.userId)
+				: null
+		const workingCv = publishedCv
+			? resolveWorkingCv({ base: publishedCv, draft: careerDraft })
+			: null
+		const baseCv = workingCv?.markdown ?? null
 		if (baseCv) {
 			console.log(
-				`[company-brain][${traceId}] base_cv attached chars=${baseCv.length}`,
+				`[company-brain][${traceId}] base_cv attached chars=${baseCv.length} draft=${workingCv?.fromDraft === true}`,
 			)
 		}
-		// A document ask must end with a delivered file, not a written answer.
-		// finish_turn is refused until sandbox_get_artifact reports one.
-		if (asksForCareerDocument) documentDelivery.require()
+		// An edit is a patch to the document the asker is looking at, not a new
+		// build. Only ever considered inside a CV thread: "change the meeting
+		// date" must not touch a CV.
+		const editInstruction = asksForCareerDocument
+			? careerEditInstruction(question ?? "")
+			: null
+		// Alternatives for one bullet, and the reply that chooses between them.
+		// The offer expires: "2" an hour later is not an answer to this question.
+		const optionsAsk = asksForCareerDocument
+			? careerOptionsAsk(question ?? "")
+			: null
+		const pendingOptions = pendingOptionsFresh(careerDraft?.pendingOptions)
+			? careerDraft?.pendingOptions
+			: undefined
+		const optionChoice = pendingOptions
+			? optionPick(question ?? "", pendingOptions.options.length)
+			: null
+		// Build on a fresh ask or an explicit retry, not on every follow-up in
+		// the same thread — otherwise "ok" and "thanks" each post another copy
+		// of the same two PDFs. Edits, offers and picks are handled below and
+		// must never be mistaken for one of those.
+		const wantsCareerBuild =
+			!editInstruction &&
+			!optionsAsk &&
+			!optionChoice &&
+			(isCareerDocumentAsk(question ?? "") ||
+				/\b(rebuild|retry|regenerate|again|fix (?:it|the pdf))\b/i.test(
+					question ?? "",
+				))
 		// Build the documents here, deterministically, before the model runs.
 		// Ten attempts at "have the model write LaTeX and compile it" produced
 		// one broken file; rendering is a solved problem, so it happens in code
 		// and the model's only job is the message that carries the result.
 		let careerDelivery: { documents: Array<{ fileName: string; pages: number }> } | null =
 			null
-		// Build on a fresh ask or an explicit retry, not on every follow-up in
-		// the same thread — otherwise "ok" and "thanks" each post another copy
-		// of the same two PDFs.
-		const wantsCareerBuild =
-			isCareerDocumentAsk(question ?? "") ||
-			/\b(rebuild|retry|regenerate|again|fix (?:it|the pdf))\b/i.test(question ?? "")
+		// The block a rebuilt-after-edit turn hands the model: what changed, and
+		// what did not. Null on a fresh build, which uses the delivery context.
+		let careerEditContext: string | null = null
 		if (
-			wantsCareerBuild &&
+			(wantsCareerBuild || editInstruction || optionsAsk || optionChoice) &&
 			baseCv &&
 			slackLookup &&
 			!scheduledRun &&
@@ -857,93 +921,284 @@ export async function computeTurn(
 				}
 			}
 			const jobText = `${question ?? ""}\n${(threadText ?? "").slice(-4_000)}`
-			// Per-job tailoring: one small model call turns the base CV plus the
-			// posting into a plan (summary, emphasis, letter prose). It is the
-			// judgement the model is good at; the renderer keeps the LaTeX. The
-			// plan is then checked against the posting's own keywords — a plan
-			// that under-represents them gets one redo with the misses named,
-			// because an ATS and a recruiter both scan for that vocabulary. Any
-			// failure here falls back to the un-tailored build.
-			const tailoringRound = await withTimeout(
-				requestTailoringPlanChecked(env.AI, baseCv, jobText, traceId),
-				55_000,
-				() => null,
-			)
-			const tailoring = tailoringRound?.plan ?? null
-			const coverage = tailoringRound?.coverage
-			console.log(
-				`[company-brain][${traceId}] career tailoring ${
-					tailoring
-						? `applied entries=${tailoring.entryDetails ? Object.keys(tailoring.entryDetails).length : 0} letter=${tailoring.coverLetterParagraphs?.length ?? 0}p${
-								coverage
-									? ` coverage=${coverage.covered}/${coverage.total}`
-									: ""
-							}`
-						: "unavailable, rendering base CV"
-				}`,
-			)
-			// Heavy builds take turns per workspace (see acquireSandboxLease):
-			// the compile chain here and a campaign render cannot run at once
-			// without the platform killing one of their sessions.
-			const careerLease = await acquireSandboxLease(env, `builds:${org.id}`)
-			// Which documents the asker named: "just the CV" should not cost a
-			// cover-letter compile, and "both" must not collapse to one.
-			const questionedDocs = selectCareerDocuments(question ?? "")
-			const built = await deliverCareerDocuments({
-				client: createSandboxClient(env),
-				profileMarkdown: baseCv,
-				jobText,
-				traceId,
-				tailoring,
-				documents: questionedDocs,
-				upload: async (file) => {
-					const upload = await uploadSlackFile(slackLookup.botToken, {
-						channel: deliveryChannel,
-						threadTs: deliveryThreadTs,
-						filename: file.fileName,
-						sizeBytes: file.sizeBytes,
-						content: file.content,
-						altText: `Generated document: ${file.fileName}`,
-						signal: abortSignal,
-					})
-					return upload.ok
-						? { ok: true, fileId: upload.fileId }
-						: { ok: false, error: `${upload.stage}: ${upload.error}` }
-				},
+			// What this build renders, and why.
+			//
+			// A fresh ask is tailored for the posting. An edit is the document the
+			// asker is looking at with a patch applied — it must NOT be re-tailored,
+			// because a fresh tailoring plan would overwrite the very sentence they
+			// asked to change.
+			let profileMarkdown = baseCv
+			let tailoring: TailoringPlan | null = null
+			let preserveEdits = false
+			let documents = selectCareerDocuments(question ?? "")
+			let editOutcome: CvEditOutcome | null = null
+			// The facts an edit confirmed, for the CV that future jobs start from.
+			let nextSource = baseCv
+			// What this CV is aimed at. The thread's posting while it is still here,
+			// else the brief saved with the working CV: an edit or an offer that
+			// cannot see the job can only judge wording, never relevance.
+			const brief =
+				careerDraft?.postingBrief?.trim() ||
+				postingBrief(jobText, parseJobPosting(jobText))
+			const target = editTargetMarkdown({
+				working: baseCv,
+				draft: careerDraft,
 			})
-				.catch((error) => ({
-					ok: false as const,
-					error: error instanceof Error ? error.message : String(error),
-				}))
-				.finally(() => careerLease.release())
-			if (built.ok) {
-				careerDelivery = { documents: built.documents }
-				sandboxMsTotal += built.sandboxMs
-				documentDelivery.markDelivered(built.documents[0]?.fileName ?? "cv.pdf")
-				// Hand the container back now that the bytes are delivered: the
-				// sandbox is billed per instance and nothing here needs the
-				// workspace again. Best-effort — a failed cleanup must not turn a
-				// delivered document into an error.
-				const cleanup = createSandboxClient(env).destroySandbox?.({
-					sandboxId: built.sandboxId,
+			/** One place that writes the draft, so no field is forgotten. */
+			const saveDraft = async (patch: Partial<CareerDraft> = {}) => {
+				if (!actor.userId || !publishedCv) return
+				await writeCareerDraft(env, actor.userId, {
+					sourceMarkdown: nextSource,
+					deliveredMarkdown: careerDraft?.deliveredMarkdown,
+					baseDigest: careerProfileDigest(publishedCv),
+					updatedAt: Date.now(),
+					edits: careerDraft?.edits,
+					postingBrief: brief,
+					...patch,
 				})
-				void cleanup?.catch(() => undefined)
-				// The documents exist, so the sandbox has nothing left to do. It
-				// was not a hypothetical: a live turn rebuilt its own .tex after
-				// the real files were already delivered, and those extra uploads
-				// are what the person kept opening.
-				for (const name of Object.keys(tools)) {
-					if (name.startsWith("sandbox_")) delete tools[name]
+			}
+			if (optionChoice === "keep") {
+				documents = []
+				await saveDraft()
+				careerEditContext = renderOptionsKept()
+			} else if (typeof optionChoice === "number" && pendingOptions) {
+				// A pick is an ordinary set-bullet edit with an already-validated
+				// payload, so it goes through the same applier and renderer.
+				const chosen = optionAsEdit(pendingOptions, optionChoice)
+				const outcome = chosen
+					? applyCvEdits(parseCareerProfile(target), [chosen])
+					: null
+				if (chosen && outcome?.applied.length) {
+					outcome.applied.unshift(
+						`Option ${optionChoice} chosen: "${pendingOptions.options[optionChoice - 1]?.text ?? ""}"`,
+					)
+					editOutcome = outcome
+					preserveEdits = true
+					profileMarkdown = renderCareerProfileMarkdown(outcome.profile)
+					documents = ["cv"]
+				} else {
+					documents = []
+					careerEditContext = renderCareerEditContext({
+						applied: [],
+						rejected: outcome?.rejected.length
+							? outcome.rejected
+							: ["that option no longer applies to this CV"],
+						documents: [],
+					})
+				}
+			} else if (optionsAsk) {
+				// An offer is not a change: no compile, no upload, no rebuild.
+				documents = []
+				const rawOptions = await withTimeout(
+					requestBulletOptions(
+						env.AI,
+						{ profileMarkdown: target, instruction: optionsAsk, postingBrief: brief },
+						traceId,
+					),
+					55_000,
+					() => null,
+				)
+				const parsed = parseBulletOptions(
+					rawOptions,
+					parseCareerProfile(target),
+					{ keywords: parseJobPosting(jobText).keywords },
+				)
+				careerEditContext = renderBulletOptions({
+					entry: parsed.entry ? entryLabel(parsed.entry) : "the CV",
+					index: parsed.index ?? 0,
+					total: parsed.entry?.details.length ?? 0,
+					original: parsed.entry?.details[(parsed.index ?? 1) - 1] ?? "",
+					options: parsed.options,
+					rejected: parsed.rejected,
+				})
+				if (parsed.entry && parsed.index && parsed.options.length) {
+					await saveDraft({
+						pendingOptions: toPendingOptions({
+							entry: parsed.entry,
+							index: parsed.index,
+							options: parsed.options,
+						}),
+					})
 				}
 				console.log(
-					`[company-brain][${traceId}] career documents delivered; sandbox tools withdrawn for this turn`,
+					`[company-brain][${traceId}] career options offered=${parsed.options.length} rejected=${parsed.rejected.length}`,
+				)
+			} else if (editInstruction) {
+				const rawPatch = await withTimeout(
+					requestCvEditPlan(env.AI, target, editInstruction, traceId, brief),
+					55_000,
+					() => null,
+				)
+				const patch = parseCvEditPlan(rawPatch)
+				const outcome = applyCvEdits(parseCareerProfile(target), patch.edits)
+				editOutcome = outcome
+				preserveEdits = true
+				profileMarkdown = renderCareerProfileMarkdown(outcome.profile)
+				// Only the letter body travels as a plan; the CV is already edited.
+				tailoring = outcome.coverLetterParagraphs
+					? { coverLetterParagraphs: outcome.coverLetterParagraphs }
+					: null
+				documents = editedDocuments(question ?? "", outcome)
+				// A corrected date or phone number is wrong in every application, so
+				// it is carried into the working CV. Rewording and trimming are not:
+				// "drop the PowerLearn job" is about this document, not the facts.
+				const facts = patch.edits.filter(isFactEdit)
+				if (facts.length) {
+					const appliedFacts = applyCvEdits(parseCareerProfile(baseCv), facts)
+					if (appliedFacts.applied.length) {
+						nextSource = renderCareerProfileMarkdown(appliedFacts.profile)
+					}
+				}
+				console.log(
+					`[company-brain][${traceId}] career edit ops=${patch.edits.length} dropped=${patch.dropped} applied=${outcome.applied.length} rejected=${outcome.rejected.length} docs=${documents.join(",") || "none"} instruction="${editInstruction.slice(0, 120)}"`,
 				)
 			} else {
-				console.warn(
-					`[company-brain][${traceId}] deterministic career build failed, falling back to the model: ${built.error}`,
+				// Per-job tailoring: one small model call turns the base CV plus
+				// the posting into a plan (summary, emphasis, letter prose). It is
+				// the judgement the model is good at; the renderer keeps the LaTeX.
+				// The plan is then checked against the posting's own keywords — a
+				// plan that under-represents them gets one redo with the misses
+				// named, because an ATS and a recruiter both scan for that
+				// vocabulary. Any failure here falls back to the un-tailored build.
+				const tailoringRound = await withTimeout(
+					requestTailoringPlanChecked(env.AI, baseCv, jobText, traceId),
+					55_000,
+					() => null,
+				)
+				tailoring = tailoringRound?.plan ?? null
+				const coverage = tailoringRound?.coverage
+				console.log(
+					`[company-brain][${traceId}] career tailoring ${
+						tailoring
+							? `applied entries=${tailoring.entryDetails ? Object.keys(tailoring.entryDetails).length : 0} letter=${tailoring.coverLetterParagraphs?.length ?? 0}p${
+									coverage
+										? ` coverage=${coverage.covered}/${coverage.total}`
+										: ""
+								}`
+							: "unavailable, rendering base CV"
+					}`,
 				)
 			}
+			// Nothing resolved: no compile, no upload. The model tells the asker
+			// what could not be applied instead of rebuilding the file by hand —
+			// the hand-built LaTeX path is what crashed these turns.
+			if (!documents.length) {
+				// An edit that resolved nothing says so; an offer and a "keep"
+				// already set their own context and must not be overwritten.
+				if (editOutcome) {
+					careerEditContext = renderCareerEditContext({
+						applied: [],
+						rejected: editOutcome.rejected.length
+							? editOutcome.rejected
+							: ["the instruction did not match anything on the CV"],
+						documents: [],
+					})
+				}
+			} else {
+				// Heavy builds take turns per workspace (see acquireSandboxLease):
+				// the compile chain here and a campaign render cannot run at once
+				// without the platform killing one of their sessions.
+				const careerLease = await acquireSandboxLease(env, `builds:${org.id}`)
+				const built = await deliverCareerDocuments({
+					client: createSandboxClient(env),
+					profileMarkdown,
+					jobText,
+					traceId,
+					tailoring,
+					documents,
+					preserveEdits,
+					upload: async (file) => {
+						const upload = await uploadSlackFile(slackLookup.botToken, {
+							channel: deliveryChannel,
+							threadTs: deliveryThreadTs,
+							filename: file.fileName,
+							sizeBytes: file.sizeBytes,
+							content: file.content,
+							altText: `Generated document: ${file.fileName}`,
+							signal: abortSignal,
+						})
+						return upload.ok
+							? { ok: true, fileId: upload.fileId }
+							: { ok: false, error: `${upload.stage}: ${upload.error}` }
+					},
+				})
+					.catch((error) => ({
+						ok: false as const,
+						error: error instanceof Error ? error.message : String(error),
+					}))
+					.finally(() => careerLease.release())
+				if (built.ok) {
+					careerDelivery = { documents: built.documents }
+					sandboxMsTotal += built.sandboxMs
+					documentDelivery.markDelivered(
+						built.documents[0]?.fileName ?? "cv.pdf",
+					)
+					// Hand the container back now that the bytes are delivered: the
+					// sandbox is billed per instance and nothing here needs the
+					// workspace again. Best-effort — a failed cleanup must not turn
+					// a delivered document into an error.
+					const cleanup = createSandboxClient(env).destroySandbox?.({
+						sandboxId: built.sandboxId,
+					})
+					void cleanup?.catch(() => undefined)
+					// The documents exist, so the sandbox has nothing left to do. It
+					// was not a hypothetical: a live turn rebuilt its own .tex after
+					// the real files were already delivered, and those extra uploads
+					// are what the person kept opening.
+					for (const name of Object.keys(tools)) {
+						if (name.startsWith("sandbox_")) delete tools[name]
+					}
+					// Persist what was built. `sourceMarkdown` keeps the confirmed
+					// facts for the next job; `deliveredMarkdown` is what the next
+					// edit patches; and a pending offer is spent by the build.
+					await saveDraft({
+						deliveredMarkdown: renderCareerProfileMarkdown(built.profile),
+						edits: editInstruction
+							? [editInstruction, ...(careerDraft?.edits ?? [])].slice(0, 10)
+							: careerDraft?.edits,
+					})
+					if (editOutcome) {
+						careerEditContext = renderCareerEditContext({
+							applied: editOutcome.applied,
+							rejected: editOutcome.rejected,
+							concerns: editOutcome.concerns,
+							documents: built.documents,
+							trimmed: built.trimmed,
+						})
+					}
+					console.log(
+						`[company-brain][${traceId}] career documents delivered; sandbox tools withdrawn for this turn`,
+					)
+				} else if (editOutcome) {
+					// An edit that reached the build had a valid patch, so the
+					// failure is the build's. Report it; never fall back to
+					// hand-written LaTeX, which is what crashed these turns.
+					console.warn(
+						`[company-brain][${traceId}] career edit rebuild failed: ${built.error}`,
+					)
+					careerEditContext = renderCareerEditContext({
+						applied: [],
+						rejected: [
+							...editOutcome.rejected,
+							`the rebuilt PDF could not be produced: ${built.error}`,
+						],
+						documents: [],
+					})
+				} else {
+					console.warn(
+						`[company-brain][${traceId}] deterministic career build failed, falling back to the model: ${built.error}`,
+					)
+				}
+			}
 		}
+		// A turn that promised a document is not finished until one exists. Only
+		// a *fresh build ask* with a base CV to build from promises that: a
+		// follow-up ("thanks"), an applied edit (already delivered) and a rejected
+		// edit (answered honestly) all leave the guard down, so the model is never
+		// pushed into the sandbox to hand-write LaTeX over a turn that does not
+		// need a file. An ask with no published CV must ask for one — a guard
+		// there only buys an invented CV.
+		if (wantsCareerBuild && baseCv && !careerDelivery) documentDelivery.require()
 		if (baseCv && actor.userId) {
 			// Keep memory in step for later recall, but never block the document
 			// itself on the write: the text above is already the source of truth.
@@ -952,6 +1207,9 @@ export async function computeTurn(
 				org,
 				userId: actor.userId,
 				traceId,
+				// The working CV, not the published base: an edit the asker
+				// confirmed is a fact now, and recall must agree with the PDF.
+				source: baseCv,
 			}).catch(() => ({ seeded: false }))
 		}
 
@@ -1689,6 +1947,7 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 			baseRuntimePrompt,
 			baseCv ? renderBaseCvContext(baseCv) : "",
 			careerDelivery ? renderCareerDeliveryContext(careerDelivery.documents) : "",
+			careerEditContext ?? "",
 			reportDelivery
 				? renderReportDeliveryContext(reportDelivery)
 				: "",
@@ -2110,6 +2369,7 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 			reply: string
 			memory: MemoryWriteback
 			connect: string[] | null
+			narrationOnly?: boolean
 			silentConclusion?: boolean
 			reaction?: string
 			extraBlocks?: unknown[]
@@ -2155,6 +2415,7 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 				reply,
 				memory: capture.memory,
 				connect: capture.connect,
+				narrationOnly: selected.narrationOnly,
 				reaction: expressive.reaction,
 				extraBlocks: expressive.extraBlocks,
 			}
@@ -2229,6 +2490,7 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 		}
 		let sourceMessages = initialMessages
 		let attempt: ComputeTurnAttempt = "initial"
+		let narrationRetryUsed = false
 		let output: Awaited<ReturnType<typeof readTurnOutput>> | undefined
 		const finalizationAdapter: TurnFinalizationAdapter<
 			ReturnType<typeof runTurnModel>,
@@ -2272,9 +2534,40 @@ Paste the file into the assistant connected to flow-mcp and ask it to draw them 
 				continue
 			}
 
+			const candidate = await readTurnOutput(result)
+			const narration = await resolveNarrationOnlyOutput({
+				candidate,
+				hasTerminalProposal:
+					terminalCaptures.get(result)?.selected() !== undefined,
+				stepsRemaining: Math.max(
+					0,
+					state.budget.steps.limit - state.budget.steps.used,
+				),
+				retryUsed: narrationRetryUsed,
+				pauseRequested,
+				completedToolSteps: toolTrace.length,
+				messages: [...sourceMessages, ...currentRunLiveUpdateMessages],
+				responseMessages: async () => (await result.response).messages,
+				compactMessages: compactContinuation,
+			})
+			if (narration.action === "retry") {
+				narrationRetryUsed = true
+				sourceMessages = narration.messages
+				console.warn(
+					`[company-brain][${traceId}] narration-only reply; retrying once with tools steps=${state.budget.steps.used}/${state.budget.steps.limit}`,
+				)
+				continue
+			}
+			if (narration.candidate.narrationOnly) {
+				console.warn(
+					`[company-brain][${traceId}] narration-only reply became honest status retryUsed=${narrationRetryUsed} toolCalls=${toolTrace.length}`,
+				)
+			}
+
 			const settlement = await settleTurn({
 				run: { result, messages: sourceMessages },
 				adapter: finalizationAdapter,
+				candidate: narration.candidate,
 				activeDiscoveryApps: Object.keys(state.apps.discovered),
 				coordination: options?.turnControl
 					? {

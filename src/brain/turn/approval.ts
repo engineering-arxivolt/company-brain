@@ -9,7 +9,7 @@ import type { TurnState } from "./state"
 import type { TurnTerminalProposal } from "./terminal"
 import type { TurnToolAssemblySnapshot } from "./tools"
 
-export const APPROVAL_EXPIRY_MS = 15 * 60 * 1000
+export const APPROVAL_EXPIRY_MS = 20 * 60 * 1000
 
 export type ApprovalStatus =
 	| "pending"

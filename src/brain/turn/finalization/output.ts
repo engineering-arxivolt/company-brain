@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai"
 import {
+	isNarrationOnlySlackReply,
 	isPublishableSlackReply,
 	sanitizeSlackReply,
 	stripDraftingSelfTalk,
@@ -37,7 +38,11 @@ function publishable(text: string): string {
 export async function selectTurnReply(args: {
 	result: TurnReplyResult
 	terminalProposal?: TurnTerminalProposal
-}): Promise<{ reply: string; source: TurnReplySource }> {
+}): Promise<{
+	reply: string
+	source: TurnReplySource
+	narrationOnly?: boolean
+}> {
 	/** Candidates that had text but were not publishable as written. */
 	const rejected: string[] = []
 	const consider = (text: string): string => {
@@ -90,5 +95,11 @@ export async function selectTurnReply(args: {
 		)
 	}
 
-	return { reply: "", source: "empty" }
+	const narrationOnly =
+		rejected.length > 0 && rejected.every(isNarrationOnlySlackReply)
+	return {
+		reply: "",
+		source: "empty",
+		...(narrationOnly ? { narrationOnly: true } : {}),
+	}
 }

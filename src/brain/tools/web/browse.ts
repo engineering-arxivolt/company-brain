@@ -12,7 +12,7 @@ import type { SourcedToolOutput } from "../../sources"
  * Returns null when unconfigured so the tool simply does not exist.
  */
 
-// A browser run must settle inside the turn's pause budget (7 of 10 minutes),
+// A browser run must settle inside the turn's pause budget (10 of 15 minutes),
 // so even a slow page leaves room to pause and offer Continue.
 const RUN_TIMEOUT_MS = 5 * 60 * 1000
 /** Keep one browser run from flooding the turn. */

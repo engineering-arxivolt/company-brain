@@ -48,6 +48,8 @@ export async function settleTurn<
 		messages: ModelMessage[]
 	}
 	adapter: TurnFinalizationAdapter<Result, Candidate>
+	/** Already read by a pre-finalization guard, such as narration recovery. */
+	candidate?: Candidate
 	activeDiscoveryApps: string[]
 	coordination?: {
 		agent: CompanyBrainAgent
@@ -57,7 +59,8 @@ export async function settleTurn<
 	}
 	abortSignal?: AbortSignal
 }): Promise<TurnSettlement<Candidate>> {
-	const candidate = await args.adapter.reply.read(args.run.result)
+	const candidate =
+		args.candidate ?? (await args.adapter.reply.read(args.run.result))
 
 	if (!args.coordination) {
 		return { status: "publish", candidate }

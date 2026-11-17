@@ -27,7 +27,7 @@ function parseJsonObject(text: string): unknown {
 }
 
 const DRAFTING_SELF_TALK =
-	/\blet me (?:just )?(?:write|fix|redo|structure|compose|rewrite|format|try again|do this)\b|format the response properly|write your final|write the (?:json|response|reply)\b|i keep making mistakes|the reply (?:should|must) be\b/i
+	/\b(?:let me|lemme|i['’]ll) (?:just )?(?:write|fix|redo|structure|compose|rewrite|format|try again|do this|pull|check|gather|read|build|create|look into)\b|format the response properly|write your final|write the (?:json|response|reply)\b|i keep making mistakes|the reply (?:should|must) be\b/i
 
 // English reply with CJK chars/punctuation spliced in = code-switch degeneration.
 // Blocks: CJK punctuation, kana, CJK ideographs, fullwidth forms.
@@ -64,6 +64,12 @@ export function stripDraftingSelfTalk(text: string): string {
 		.join(" ")
 		.replace(/\s+/g, " ")
 		.trim()
+}
+
+/** True only when every usable sentence is an intention, not delivered work. */
+export function isNarrationOnlySlackReply(text: string): boolean {
+	const sanitized = sanitizeSlackReply(text)
+	return Boolean(sanitized.trim()) && !stripDraftingSelfTalk(sanitized)
 }
 
 export function isPublishableSlackReply(sanitized: string): boolean {

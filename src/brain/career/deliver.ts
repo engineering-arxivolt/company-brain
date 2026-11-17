@@ -7,6 +7,7 @@ import {
 import { renderCoverLetterTex } from "./cover-letter"
 import { describeCommandFailure, describePageCeiling } from "../documents/build-diagnostics"
 import { withoutAccents } from "./document-ask"
+import type { CvEditOutcome } from "./edit"
 import { parseJobPosting } from "./job-posting"
 import { parseCareerProfile, type CareerProfile } from "./profile"
 import { renderResumeTex } from "./render"
@@ -45,6 +46,11 @@ export type DeliverCareerDocumentsArgs = {
 	timeoutSec?: number
 	/** Per-job emphasis the model chose; absent → the base CV renders as-is. */
 	tailoring?: TailoringPlan | null
+	/**
+	 * The caller is re-rendering a document the asker has already approved line
+	 * by line (an edit), so page fitting must start from the full profile.
+	 */
+	preserveEdits?: boolean
 }
 
 export type DeliverCareerDocumentsResult =
@@ -52,6 +58,14 @@ export type DeliverCareerDocumentsResult =
 			ok: true
 			sandboxId: string
 			documents: CareerDocument[]
+			/**
+			 * The profile the documents were rendered from, before page fitting.
+			 * The caller persists it so the next edit starts from what the asker
+			 * can see, and the next job from the same facts.
+			 */
+			profile: CareerProfile
+			/** True when the two-page ceiling forced a trimmed variant. */
+			trimmed: boolean
 			/** Wall-clock ms spent in the sandbox; the cost row records it. */
 			sandboxMs: number
 	  }
@@ -84,6 +98,25 @@ const PDF_FOR: Record<CareerDocumentKind, string> = {
 const SOURCE_PDFS = ["cv.pdf", "cover-letter.pdf"]
 
 /**
+ * Which documents an ask explicitly names, or [] when it names neither.
+ *
+ * Separate from the default because the two callers want different fallbacks: a
+ * fresh build defaults to both documents, an edit rebuilds only what it touched.
+ */
+export function namedCareerDocuments(question: string): CareerDocumentKind[] {
+	const text = withoutAccents(question.toLowerCase())
+	const wantsCv =
+		/\bcvs?\b/.test(text) ||
+		/\bresumes?\b/.test(text) ||
+		/curriculum vitae/.test(text)
+	const wantsLetter = /\bcover(?:ing)? letters?\b/.test(text)
+	if (wantsCv && wantsLetter) return ["cv", "cover-letter"]
+	if (wantsCv) return ["cv"]
+	if (wantsLetter) return ["cover-letter"]
+	return []
+}
+
+/**
  * Which documents an ask actually names.
  *
  * "Just the CV" and "just the cover letter" are ordinary asks, and building the
@@ -92,14 +125,31 @@ const SOURCE_PDFS = ["cv.pdf", "cover-letter.pdf"]
  * a cover letter" matches both tests and then falls out of the first branch.
  */
 export function selectCareerDocuments(question: string): CareerDocumentKind[] {
-	const text = withoutAccents(question.toLowerCase())
-	const wantsCv = /\bcvs?\b/.test(text) || /\bresumes?\b/.test(text) || /curriculum vitae/.test(text)
-	const wantsLetter = /\bcover(?:ing)? letters?\b/.test(text)
-	if (wantsCv && wantsLetter) return ["cv", "cover-letter"]
-	if (wantsCv) return ["cv"]
-	if (wantsLetter) return ["cover-letter"]
+	const named = namedCareerDocuments(question)
 	// Neither named: the ask came from the pattern or a skill, so build both.
-	return ["cv", "cover-letter"]
+	return named.length ? named : ["cv", "cover-letter"]
+}
+
+/**
+ * Which files an edit actually changed.
+ *
+ * An instruction that names a document wins. Otherwise the patch decides: an
+ * edit to the profile rebuilds the CV, an edit to the letter body rebuilds the
+ * letter, and an instruction that touched neither rebuilds nothing — delivering
+ * an untouched file again is noise, and it hides a rejected edit.
+ */
+export function editedDocuments(
+	question: string,
+	outcome: CvEditOutcome,
+): CareerDocumentKind[] {
+	const named = namedCareerDocuments(question)
+	const touched: CareerDocumentKind[] = []
+	if (outcome.touched.cv) touched.push("cv")
+	if (outcome.touched.letter) touched.push("cover-letter")
+	if (!named.length) return touched
+	return touched.length
+		? named.filter((kind) => touched.includes(kind))
+		: named
 }
 
 /** The verification gates for a chosen set, in delivery order. */
@@ -237,39 +287,24 @@ export function trimProfile(
 	}
 }
 
-export async function deliverCareerDocuments(
-	args: DeliverCareerDocumentsArgs,
-): Promise<DeliverCareerDocumentsResult> {
-	const base = parseCareerProfile(args.profileMarkdown)
-	const posting = parseJobPosting(args.jobText)
-	if (!base.experience.length) {
-		return { ok: false, error: "the base CV could not be parsed" }
-	}
-	// The plan carries everything job-specific: summary, entry order, bullet
-	// emphasis, letter prose. It is sanitised against the parsed profile before
-	// it gets here, so the renderer can trust it.
-	const tailored = applyTailoring(base, args.tailoring)
-
-	// Which documents this turn asked for. Both by default; a caller that names
-	// one skips the other's compile entirely.
-	const wantedDocs: CareerDocumentKind[] = args.documents?.length
-		? args.documents
-		: ["cv", "cover-letter"]
-	const wantedPdfs = wantedDocs.map((kind) => PDF_FOR[kind])
-	const wantsCv = wantedDocs.includes("cv")
-	const wantsLetter = wantedDocs.includes("cover-letter")
-
-	const sandbox = await args.client.createSandbox({
-		goal: "career documents (CV + cover letter)",
-	})
-
-	// Two-page budget: the full tailored render — STAR bullets and all — is
-	// what wins interviews, and two pages is the accepted ceiling. Trim only
-	// if a render exceeds it (the ladder: references and project blurbs
-	// first, then bullet caps, then whole entries, then skill groups; the
-	// plan's own STAR bullets are the last thing to shrink). Each attempt is
-	// a real compile, so the page count that decides is the PDF's own. The
-	// un-trimmed base CV is the floor: deliver it rather than nothing.
+/**
+ * Page fitting: the order of attempts *is* the policy, because the first render
+ * that fits the two-page ceiling wins.
+ *
+ * The full profile is what wins interviews, so a trimmed variant is only ever
+ * tried when the previous attempt was measured too long — each attempt is a real
+ * compile and the page count that decides is the PDF's own.
+ *
+ * `preserveEdits` matters for edits: an edited CV is the document the asker just
+ * approved line by line, so the untrimmed profile goes first. The old order
+ * (trim first) would silently drop a bullet they had just asked for, even on a
+ * CV that had room for it.
+ */
+function pageFitVariants(
+	tailored: CareerProfile,
+	base: CareerProfile,
+	preserveEdits: boolean,
+): CareerProfile[] {
 	const compact = {
 		dropReferences: true,
 		dropCertifications: true,
@@ -299,19 +334,26 @@ export async function deliverCareerDocuments(
 		dropProjects: 3,
 		skillGroups: 3,
 	} as const
-	const variants: CareerProfile[] = tailored === base ? [
-		trimProfile(base, {
+
+	if (tailored === base) {
+		const firstCut = {
 			dropReferences: true,
 			maxBullets: 2,
 			dropEntries: 1,
 			projectChars: 140,
 			dropProjects: 1,
-		}),
-		trimProfile(base, compact),
-		trimProfile(base, mid),
-		trimProfile(base, tighter),
-		base,
-	] : [
+		} as const
+		const ladder = [
+			trimProfile(base, firstCut),
+			trimProfile(base, compact),
+			trimProfile(base, mid),
+			trimProfile(base, tighter),
+			base,
+		]
+		return preserveEdits ? [base, ...ladder.slice(0, -1)] : ladder
+	}
+
+	return [
 		tailored,
 		trimProfile(tailored, {
 			dropReferences: true,
@@ -325,6 +367,35 @@ export async function deliverCareerDocuments(
 		trimProfile(base, tighter),
 		base,
 	]
+}
+
+export async function deliverCareerDocuments(
+	args: DeliverCareerDocumentsArgs,
+): Promise<DeliverCareerDocumentsResult> {
+	const base = parseCareerProfile(args.profileMarkdown)
+	const posting = parseJobPosting(args.jobText)
+	if (!base.experience.length) {
+		return { ok: false, error: "the base CV could not be parsed" }
+	}
+	// The plan carries everything job-specific: summary, entry order, bullet
+	// emphasis, letter prose. It is sanitised against the parsed profile before
+	// it gets here, so the renderer can trust it.
+	const tailored = applyTailoring(base, args.tailoring)
+
+	// Which documents this turn asked for. Both by default; a caller that names
+	// one skips the other's compile entirely.
+	const wantedDocs: CareerDocumentKind[] = args.documents?.length
+		? args.documents
+		: ["cv", "cover-letter"]
+	const wantedPdfs = wantedDocs.map((kind) => PDF_FOR[kind])
+	const wantsCv = wantedDocs.includes("cv")
+	const wantsLetter = wantedDocs.includes("cover-letter")
+
+	const sandbox = await args.client.createSandbox({
+		goal: "career documents (CV + cover letter)",
+	})
+
+	const variants = pageFitVariants(tailored, base, args.preserveEdits === true)
 	// A cover-letter-only ask still needs a profile to write the letter from, but
 	// no CV render and no page fitting: the loop below simply has nothing to try.
 	const sandboxStartedAt = Date.now()
@@ -512,6 +583,8 @@ export async function deliverCareerDocuments(
 		ok: true,
 		sandboxId: sandbox.sandboxId,
 		documents,
+		profile: tailored,
+		trimmed: cvProfile !== tailored,
 		// Container time is the real marginal cost of a document build and it was
 		// invisible; the caller adds it to the turn's cost row.
 		sandboxMs: Date.now() - sandboxStartedAt,

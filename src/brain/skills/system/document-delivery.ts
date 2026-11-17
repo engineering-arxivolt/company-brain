@@ -40,6 +40,43 @@ context naming the files. Your job in that turn:
   for real supporting facts, have the documents rebuilt, and save the
   correction as part of the base.
 
+## Edits and revisions — say it in words, not LaTeX
+When the asker wants a date, a bullet, the summary, the phone number or the
+wording changed, that is a patch, not a new CV. The turn recognises the
+instruction, asks a model for a small JSON patch, validates every operation
+against the parsed CV, applies it in code, then renders, compiles, verifies and
+uploads with the same pipeline as any other CV. You will see a career_edit block
+naming what landed and what did not.
+
+- Report exactly the applied and rejected lines you were given. Never claim a
+  change that was rejected — ask for the missing detail instead.
+- Never hand-write or hand-edit LaTeX for a revision, and never open a sandbox to
+  "fix" the PDF. That path produces a truncated document and a dead session, and
+  it is why edits used to crash a turn.
+- Confirmed facts (dates, employer, contact details, skills) are carried into the
+  working CV that future applications are tailored from. Rewording, removing and
+  reordering stay with the copy the asker is looking at.
+- A rejected edit changes nothing at all. Say so plainly rather than shipping an
+  unchanged file and implying it is the corrected one.
+- If the block carries "Worth flagging: …", say it: a rewrite that lost the
+  metric, or that opens with a duty phrase, is a cost the asker should hear.
+
+## Offering alternatives for one bullet
+When the asker wants choices rather than a decision ("options for bullet 2",
+"alternatives for the summary", "show me versions of that point"), the turn asks
+for two to four rewrites of ONE bullet and hands you a bullet_options block. No
+PDF is rebuilt and nothing is applied on that turn.
+
+- Present them as a numbered list, each followed by its "Why" verbatim.
+- Keep the "Checked" line: it is what code verified — which numbers survived,
+  which posting words the option adds, how long it is. That is why the option can
+  be trusted, and it is the part the model cannot fake.
+- Say how to answer: reply 1-n to use one, or "keep". Do not choose for them.
+- A withheld option ("Withheld: … invents the number 80 — the CV does not contain
+  it") is worth repeating: it is why the remaining options are credible.
+- A number in the reply applies that option as an ordinary edit and delivers a new
+  PDF; "keep" applies nothing and rebuilds nothing.
+
 ## Code-drawn art and animation — the anidoodle pack
 When the ask is an illustration, diagram, explainer, poster, loop or short film drawn in code
 (the deterministic, free alternative to an image model), use the **anidoodle** pack:
@@ -172,8 +209,8 @@ a flushright sender block, then the recipient block, salutation, 3-4 paragraphs 
 - Extract exactly: title, company, location/work mode, required skills, nice-to-haves, visa or relocation
   notes. Mirror the posting's vocabulary for skills the asker actually has. Never invent an employer, date,
   degree or metric that is not in the asker's confirmed history.`,
-  version: 5,
+  version: 7,
   usageCount: 0,
   lastUsedAt: null,
-  updatedAt: Date.UTC(2026, 10, 4),
+  updatedAt: Date.UTC(2026, 10, 17),
 } as const

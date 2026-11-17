@@ -51,8 +51,9 @@ describe("applyTimeBudgetPolicy", () => {
 	it("arms five minutes before the hard deadline", () => {
 		// Measured p90 for a single step is 217s, so a 3-minute headroom let the
 		// abort fire mid-step and cost the asker the Continue button.
-		expect(TURN_PAUSE_BUDGET_MS + TURN_PAUSE_HEADROOM_MS).toBe(10 * 60 * 1000)
+		expect(TURN_PAUSE_BUDGET_MS + TURN_PAUSE_HEADROOM_MS).toBe(15 * 60 * 1000)
 		expect(TURN_PAUSE_HEADROOM_MS).toBe(5 * 60 * 1000)
+		expect(TURN_PAUSE_BUDGET_MS).toBe(10 * 60 * 1000)
 	})
 
 	// The invariant behind the number: once the pause arms, a step of typical
@@ -63,9 +64,9 @@ describe("applyTimeBudgetPolicy", () => {
 	it("leaves room for a p90-length step after the pause arms", () => {
 		const P90_STEP_MS = 217_000
 		expect(TURN_PAUSE_HEADROOM_MS).toBeGreaterThan(P90_STEP_MS)
-		// ...and the pause must arm early enough that reaching it at all is
-		// likely, rather than only on the pathological tail.
-		expect(TURN_PAUSE_BUDGET_MS).toBeLessThanOrEqual(5 * 60 * 1000)
+		// Ten minutes of ordinary work plus five minutes of headroom gives slow
+		// tasks a useful chunk without removing the cooperative pause boundary.
+		expect(TURN_PAUSE_BUDGET_MS).toBeLessThanOrEqual(10 * 60 * 1000)
 	})
 })
 

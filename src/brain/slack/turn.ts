@@ -1044,7 +1044,7 @@ async function runSlackApprovalDecisionInner(
 			decision,
 			approval,
 			"Expired",
-			"This approval expired after 15 minutes.",
+			"This approval expired after 20 minutes.",
 		)
 		return
 	}

@@ -1,5 +1,12 @@
-import { parseCareerProfile, type CareerProfile, type ResumeEntry } from "./profile"
+import {
+	findExperienceEntry,
+	parseCareerProfile,
+	type CareerProfile,
+	type ResumeEntry,
+} from "./profile"
 import { parseJobPosting } from "./job-posting"
+import { rubricLines } from "./rubric"
+import { clampLine, finishSentence } from "./text"
 
 /**
  * A per-job tailoring plan the model fills in before the documents render.
@@ -54,6 +61,9 @@ export function buildTailorPrompt(
 			"- experienceOrder: the entry titles worth showing, best match first. Use the exact titles from the CV.",
 			"- entryDetails: for each entry you kept, 2-4 cut-down STAR bullets, most relevant to this posting first. Each bullet is one line: fold the Situation and Task into a short opening clause, lead the Action with a strong verb, close on the Result. Use the base CV's own numbers for results; if the CV shows no number, end on the real outcome without inventing one. Keys are exact entry titles.",
 			"- coverLetterParagraphs: 3-5 short paragraphs. Name the company and role. Tie the candidate's real experience to the posting's actual requirements. No flattery, no invented facts, no 'I am excited' filler.",
+			"",
+			"WHAT A BULLET MUST DO (the same rubric the edit and options paths use):",
+			...rubricLines(),
 			"- Reply with the JSON and nothing else.",
 		].join("\n"),
 		user: `# Base CV\n\n${profileMarkdown}\n\n# Job posting\n\n${jobText}${feedbackBlock}`,
@@ -82,22 +92,7 @@ export function parseTailoringPlan(
 	}
 	if (typeof parsed !== "object" || parsed === null) return null
 	const source = parsed as Record<string, unknown>
-	// The CV writes headings as "**Title — Organisation**", but the parsed entry
-	// title is just "Title" — so a plan that quotes the full heading still has to
-	// match. Exact match first, then containment in either direction.
-	const findEntry = (title: string): ResumeEntry | undefined => {
-		const wanted = title.toLowerCase().trim()
-		if (!wanted) return undefined
-		return (
-			profile.experience.find(
-				(entry) => entry.title.toLowerCase() === wanted,
-			) ??
-			profile.experience.find((entry) => {
-				const known = entry.title.toLowerCase()
-				return known.includes(wanted) || wanted.includes(known)
-			})
-		)
-	}
+	const findEntry = (title: string) => findExperienceEntry(profile, title)
 
 	const summaryRaw = clampLine(source.summary, 900)
 	// A summary that ran past its budget ships cut at a sentence end, never
@@ -166,19 +161,7 @@ export function applyTailoring(
 	plan: TailoringPlan | null | undefined,
 ): CareerProfile {
 	if (!plan) return profile
-	const findEntry = (title: string): ResumeEntry | undefined => {
-		const wanted = title.toLowerCase().trim()
-		if (!wanted) return undefined
-		return (
-			profile.experience.find(
-				(entry) => entry.title.toLowerCase() === wanted,
-			) ??
-			profile.experience.find((entry) => {
-				const known = entry.title.toLowerCase()
-				return known.includes(wanted) || wanted.includes(known)
-			})
-		)
-	}
+	const findEntry = (title: string) => findExperienceEntry(profile, title)
 	// The plan's titles may quote the full heading; resolve to parsed entries
 	// and drop duplicates so one entry cannot render twice.
 	const ranked: ResumeEntry[] = []
@@ -209,36 +192,11 @@ export function applyTailoring(
 	}
 }
 
-function clampLine(value: unknown, max: number): string | undefined {
-	if (typeof value !== "string") return undefined
-	const line = value.replace(/\s+/g, " ").trim()
-	return line ? line.slice(0, max) : undefined
-}
-
 /**
- * End a clamped sentence cleanly. A model summary or bullet that ran past its
- * budget must not ship mid-thought ("...contribute to the development of") —
- * when the tail dangles on a function word, cut back to the last sentence end;
- * otherwise just close the line with a period.
+ * Just the slice of Workers AI the career text calls need. Shared by tailoring
+ * and editing, since both ask the same model for a small JSON answer.
  */
-const DANGLING_TAIL =
-	/\b(of|and|or|the|a|an|for|in|with|to|on|at|by|from|as|that|which|into|across|through|while|when|where|plus)$/i
-
-function finishSentence(line: string): string {
-	if (/[.!?…]$/.test(line)) return line
-	if (DANGLING_TAIL.test(line)) {
-		const cut = Math.max(
-			line.lastIndexOf(". "),
-			line.lastIndexOf("! "),
-			line.lastIndexOf("? "),
-		)
-		if (cut > 0) return line.slice(0, cut + 1)
-	}
-	return `${line}.`
-}
-
-/** Just the slice of Workers AI the tailoring call needs. */
-type TailoringAI = {
+export type CareerAI = {
 	run(
 		model: string,
 		input: {
@@ -246,6 +204,27 @@ type TailoringAI = {
 			max_tokens?: number
 		},
 	): Promise<unknown>
+}
+
+/**
+ * Pull the text out of a Workers AI reply.
+ *
+ * Two response shapes exist in the wild: the Ai binding wraps plain-prompt
+ * calls as {response}, but messages-input calls return the OpenAI-shaped
+ * {choices:[{message:{content}}]} object. Read both, in one place.
+ */
+export function modelReplyText(result: unknown): string {
+	const shaped = result as {
+		response?: unknown
+		choices?: Array<{ message?: { content?: unknown } }>
+	}
+	const response = shaped?.response
+	const content = shaped?.choices?.[0]?.message?.content
+	return typeof response === "string"
+		? response
+		: typeof content === "string"
+			? content
+			: ""
 }
 
 /**
@@ -286,7 +265,7 @@ const COVERAGE_REDO_THRESHOLD = 0.6
  * used as-is; a tailored CV with 80% coverage beats an un-tailored one.
  */
 export async function requestTailoringPlanChecked(
-	ai: TailoringAI | undefined,
+	ai: CareerAI | undefined,
 	profileMarkdown: string,
 	jobText: string,
 	traceId: string,
@@ -326,8 +305,11 @@ export async function requestTailoringPlanChecked(
 	return { plan, coverage }
 }
 
-/** Quality matters more than latency here, and the 70b handles JSON reliably. */
-const TAILOR_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+/**
+ * Quality matters more than latency here, and the 70b handles JSON reliably.
+ * Shared by tailoring and editing: both are "read this CV, answer in JSON".
+ */
+export const CAREER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
 /**
  * One model call, one job: read the base CV and the posting, answer with the
@@ -335,7 +317,7 @@ const TAILOR_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
  * the base CV, exactly as they did before this existed.
  */
 export async function requestTailoringPlan(
-	ai: TailoringAI | undefined,
+	ai: CareerAI | undefined,
 	profileMarkdown: string,
 	jobText: string,
 	traceId: string,
@@ -345,31 +327,17 @@ export async function requestTailoringPlan(
 	if (!ai) return null
 	const prompt = buildTailorPrompt(profileMarkdown, jobText, feedback)
 	try {
-		const result = (await ai.run(TAILOR_MODEL, {
+		const result = (await ai.run(CAREER_MODEL, {
 			messages: [
 				{ role: "system", content: prompt.system },
 				{ role: "user", content: prompt.user },
 			],
 			max_tokens: 2048,
 		})) as unknown
-		// Two response shapes exist in the wild: the Ai binding wraps plain-prompt
-		// calls as {response}, but messages-input calls return the OpenAI-shaped
-		// {choices:[{message:{content}}]} object. Read both.
-		const shaped = result as {
-			response?: unknown
-			choices?: Array<{ message?: { content?: unknown } }>
-		}
-		const response = shaped?.response
-		const content = shaped?.choices?.[0]?.message?.content
-		const text =
-			typeof response === "string"
-				? response
-				: typeof content === "string"
-					? content
-					: ""
+		const text = modelReplyText(result)
 		if (!text) {
 			console.log(
-				`[company-brain][${traceId}] career tailoring: unreadable reply from ${TAILOR_MODEL}`,
+				`[company-brain][${traceId}] career tailoring: unreadable reply from ${CAREER_MODEL}`,
 			)
 		}
 		return text || null

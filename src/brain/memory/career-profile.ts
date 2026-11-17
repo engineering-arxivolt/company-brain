@@ -133,8 +133,16 @@ export async function ensureCareerProfileMemory(args: {
 	org: { id: string; name?: string; metadata?: unknown }
 	userId: string
 	traceId?: string
+	/**
+	 * The CV this turn actually used. It can differ from KV: the asker may have
+	 * confirmed a correction, so memory must recall the facts the documents were
+	 * rendered from, not the operator's older copy.
+	 */
+	source?: string
 }): Promise<{ seeded: boolean }> {
-	const source = await readCareerProfileSource(args.env, args.userId)
+	const source =
+		args.source?.trim() ||
+		(await readCareerProfileSource(args.env, args.userId))
 	if (!source) return { seeded: false }
 
 	const containerTag = privateContainerTagFor(args.userId)

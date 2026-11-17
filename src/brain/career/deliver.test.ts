@@ -5,6 +5,8 @@ import type { SandboxClient } from "../tools/sandbox/client"
 import {
 	channelRefFromMessage,
 	deliverCareerDocuments,
+	editedDocuments,
+	namedCareerDocuments,
 	parseVerifyOutput,
 	renderCareerDeliveryContext,
 	selectCareerDocuments,
@@ -40,8 +42,14 @@ function stubClient(options?: {
 	verifyOutput?: string
 	/** Page counts the cv-only verify reports, one per attempt. */
 	cvPages?: number[]
-}): { client: SandboxClient; written: string[]; commands: string[] } {
+}): {
+	client: SandboxClient
+	written: string[]
+	contents: string[]
+	commands: string[]
+} {
 	const written: string[] = []
+	const contents: string[] = []
 	const commands: string[] = []
 	const cvPages = [...(options?.cvPages ?? [])]
 	const client = {
@@ -49,8 +57,9 @@ function stubClient(options?: {
 			sandboxId: "sb-1",
 			defaultCwd: "/workspace",
 		}),
-		writeFile: async ({ path }: { path: string }) => {
+		writeFile: async ({ path, content }: { path: string; content: string }) => {
 			written.push(path)
+			contents.push(content)
 			return { path, bytes: 1 }
 		},
 		runCommand: async ({ command }: { command: string }) => {
@@ -110,7 +119,7 @@ function stubClient(options?: {
 			truncated: false as const,
 		}),
 	} as unknown as SandboxClient
-	return { client, written, commands }
+	return { client, written, contents, commands }
 }
 
 describe("parseVerifyOutput", () => {
@@ -356,5 +365,70 @@ describe("renderCareerDeliveryContext", () => {
 		expect(block).toContain("cv.pdf (2 pages)")
 		expect(block).toContain("cover-letter.pdf (1 page)")
 		expect(block).toContain("Do not rebuild them")
+	})
+})
+
+describe("deliverCareerDocuments — edits", () => {
+	it("page-fits from the full edited profile instead of pre-trimming it", async () => {
+		const { client, contents } = stubClient({ cvPages: [3, 2] })
+		const result = await deliverCareerDocuments({
+			client,
+			profileMarkdown,
+			jobText,
+			traceId: "t-edit",
+			documents: ["cv"],
+			preserveEdits: true,
+			upload: async () => ({ ok: true }),
+		})
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		// The first attempt is the document the asker approved, references and all.
+		expect(contents[0]).toContain("References")
+		// It did not fit, so a trimmed variant was delivered — and that is said.
+		expect(result.trimmed).toBe(true)
+		expect(result.profile.experience).toHaveLength(5)
+	})
+
+	it("pre-trims a fresh build, where trimming is the cheaper first attempt", async () => {
+		const { client, contents } = stubClient({ cvPages: [2] })
+		const result = await deliverCareerDocuments({
+			client,
+			profileMarkdown,
+			jobText,
+			traceId: "t-build",
+			documents: ["cv"],
+			upload: async () => ({ ok: true }),
+		})
+		expect(result.ok).toBe(true)
+		if (!result.ok) return
+		expect(contents[0]).not.toContain("Alex Redfern")
+		expect(result.trimmed).toBe(true)
+	})
+})
+
+describe("editedDocuments", () => {
+	const outcome = (cv: boolean, letter: boolean) => ({
+		profile: parseCareerProfile(BASE_CV),
+		applied: [],
+		rejected: [],
+		concerns: [],
+		touched: { cv, letter },
+	})
+
+	it("rebuilds only the document the patch touched", () => {
+		expect(editedDocuments("change the date", outcome(true, false))).toEqual([
+			"cv",
+		])
+		expect(
+			editedDocuments("rewrite the letter opening", outcome(false, true)),
+		).toEqual(["cover-letter"])
+		expect(editedDocuments("change the date", outcome(false, false))).toEqual([])
+	})
+
+	it("honours a document the asker names", () => {
+		expect(editedDocuments("change the date on the cv", outcome(true, true))).toEqual(
+			["cv"],
+		)
+		expect(namedCareerDocuments("change the date")).toEqual([])
 	})
 })

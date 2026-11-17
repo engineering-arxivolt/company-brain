@@ -55,7 +55,7 @@ export async function runApprovalExpiry(
 		botToken,
 		approval.channel,
 		approval.cardTs,
-		"This approval expired after 15 minutes.",
+		"This approval expired after 20 minutes.",
 		resolvedApprovalBlocks(
 			{
 				approvalId: approval.approvalId,

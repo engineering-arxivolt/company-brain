@@ -1,0 +1,105 @@
+% Comic book page — company-brain deterministic LaTeX template
+%
+% Compiles in the company-brain sandbox using only pre-installed packages:
+%   texlive-latex-base, texlive-latex-recommended, texlive-fonts-recommended, latexmk
+%
+% Panels and speech bubbles are drawn with TikZ. Placeholder panel images are
+% coloured rectangles until flow-mcp artwork is transferred into the sandbox
+% (Phase 2). Lettering is typeset in LaTeX, never baked into Flow images.
+%
+% Do NOT use texlive-latex-extra packages. If pdflatex reports a missing .sty,
+% rewrite with core LaTeX and recompile.
+%
+% Build: latexmk -pdf -interaction=nonstopmode comic.tex
+% Verify: pdfinfo comic.pdf && pdftotext -layout comic.pdf -
+
+\documentclass[10pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1cm]{geometry}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{graphicx}
+
+\definecolor{comicblue}{RGB}{25,70,120}
+\definecolor{comicred}{RGB}{180,40,40}
+\definecolor{comicyellow}{RGB}{255,220,0}
+\definecolor{panelgrey}{RGB}{240,240,240}
+
+\pagestyle{empty}
+
+% Draw a panel frame: \panel{x1}{y1}{x2}{y2} (coordinates in cm)
+\newcommand{\panel}[4]{%
+  \draw[line width=2pt, color=comicblue] (#1,#2) rectangle (#3,#4);%
+  \fill[panelgrey] (#1,#2) rectangle (#3,#4);%
+}
+
+% Draw a speech bubble: \speech{x}{y}{width}{text}
+\newcommand{\speech}[3]{%
+  \node[draw=comicblue, line width=1.5pt, fill=white, rounded corners=8pt,
+        align=center, text width=#2cm] at (#1) {\textbf{#3}};%
+}
+
+% Draw a caption box: \caption{x}{y}{width}{text}
+\newcommand{\captionbox}[3]{%
+  \node[draw=comicred, line width=1.5pt, fill=comicyellow!30,
+        align=left, text width=#2cm] at (#1) {\small #3};%
+}
+
+\begin{document}
+
+\thispagestyle{empty}
+
+\begin{center}
+{\fontsize{24}{28}\selectfont\textbf{\color{comicred}THE BRAIN CHRONICLES}}\\[4pt]
+{\color{comicblue}\rule{\textwidth}{2pt}}\\[8pt]
+{\large Issue One --- The Turn That Would Not End}
+\end{center}
+
+\vspace{12pt}
+
+\begin{tikzpicture}
+  % Use the full A4 printable area (about 19cm x 27.7cm with 1cm margins)
+  \useasboundingbox (0,0) rectangle (19,27.7);
+
+  % Page border
+  \draw[line width=3pt, color=comicblue] (0,0) rectangle (19,27.7);
+
+  % Panel 1 - top wide (the opener)
+  \panel{0.5}{24.2}{18.5}{26.7}
+  \speech{(9.5,25.6)}{8}{``I can't land this one properly.''}
+  \captionbox{(0.5,23.6)}{9}{Panel 1: Narration is a statement of intent, never an answer.}
+
+  % Panel 2 - left column
+  \panel{0.5}{16.6}{9.2}{22.7}
+  \speech{(4.85,22.0)}{4}{``So here's the spec.''}
+  \captionbox{(0.5,16.0)}{4}{Panel 2: Tight spec, ready to execute.}
+
+  % Panel 3 - right column
+  \panel{9.8}{16.6}{18.5}{22.7}
+  \speech{(14.15,22.0)}{4}{``Ship it half-verified.''}
+  \captionbox{(9.8,16.0)}{4}{Panel 3: That's how we got here.}
+
+  % Panel 4 - bottom wide (the fix lands)
+  \panel{0.5}{9.6}{18.5}{15.7}
+  \speech{(9.5,14.8)}{8}{``A turn cannot end on an intention.''}
+  \captionbox{(0.5,9.0)}{9}{Panel 4: Detect narration, retry once with tools, then close with honesty.}
+
+  % Panel 5 - bottom left (type checks)
+  \panel{0.5}{4.6}{6.2}{8.7}
+  \speech{(3.35,8.0)}{3}{``tsc both projects.''}
+  \captionbox{(0.5,4.0)}{3}{Panel 5: Type checks pass.}
+
+  % Panel 6 - bottom middle (test suite)
+  \panel{6.7}{4.6}{12.4}{8.7}
+  \speech{(9.55,8.0)}{3}{``vitest run.''}
+  \captionbox{(6.7,4.0)}{3}{Panel 6: 94 files, 923 tests pass.}
+
+  % Panel 7 - bottom right (evals)
+  \panel{12.9}{4.6}{18.5}{8.7}
+  \speech{(15.7,8.0)}{2}{``23/23.''}
+  \captionbox{(12.9,4.0)}{2}{Panel 7: Golden turns hold.}
+\end{tikzpicture}
+
+\end{document}

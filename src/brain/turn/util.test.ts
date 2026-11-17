@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { APPROVAL_EXPIRY_MS } from "./approval"
 import { TURN_DEADLINE_MS, turnDeadlineSignal } from "./util"
 
 afterEach(() => {
@@ -9,8 +10,12 @@ describe("TURN_DEADLINE_MS", () => {
 	// The value is a documented product commitment (see docs/spec.md), so this
 	// assertion is deliberately brittle: changing the ceiling must be a
 	// conscious edit here and in the doc, not a silent drift.
-	it("is ten minutes", () => {
-		expect(TURN_DEADLINE_MS).toBe(10 * 60 * 1000)
+	it("is fifteen minutes", () => {
+		expect(TURN_DEADLINE_MS).toBe(15 * 60 * 1000)
+	})
+
+	it("stays inside the approval expiry window", () => {
+		expect(APPROVAL_EXPIRY_MS).toBeGreaterThan(TURN_DEADLINE_MS)
 	})
 })
 

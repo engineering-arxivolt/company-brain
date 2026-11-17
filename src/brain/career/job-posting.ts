@@ -68,3 +68,57 @@ export function keywordsFrom(text: string): string[] {
 	}
 	return keywords
 }
+
+/**
+ * The posting as the CV needs it: role, employer, the words it repeats, and the
+ * requirement lines worth evidencing.
+ *
+ * Deterministic and capped, because it is persisted with the working CV: an edit
+ * or an option request reads this when the original posting has scrolled out of
+ * the thread. Without it a rewrite can only be judged on its own wording, never
+ * on whether it answers the job.
+ */
+export function postingBrief(
+	text: string,
+	posting: JobPosting,
+	maxChars = 900,
+): string {
+	const head: string[] = []
+	if (posting.title || posting.company) {
+		const role = posting.title || "(role unstated)"
+		const at = posting.company ? ` at ${posting.company}` : ""
+		const where = posting.location ? ` (${posting.location})` : ""
+		head.push(`Role: ${role}${at}${where}`)
+	}
+	if (posting.keywords.length) {
+		head.push(
+			`Words the posting repeats: ${posting.keywords.slice(0, 12).join(", ")}`,
+		)
+	}
+	const requirements = requirementLines(text)
+	const body = requirements.length
+		? ["Requirements worth evidencing:", ...requirements.map((line) => `- ${line}`)]
+		: []
+	const brief = [...head, ...body].join("\n").trim()
+	return brief.length > maxChars ? `${brief.slice(0, maxChars)}…` : brief
+}
+
+/** A line that states a requirement rather than marketing or logistics. */
+const REQUIREMENT_HINT =
+	/^(?:[-•*]|\d+[.)])\s+|\b(?:requirements?|responsibilities|you will|you'll|experience (?:with|in)|proficien|knowledge of|familiar with)\b/i
+
+function requirementLines(text: string): string[] {
+	const seen = new Set<string>()
+	const lines: string[] = []
+	for (const raw of text.replace(/\r\n/g, "\n").split("\n")) {
+		const line = raw.replace(/^\s*[-•*]\s*/, "").trim()
+		if (line.length < 24 || line.length > 160) continue
+		if (!REQUIREMENT_HINT.test(raw)) continue
+		const key = line.toLowerCase()
+		if (seen.has(key)) continue
+		seen.add(key)
+		lines.push(line)
+		if (lines.length >= 5) break
+	}
+	return lines
+}
